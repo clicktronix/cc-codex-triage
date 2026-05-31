@@ -1,5 +1,7 @@
 ---
 description: List active named Codex threads in the current repo with their session UUIDs and last-activity timestamps.
+allowed-tools: Bash
+disable-model-invocation: true
 ---
 
 # /codex-thread-list

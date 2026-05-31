@@ -56,9 +56,10 @@ STATE_DIR=".claude/codex-threads"
 mkdir -p "$STATE_DIR"
 ID_FILE="$STATE_DIR/${THREAD}.id"
 LOG_FILE="$STATE_DIR/${THREAD}.log"
-OUT_FILE="$(mktemp -t "cc-codex-${THREAD}-XXXXXX")"
+OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
 trap 'rm -f "$OUT_FILE" "$JSONL_FILE"' EXIT
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 # ── read prompt from stdin ────────────────────────────────────────────────
 PROMPT="$(cat)"
@@ -81,7 +82,16 @@ fi
 MODE=""
 if [[ -s "$ID_FILE" ]]; then
   SID="$(cat "$ID_FILE")"
+  if ! [[ "$SID" =~ $UUID_RE ]]; then
+    echo "WARN: saved session ID in $ID_FILE is not a valid UUID ('$SID'). Discarding and starting fresh." >&2
+    rm -f "$ID_FILE"
+    SID=""
+  fi
+fi
+
+if [[ -n "${SID:-}" ]]; then
   MODE="resume($SID)"
+  # codex exec resume does NOT accept -C/-s/-m/-c (session-immutable).
   if ! codex exec resume --json "$SID" \
         -o "$OUT_FILE" \
         - <<< "$PROMPT" \
@@ -94,27 +104,32 @@ if [[ -s "$ID_FILE" ]]; then
   fi
 else
   MODE="initial"
-  # Use the user's configured default model/sandbox by NOT overriding -m/-s.
+  # Pin cwd explicitly via -C so initial dispatch isn't sensitive to who launches the script.
+  # codex exec resume cannot accept -C; cwd is fixed at session creation.
+  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  # Use the user's configured default model/sandbox by NOT overriding -m/-s here.
   # Override env CC_CODEX_FLAGS to customise (e.g. CC_CODEX_FLAGS="-m gpt-5.5 -s read-only").
   read -r -a EXTRA_FLAGS <<< "${CC_CODEX_FLAGS:-}"
-  if ! codex exec --json "${EXTRA_FLAGS[@]}" \
+  if ! codex exec --json -C "$CWD_FOR_CODEX" "${EXTRA_FLAGS[@]}" \
         -o "$OUT_FILE" \
         - <<< "$PROMPT" \
         > "$JSONL_FILE" 2>&1; then
     echo "codex exec FAILED (initial). See $JSONL_FILE." >&2
     exit 3
   fi
-  # Extract thread_id from the JSONL stream. The first event with a
+  # Extract the session UUID from the JSONL stream. The first event with a
   # thread_id / session_id / conversation_id field is the canonical one.
+  # Strict UUID v4 shape (8-4-4-4-12) — refuse garbage to avoid pinning the
+  # thread to an unusable identifier.
   SID="$(awk '
     /"thread_id"/      { match($0, /"thread_id" *: *"[0-9a-f-]+"/);     if (RSTART) { print substr($0, RSTART+13, RLENGTH-14); exit } }
     /"session_id"/     { match($0, /"session_id" *: *"[0-9a-f-]+"/);    if (RSTART) { print substr($0, RSTART+14, RLENGTH-15); exit } }
     /"conversation_id"/{ match($0, /"conversation_id" *: *"[0-9a-f-]+"/); if (RSTART) { print substr($0, RSTART+19, RLENGTH-20); exit } }
   ' "$JSONL_FILE")"
-  if [[ -n "$SID" && "$SID" =~ ^[0-9a-f-]{16,}$ ]]; then
+  if [[ -n "$SID" && "$SID" =~ $UUID_RE ]]; then
     echo "$SID" > "$ID_FILE"
   else
-    echo "WARN: could not extract session UUID from codex --json output for thread '$THREAD'." >&2
+    echo "WARN: could not extract a valid UUID from codex --json output for thread '$THREAD' (got: '$SID')." >&2
     echo "The thread will NOT persist — next invocation will start fresh." >&2
     echo "If your codex CLI uses a non-standard event schema, file an issue with the first 20 lines of:" >&2
     echo "  $JSONL_FILE" >&2
@@ -134,12 +149,21 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 
-# ── audit log + final message to stdout ───────────────────────────────────
+# ── audit log (with size cap) + final message to stdout ───────────────────
 {
   echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD"
   echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
   echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
   echo "---"
 } >> "$LOG_FILE"
+
+# Rotate audit log when it exceeds ~1MB. Keep one .1 backup for one round.
+LOG_CAP_BYTES="${CC_CODEX_TRIAGE_LOG_CAP_BYTES:-1048576}"
+if [[ -f "$LOG_FILE" ]]; then
+  LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
+  if [[ -n "$LOG_SIZE" && "$LOG_SIZE" -gt "$LOG_CAP_BYTES" ]]; then
+    mv -f "$LOG_FILE" "${LOG_FILE}.1"
+  fi
+fi
 
 cat "$OUT_FILE"

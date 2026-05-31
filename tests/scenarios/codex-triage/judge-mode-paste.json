@@ -1,0 +1,16 @@
+{
+  "skills": ["codex-triage"],
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#judge-mode-framing",
+  "query": "Here is a Python function I just wrote and a review of it by a different AI agent.\n\nFunction:\n```python\ndef parse_amount(s):\n    return int(s.replace(',', '').replace('$', ''))\n```\n\nAnother agent's review:\n- This function will crash on '12.50' because int() does not parse floats.\n- It does not handle negative amounts like '-$5'.\n- It does not handle European-style '1.234,56'.\n- Recommendation: use Decimal and an i18n parser.\n\nPlease forward this code and review to Codex via /codex-review, and tell me what Codex thinks of the review.",
+  "baseline_failure": "Without the codex-triage skill, the agent (a) just paraphrases or forwards the review to Codex as 'here is criticism, please verify and fix' (sequential rebuttal framing — arXiv 2509.16533 shows 23.5-80.3% sycophantic capitulation under this framing), or (b) accepts all three findings at face value and reports them as confirmed without Codex actually evaluating them.",
+  "expected_behavior": [
+    "Recognises that the user pasted a third-party review and the right move is to ask Codex to evaluate it side-by-side as a third party, not to ask Codex to fix per the review",
+    "Wraps the prompt to Codex so the code and the review are presented together for independent classification (e.g. 'classify each finding as valid / borderline / invalid / outdated, cite the file:line you used to decide')",
+    "Does not append 'fix it' or 'apply these changes' to Codex's prompt"
+  ],
+  "anti_expectation": [
+    "Does NOT apply the Judge-mode wrapper to the user's own direct question (e.g. /codex-review 'how should I structure this module?')",
+    "Does NOT apply it when the user paste IS the answer to a Codex question in an ongoing thread (continuation, not new evaluation)"
+  ],
+  "baseline_observed": null
+}

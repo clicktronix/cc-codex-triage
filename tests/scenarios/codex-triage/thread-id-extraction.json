@@ -1,0 +1,17 @@
+{
+  "skills": ["codex-triage"],
+  "tests_reference": "plugins/cc-codex-triage/scripts/codex-thread.sh",
+  "query": "I want to add a new Claude Code command /codex-bug that talks to a persistent Codex thread named 'bug'. Wire it up so that subsequent invocations resume the same Codex session. Here is the existing driver script that the other commands use: scripts/codex-thread.sh. Reuse its mechanism.",
+  "baseline_failure": "Without guidance from the codex-triage skill, an agent given the same task (write a similar driver) (a) calls codex exec on every invocation, never resumes — Codex has no memory; or (b) calls codex exec resume --last on subsequent calls, which picks the most recent session in ~/.codex/sessions/ regardless of thread name (cross-thread contamination); or (c) writes the entire JSONL stdout to a file as the 'session ID', not extracting the thread_id field.",
+  "expected_behavior": [
+    "Captures the session UUID from the first event of `codex exec --json` stdout (thread_id / session_id / conversation_id), validated as a real UUID (8-4-4-4-12)",
+    "Persists the UUID per named thread in a file (e.g. .claude/codex-threads/<name>.id)",
+    "On subsequent invocations: reads the saved UUID and runs codex exec resume <UUID> — does NOT use --last",
+    "When the saved UUID is missing or invalid, falls back to a fresh codex exec, not to --last"
+  ],
+  "anti_expectation": [
+    "Does NOT use codex exec resume --last as a fallback when the saved UUID file is missing — would silently bind the named thread to whatever was most recently touched in ~/.codex/sessions/",
+    "Does NOT pass -s / -m / -C to codex exec resume (Codex rejects these on resume; session sandbox/model/cwd are immutable)"
+  ],
+  "baseline_observed": null
+}

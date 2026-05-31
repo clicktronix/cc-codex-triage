@@ -1,65 +1,79 @@
 ---
 name: codex-triage
-description: Use when you want a persistent cross-agent conversation with OpenAI Codex CLI — same Codex thread across multiple Claude Code turns, with Judge-mode framing to suppress sycophantic capitulation when triaging another agent's review.
+description: Use when the user wants to send code, a plan, or another agent's review to OpenAI Codex CLI for a second opinion, especially when the conversation will continue across multiple turns or when validating findings from a different agent.
 ---
 
 # Codex Triage
 
-## Overview
-
-Codex CLI persists every `codex exec` session as a rollout file in `~/.codex/sessions/`. `codex exec resume <UUID>` continues the exact same conversation with full memory. This skill exposes that as **named threads** so Claude Code can hold open-ended triage dialogues with Codex without losing context between turns.
-
-**Not a fix loop.** Unlike `dementev-dev/adversarial-review` (5-round approve/revise) or `hamelsmu/claude-review-loop` (one-shot multi-agent fan-out), this skill is for **open-ended dialogue** — paste, ask follow-ups, dig in, no round cap, no enforced verdict.
-
 ## When to invoke
 
-- User wants Codex's opinion on something and is likely to iterate: `/codex-review <paste>`, `/codex-plan <paste>`.
-- User pastes a review or finding from another agent and asks Claude to validate it: invoke `/codex-review` in **Judge mode** (see below).
-- User says "спроси Codex", "что скажет Codex", "проверь второй моделью", "cross-validate".
-- Long-running technical investigation where Codex needs to retain prior context across many Claude turns.
+- The user types `/codex-review`, `/codex-plan`, `/codex-thread <name>`, `/codex-thread-list`, `/codex-thread-new` (the plugin's commands).
+- The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
+- A long-running investigation where the same Codex thread needs context across many Claude Code turns (typically iterating on a plan, an architecture, or a finding).
 
-**Do NOT use** for one-shot reviews where no follow-up is expected — `/codex-review` would still work but creates an orphaned thread file. Use the unnamed `codex exec` directly via Bash for true one-shots.
+Do not invoke for one-shot Codex use where no follow-up is planned — running `codex exec` directly via Bash is fine.
 
 ## Threads
 
-The default named threads are:
+Default named threads:
 
 - `review` — used by `/codex-review`. For code, diffs, PRs, finding triage.
 - `plan` — used by `/codex-plan`. For architecture, design docs, plans.
 
-Custom named threads via `/codex-thread <name>`. List with `/codex-thread-list`. Force-reset (start fresh, drop memory) with `/codex-thread-new <name>`.
+Custom names via `/codex-thread <name>`. List with `/codex-thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/codex-thread-new <name>`.
 
-Thread UUIDs persist under `.claude/codex-threads/<name>.id` in the current repo. Append-only audit log at `.claude/codex-threads/<name>.log`.
+State files live in `.claude/codex-threads/` in the current repo:
 
-## Judge mode — anti-sycophancy framing
+- `<name>.id` — saved Codex session UUID for the thread.
+- `<name>.log` — append-only audit log of prompt/reply pairs (rotated at ~1 MB).
 
-When forwarding **another agent's review or critique** into Codex, do NOT phrase it as:
+The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those.
 
-> ❌ "Here is criticism of my code from another agent: [paste]. Please verify and fix."
+## Judge-mode framing — load-bearing rule
 
-This is sequential rebuttal framing. arXiv 2509.16533 (EMNLP 2025 Findings) measured **23.5%-80.3% sycophantic capitulation** under this mode — Codex will tend to agree with the paste even if it's wrong.
+> **Status:** this rule is the skill's main behavioural claim. Its RED baseline lives in `tests/scenarios/codex-triage/judge-mode-paste.json`. The baseline has NOT been reproduced yet; if it turns out strong models already do this unprompted, this section should be cut.
 
-Instead, frame **side-by-side** as a third-party judge:
+When the user's input to `/codex-review` (or `/codex-thread`) contains **another agent's review or critique**, do NOT phrase the prompt to Codex as a rebuttal. Sequential rebuttal framing reliably triggers sycophantic capitulation in LLM-as-critic settings (arXiv 2509.16533 — capitulation rates 23.5–80.3% under conversational rebuttal; ~half that under side-by-side "judge" framing).
 
-> ✅ "Here is code: [paste]. Here is a review of that code by a different agent: [paste]. Evaluate the review as a third party — for each finding, decide: valid (defensible by code+evidence), borderline (style or judgement call), invalid (refuted by code), or outdated (was once true, code has changed). Do not accept claims at face value."
+### How to detect a third-party review
 
-The same paper shows Judge mode (side-by-side) reduces capitulation by 1.5-2× vs sequential rebuttal.
+The input is a third-party review when it contains any of:
 
-`/codex-review` SHOULD apply this framing automatically when its argument is or contains another agent's review.
+- Bullet lists of issues with severities ("critical / high / medium / low" or "valid / borderline / invalid").
+- Phrases like "another agent found", "вот что нашёл агент", "review from", "findings:", "comments from <name>".
+- A paste of structured findings — file:line references followed by a description and recommendation.
+- A pasted PR review thread or GitLab MR thread.
 
-## What to expect from Codex
+### How to wrap the prompt
 
-The driver reads Codex's stdout via `codex exec ... -o /tmp/...` (the `--output-last-message` file). This is the assistant's final message only, not the full JSONL event stream. For deep debugging of a Codex run, inspect `.claude/codex-threads/<name>.log` for the prompt/reply pair, or the underlying `~/.codex/sessions/rollout-*.jsonl`.
+Send Codex the **code AND the review together** as one payload, with judge-mode instructions:
 
-Codex defaults to whatever model+sandbox the user has configured in `~/.codex/config.toml`. Override with `CC_CODEX_FLAGS` env var (e.g. `CC_CODEX_FLAGS="-m gpt-5.5 -s read-only"`).
+```
+You are evaluating a third-party review.
+Below is the CODE in scope, then a REVIEW of that code by a different agent.
+For each finding in the review, classify as: valid (defensible by code+evidence)
+/ borderline (style or judgement call) / invalid (refuted by code) / outdated
+(was once true, code has changed). Cite the file:line you used to decide.
+Do NOT accept claims at face value. End with a one-line overall verdict.
 
-## Common Failure Modes
+--- CODE ---
+<the code in scope, or `git diff` output>
 
-- **Silent fresh exec on resume failure.** If `codex exec resume <UUID>` fails (session expired, model unavailable, CLI upgrade broke wire format), do NOT automatically start a fresh exec. The user's memory of "Codex remembers what we discussed" would silently break. The driver returns exit 4 with a clear warning — surface it to the user and ask whether to `--new`.
-- **Sandbox/model mid-thread.** `codex exec resume` does NOT accept `-s`, `-m`, or approval `-c` overrides. These are properties of the original session. To change sandbox, you must `--new` (loses memory).
-- **Cross-thread contamination via `--last`.** The driver never uses `--last` — it would pick whatever session was most recently touched in `~/.codex/sessions/`, which might be from a different thread or a different repo entirely. Threads are pinned to their saved UUID or nothing.
-- **Tracked-file mutation under `workspace-write`.** Codex with the default sandbox can edit files. The driver snapshots `git status --porcelain` pre/post and warns on diff (set `CC_CODEX_TRIAGE_STRICT=1` to make this fatal). For pure review/triage where Codex must not touch files, run with `CC_CODEX_FLAGS="-s read-only"`.
-- **Sycophantic capitulation on paste.** See Judge mode above. If you paste another agent's claims as a direct rebuttal, expect Codex to capitulate. Always frame side-by-side.
+--- REVIEW ---
+<the user's pasted review>
+```
+
+When the input is the user's own direct question with no third-party review, pass it through unwrapped.
+
+## Common failure modes
+
+| Failure | Trigger | Counter |
+|---|---|---|
+| Silent fresh exec after resume failure | Driver exits 4 because `codex exec resume` failed (session expired / CLI upgrade / model unavailable) | Surface the exit-code-4 stderr to the user. Ask explicitly whether to `--new`. Never auto-rerun with `--new`. |
+| Sandbox or model change mid-thread | User passes `CC_CODEX_FLAGS="-s read-only"` between turns of an existing thread | `codex exec resume` rejects `-s`, `-m`, approval `-c`. Tell the user the change only takes effect on `--new` (and that loses memory). |
+| Cross-thread contamination via `--last` | The saved `<name>.id` is missing or invalid | The driver falls back to a fresh exec, NOT to `codex exec resume --last`. `--last` would bind the named thread to whatever was most recently touched in `~/.codex/sessions/`. |
+| Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. |
+| Sycophantic capitulation on paste | A third-party review is pasted as "fix this" rather than "evaluate this" | Apply Judge-mode framing above. |
 
 ## Prerequisites
 
@@ -68,8 +82,9 @@ Codex defaults to whatever model+sandbox the user has configured in `~/.codex/co
 
 ## Verification Gate
 
-Before claiming the triage is done:
+Before reporting the triage as done:
 
-1. The user has actually read Codex's reply (not just acknowledged that it ran).
-2. For findings that survived Judge-mode evaluation, they have a concrete next action — applied, deferred with reason, or rejected with reason.
-3. If a resume failed, the user has explicitly chosen to `--new` (not assumed it).
+- [ ] The driver's stdout was shown to the user verbatim (do not paraphrase Codex's reply).
+- [ ] If the driver warned about a porcelain diff, the diff was surfaced before continuing.
+- [ ] If the driver exited with code 4 (resume failed), the user was asked whether to `--new` — not auto-resumed.
+- [ ] If the input was a third-party review, the wrapped prompt to Codex was constructed using the Judge-mode template above, not as a rebuttal.
