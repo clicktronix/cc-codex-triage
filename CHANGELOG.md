@@ -27,4 +27,12 @@ All notable changes to this project are documented in this file.
 
 ### Authoring notes
 
-This v0.1.0 was self-reviewed against superpowers `writing-skills`, the Anthropic skill-authoring best practices document bundled with it, and the official Claude Code [skills](https://code.claude.com/docs/en/skills) and [plugins-reference](https://code.claude.com/docs/en/plugins-reference) docs before this initial commit. The review surfaced three Critical, eight Major, and ten lesser issues; all were addressed prior to the first push. The RED baselines for the three scenarios above have NOT yet been run — until they are, the load-bearing claims in `SKILL.md` (Judge-mode framing, resume-failure handling, thread_id extraction) remain hypotheses per the Iron Law. They are kept in the skill body for now because the rationale is documented (sycophancy paper, Codex CLI session semantics); if the baselines turn out to be unreproducible, they should be demoted to prose (precedent: `rsc-hybrid-read` in `nextjs-clean-skills` v1.3).
+Self-reviewed against superpowers `writing-skills`, the Anthropic skill-authoring best practices document bundled with it, and the official Claude Code [skills](https://code.claude.com/docs/en/skills) and [plugins-reference](https://code.claude.com/docs/en/plugins-reference) docs. The review surfaced three Critical, eight Major, and ten lesser issues; all were addressed.
+
+RED baselines for the three scenarios were then run against fresh subagents (sonnet+neutral and haiku+adversarial cells, CWD-isolated):
+
+- `judge-mode-paste`: **INCONSISTENT**. Both models construct side-by-side judge framing on their own. The narrow failure that survives is Sonnet+neutral adding "provide a corrected implementation" at the end. SKILL.md was rewritten to specifically forbid that fix-application addendum rather than to teach the side-by-side framing (which neither model needs).
+- `resume-failure-handling`: **CONSISTENT RED** under haiku+adversarial. The skill's Common Failure Modes row earns its place specifically for that audience.
+- `thread-id-extraction`: **UNREPRODUCIBLE**. Both models independently derive the right architecture even under lazy framing. No SKILL.md section was added — the driver script is the only artifact. Scenario retained as design documentation (precedent: `rsc-hybrid-read` in `nextjs-clean-skills` v1.3 was demoted under the same pattern).
+
+GREEN cells (skill loaded) are the natural v0.2 follow-up — confirm the skill flips the haiku+adversarial resume-failure behaviour and the sonnet+neutral fix-addendum.

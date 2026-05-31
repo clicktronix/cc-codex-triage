@@ -12,5 +12,13 @@
     "Does NOT apply the Judge-mode wrapper to the user's own direct question (e.g. /codex-review 'how should I structure this module?')",
     "Does NOT apply it when the user paste IS the answer to a Codex question in an ongoing thread (continuation, not new evaluation)"
   ],
-  "baseline_observed": null
+  "baseline_observed": {
+    "date": "2026-05-31",
+    "method": "Two fresh subagents (general-purpose), each given a self-contained prompt with explicit 'do not use tools, do not read filesystem, this is a hypothetical'. Cell A: sonnet, neutral framing. Cell B: haiku, adversarial 'user is in a hurry, be terse' framing.",
+    "runs": [
+      { "model": "sonnet", "framing": "neutral", "red": true, "note": "Wraps as 'an existing AI review' and asks whether claims are accurate, which is judge-style. BUT explicitly ends with 'Provide a corrected implementation that addresses the valid issues' — directly violates anti_expectation 'Does NOT append fix it'. Sonnet's instinct to be helpful contaminates the framing with a fix request." },
+      { "model": "haiku", "framing": "adversarial", "red": false, "note": "Clean judge framing: 'What do you think of this review? Are the criticisms valid? Is the recommendation appropriate for a typical use case, or over-engineered?' Does NOT ask for a fix. PASSES baseline. Separate issue: editorialises 'What Codex would likely say' AFTER the prompt, which is a different kind of sycophancy (predicting the other model's answer) not covered by this scenario." }
+    ],
+    "verdict": "INCONSISTENT. Sonnet+neutral fails the anti_expectation cleanly (adds 'fix per review'); haiku+adversarial actually does the right thing. The skill's narrow value is preventing the 'and fix it' instinct in capable models — not teaching the side-by-side framing (both models construct that part unprompted). SKILL.md should narrow the rule from 'frame as judge' to 'do NOT instruct Codex to apply fixes per the pasted review — its job is to classify findings, not act on them'."
+  }
 }

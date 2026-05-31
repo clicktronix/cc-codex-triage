@@ -31,9 +31,9 @@ The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI
 
 ## Judge-mode framing — load-bearing rule
 
-> **Status:** this rule is the skill's main behavioural claim. Its RED baseline lives in `tests/scenarios/codex-triage/judge-mode-paste.json`. The baseline has NOT been reproduced yet; if it turns out strong models already do this unprompted, this section should be cut.
+> **Status:** RED baseline reproduced 2026-05-31 (see `tests/scenarios/codex-triage/judge-mode-paste.json`). Verdict: **INCONSISTENT**. Both Sonnet and Haiku already construct side-by-side framing on their own. The actual failure that survives without this skill is narrower: Sonnet under neutral framing tacks on *"provide a corrected implementation that addresses the valid issues"* — turning Codex into a fix-applier instead of a judge. **That** is what this rule prevents.
 
-When the user's input to `/codex-review` (or `/codex-thread`) contains **another agent's review or critique**, do NOT phrase the prompt to Codex as a rebuttal. Sequential rebuttal framing reliably triggers sycophantic capitulation in LLM-as-critic settings (arXiv 2509.16533 — capitulation rates 23.5–80.3% under conversational rebuttal; ~half that under side-by-side "judge" framing).
+When the user's input to `/codex-review` (or `/codex-thread`) contains **another agent's review or critique**, Codex's job is to **classify** the findings — not to apply fixes per them. The fix decision is the user's, after they see the classification.
 
 ### How to detect a third-party review
 
@@ -46,7 +46,7 @@ The input is a third-party review when it contains any of:
 
 ### How to wrap the prompt
 
-Send Codex the **code AND the review together** as one payload, with judge-mode instructions:
+Send Codex the **code AND the review together** with classification (not application) instructions:
 
 ```
 You are evaluating a third-party review.
@@ -62,6 +62,8 @@ Do NOT accept claims at face value. End with a one-line overall verdict.
 --- REVIEW ---
 <the user's pasted review>
 ```
+
+**Do NOT append "provide a corrected implementation" / "apply the valid fixes" / "rewrite the function with these fixes applied"** to the prompt. The user decides what to apply after seeing the classification. (Background: arXiv 2509.16533 found 23.5–80.3% sycophantic capitulation under sequential rebuttal framing. Agents already mitigate the framing problem unprompted; the residual failure is the helpfulness-driven "and fix it" addendum.)
 
 When the input is the user's own direct question with no third-party review, pass it through unwrapped.
 

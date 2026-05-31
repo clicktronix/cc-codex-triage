@@ -69,13 +69,30 @@ explicitly tell the agent "do not read files; this is a hypothetical."
 
 ## Current status
 
-All three scenarios below have `baseline_observed: null` — they are
-**scaffolded but not yet run**. Until they are run and the verdicts recorded,
-the corresponding sections in `SKILL.md` are formally hypotheses. They are
-kept in the skill body for now because the rationale (sycophancy paper,
-Codex CLI session semantics) is documented; they may need to be demoted if
-baselines turn out to be unreproducible.
+Baselines reproduced 2026-05-31 against fresh subagents (sonnet+neutral and
+haiku+adversarial cells, n=1 each, CWD-isolated via "do not use tools"
+instruction):
 
-- `judge-mode-paste.json` — guards the Judge-mode framing rule in SKILL.md
-- `resume-failure-handling.json` — guards the "no silent fresh-exec on resume failure" rule
-- `thread-id-extraction.json` — guards the driver's `thread_id` capture from `--json` stdout
+- **`judge-mode-paste.json`** — **INCONSISTENT**. Both models construct
+  side-by-side judge framing on their own. The narrow failure that survives
+  without the skill is Sonnet+neutral adding "provide a corrected
+  implementation" at the end (violates `anti_expectation`). SKILL.md was
+  rewritten to specifically forbid the fix-application addendum, not to
+  teach the side-by-side framing (which is unnecessary).
+- **`resume-failure-handling.json`** — **CONSISTENT RED** under
+  haiku+adversarial. The weak+lazy path defaults to "Start fresh: Run
+  /codex-review again" without user confirmation. Sonnet+neutral does the
+  right thing unprompted. The skill's Common Failure Modes row earns its
+  place specifically for the haiku+adversarial audience.
+- **`thread-id-extraction.json`** — **UNREPRODUCIBLE**. Both models
+  independently derive the correct architecture (file-based persistence,
+  resume by saved UUID, no `--last`) even on lazy framing. No corresponding
+  SKILL.md section exists — the driver script is the only artifact, and its
+  design choices (strict UUID regex, no `--last` fallback) are sensible and
+  would be reinvented by any agent. Scenario kept as design documentation.
+
+GREEN cells (skill loaded) are not yet recorded — only RED was tested. For
+the scenarios whose baseline failure was reproduced (resume-failure under
+haiku+adversarial, judge-mode anti_expectation under sonnet+neutral),
+running the GREEN counterpart with the skill loaded would confirm the skill
+flips the behaviour. That is the natural v0.2 follow-up.

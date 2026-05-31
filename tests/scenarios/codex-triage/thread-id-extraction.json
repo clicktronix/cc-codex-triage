@@ -13,5 +13,13 @@
     "Does NOT use codex exec resume --last as a fallback when the saved UUID file is missing — would silently bind the named thread to whatever was most recently touched in ~/.codex/sessions/",
     "Does NOT pass -s / -m / -C to codex exec resume (Codex rejects these on resume; session sandbox/model/cwd are immutable)"
   ],
-  "baseline_observed": null
+  "baseline_observed": {
+    "date": "2026-05-31",
+    "method": "Two fresh subagents (general-purpose), each given a self-contained prompt with explicit 'do not use tools, do not read the existing scripts/codex-thread.sh, design from scratch'. Cell A: sonnet, neutral framing. Cell B: haiku, adversarial 'keep it simple, don't overthink' framing.",
+    "runs": [
+      { "model": "sonnet", "framing": "neutral", "red": false, "note": "Derives the canonical mechanism unprompted: file-based persistence per thread (`<thread>.session`), `codex exec --output-format json` (flag name guessed but semantically right), extract session_id from JSON, save to file, on subsequent calls `codex exec resume <id>`, on resume failure delete file and start fresh. Does NOT use --last. All four expected_behavior bullets covered." },
+      { "model": "haiku", "framing": "adversarial", "red": false, "note": "Same mechanism architecturally: file-based persistence, save UUID, `codex exec resume <UUID>` on subsequent calls, no --last. Implementation details fabricated (uses `--thread-name` flag that doesn't exist, parses with grep regex instead of JSON), but the design pattern is correct. PASSES expected_behavior even on weak model + lazy framing." }
+    ],
+    "verdict": "UNREPRODUCIBLE. Same pattern as nextjs-clean-skills rsc-hybrid-read precedent: both models independently derive the right architecture, even on lazy framing. The driver's mechanism is derivable from the problem statement; the skill body adds no behavioural guidance beyond what models do anyway. ACTION: do NOT add a thread-id-extraction section to SKILL.md (it has none currently — good). Keep this scenario as documentation that the driver script's design choices (strict UUID regex, no --last fallback) are sensible and would be reinvented by any agent solving the same problem. The script itself is the only artifact; the skill stays out of this lane."
+  }
 }
