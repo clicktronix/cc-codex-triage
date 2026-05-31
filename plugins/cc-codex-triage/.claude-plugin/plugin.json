@@ -1,0 +1,11 @@
+{
+  "name": "cc-codex-triage",
+  "description": "Persistent named Codex CLI threads for open-ended cross-agent triage. Adds /codex-review, /codex-plan, /codex-thread commands plus a skill that frames cross-agent feedback in Judge mode to suppress sycophantic capitulation.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Clicktronix",
+    "url": "https://github.com/clicktronix"
+  },
+  "homepage": "https://github.com/clicktronix/cc-codex-triage",
+  "license": "MIT"
+}

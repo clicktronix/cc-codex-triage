@@ -1,0 +1,33 @@
+---
+description: Force-reset a named Codex thread — next message to it starts a fresh `codex exec` and loses prior conversation memory.
+argument-hint: <thread-name> [optional first message]
+---
+
+# /codex-thread-new
+
+Drops the saved session UUID for the named thread so the next dispatch starts fresh. The Codex-side rollout file in `~/.codex/sessions/` is NOT deleted (Codex CLI manages those) — only the local pointer is cleared, so a later `--last`-style recovery is still theoretically possible via `~/.codex/sessions/` inspection.
+
+## Steps
+
+1. Parse first token from `$ARGUMENTS` as the thread name. Validate `[a-zA-Z0-9_.-]+`.
+
+2. If no further text after the name → just drop the pointer:
+
+   ```bash
+   rm -f ".claude/codex-threads/<NAME>.id"
+   echo "Thread '<NAME>' reset. Next /codex-thread <NAME>, /codex-review, or /codex-plan invocation starts fresh."
+   ```
+
+3. If an additional prompt is given on the same line → drop the pointer AND immediately fire the prompt with `--new`:
+
+   ```bash
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <NAME> --new <<< "<REST_OF_ARGUMENTS>"
+   ```
+
+4. Show Codex's reply (if step 3 ran) or the reset confirmation (if step 2 ran).
+
+## When to use
+
+- Codebase has drifted significantly from when the thread started — old context is now misleading.
+- Resume failure (exit 4 from the driver) — the saved UUID points at a dead session.
+- You want to A/B compare a fresh Codex take vs the running thread's view.

@@ -1,0 +1,30 @@
+{
+  "name": "cc-codex-triage",
+  "owner": {
+    "name": "Clicktronix",
+    "url": "https://github.com/clicktronix"
+  },
+  "metadata": {
+    "description": "Claude Code plugin for persistent triage dialogue with OpenAI Codex CLI — same-thread review/plan conversations via `codex exec resume`.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "cc-codex-triage",
+      "source": "./plugins/cc-codex-triage",
+      "description": "Persistent named Codex CLI threads for open-ended cross-agent triage. Adds /codex-review, /codex-plan, /codex-thread commands plus a skill that frames cross-agent feedback in Judge mode to suppress sycophantic capitulation.",
+      "version": "0.1.0",
+      "keywords": [
+        "codex",
+        "codex-cli",
+        "cross-agent-review",
+        "triage",
+        "adversarial-review",
+        "judge-mode",
+        "anti-sycophancy",
+        "agent-skills",
+        "slash-commands"
+      ]
+    }
+  ]
+}
