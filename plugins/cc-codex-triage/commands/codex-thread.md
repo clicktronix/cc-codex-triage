@@ -1,6 +1,6 @@
 ---
 description: Send a message to an arbitrarily-named Codex thread; creates it on first use. For triage topics that don't fit the default review/plan threads.
-argument-hint: [--oneshot] <thread-name> <message>
+argument-hint: "[--oneshot] <thread-name> <message>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---

@@ -1,6 +1,6 @@
 ---
 description: Force-reset a named Codex thread — next message to it starts a fresh `codex exec` and loses prior conversation memory.
-argument-hint: <thread-name> [optional first message]
+argument-hint: "<thread-name> [optional first message]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---

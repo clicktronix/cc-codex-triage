@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-08
+
+Fixes from a cross-agent review (Codex audited the repo; findings validated
+side-by-side against the code, then fixed). 8 of 9 findings were valid.
+
+### Fixed
+
+- **Blocker — broken command frontmatter.** `argument-hint` values starting with `[` were parsed by YAML as a flow sequence, failing the whole frontmatter so `claude plugin validate <plugin-dir>` dropped all metadata (including `allowed-tools` and `disable-model-invocation`) on 5 of 7 commands. All `argument-hint` values are now quoted. (My earlier validation only checked the marketplace manifest, not the plugin dir — now both pass `--strict`.)
+- **Blocker — driver crashed on default run.** `"${EXTRA_FLAGS[@]}"` is an "unbound variable" under `set -u` on bash 3.2 (macOS default) when `CC_CODEX_FLAGS` is empty, so `/codex-review`, `/codex-plan`, `/codex-thread` never reached Codex without a custom env var. Switched to the `${arr[@]+"${arr[@]}"}` guard; verified on bash 3.2.57.
+- **Mutation guard false positives on its own state dir.** `git status --porcelain` flagged the driver's own `.claude/codex-threads/*.id` writes. The guard now filters that directory and uses `-uall` so the filter survives git's untracked-dir collapse. Verified it still catches a real tracked-file mutation. Also fixed `.gitignore` (`.codex-threads/` → `.claude/codex-threads/`).
+- **Diagnostics deleted before they could be read.** Error messages pointed at the JSONL stream, but the EXIT trap removed it. Failures now persist the stream to `<thread>.last-error.jsonl` and point there.
+- **`--oneshot` now truly traceless.** It previously still wrote the audit log; the log write is now skipped for one-shots (no `.id`, no `.log`, no rollout).
+- **`/codex-reply` no longer silently creates a thread.** New driver flag `--require-existing` (exit 6) makes reply fail-fast when the target thread doesn't exist.
+- **Log rotation kept the latest entry.** Rotation now runs *before* the append, so the current `.log` always holds the newest `REPLY:` (previously the fresh entry was moved straight to `.log.1`).
+
+### Documentation
+
+- Corrected install instructions: `/plugin marketplace add clicktronix/cc-codex-triage` + `/plugin install cc-codex-triage@cc-codex-triage` (was the outdated `/plugin add`). Documented that plugin commands are namespaced (`/cc-codex-triage:codex-review`).
+- Documented the porcelain guard's known limitation (already-dirty files), and clarified scope: this is a one-directional Claude Code → Codex plugin, intentionally not packaged as a Codex plugin.
+
+### Known / not fixed
+
+- `claude plugin tag --dry-run` reported failing in the review — that is a marketplace-tagging step, separate from plugin validity; deferred.
+
 ## [0.2.0] - 2026-06-01
 
 ### Added

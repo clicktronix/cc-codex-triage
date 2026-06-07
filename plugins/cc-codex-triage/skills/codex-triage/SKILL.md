@@ -27,14 +27,15 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 ## Threads
 
-State files live in `.claude/codex-threads/` in the current repo:
+State files live in `.claude/codex-threads/` in the current repo (git-ignore this directory):
 
 - `<name>.id` — saved Codex session UUID for the thread.
-- `<name>.log` — append-only audit log of prompt/reply pairs (rotated at ~1 MB).
+- `<name>.log` — append-only audit log of prompt/reply pairs (rotated to `.log.1` at ~1 MB; rotation happens before each append, so the latest entry is always in the current `.log`).
+- `<name>.last-error.jsonl` — raw Codex stream from the most recent failure (the path the driver points you at on error).
 
 List with `/codex-thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/codex-thread-new <name>`.
 
-The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral`, so no rollout is written at all.
+The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral` and writes **no** `.id`, `.log`, or rollout — a true throwaway.
 
 ## Codex is an agent, not an LLM endpoint
 
@@ -95,7 +96,7 @@ When replying via `/codex-reply`: do the tool work Codex asks for and paste the 
 | Silent fresh exec after resume failure | Driver exits 4 because `codex exec resume` failed (session expired / CLI upgrade / model unavailable) | Surface the exit-code-4 stderr to the user. Ask explicitly whether to `--new`. Never auto-rerun with `--new`. |
 | Sandbox or model change mid-thread | User passes `CC_CODEX_FLAGS="-s read-only"` between turns of an existing thread | `codex exec resume` rejects `-s`, `-m`, approval `-c`. Tell the user the change only takes effect on `--new` (and that loses memory). |
 | Cross-thread contamination via `--last` | The saved `<name>.id` is missing or invalid | The driver falls back to a fresh exec, NOT to `codex exec resume --last`. `--last` would bind the named thread to whatever was most recently touched in `~/.codex/sessions/`. |
-| Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. |
+| Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch (filtering its own state dir) and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. **Limitation:** porcelain detects status *transitions* only — if a file was already dirty and Codex changes it further, the status line is unchanged and the guard stays silent. Commit/stash WIP first for full protection. |
 | Sycophantic capitulation on paste | A third-party review is pasted as "fix this" rather than "evaluate this" | Apply Judge-mode framing above. |
 | Guessing instead of running, when a tool call fails | `/codex-reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
 | Wrong intent → wrong sandbox | Using `/codex-review` for an informational question (or vice versa) | Route per the table above. `/codex-ask` is read-only and informational; `/codex-review` is adversarial. |

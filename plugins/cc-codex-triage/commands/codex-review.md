@@ -1,6 +1,6 @@
 ---
 description: Send code, a diff, a PR, or another agent's findings to the persistent "review" Codex thread for critique. Supports focus lenses.
-argument-hint: [--lens <name>] [--oneshot] <paste or "review my branch">
+argument-hint: '[--lens <name>] [--oneshot] <paste or "review my branch">'
 allowed-tools: Bash
 disable-model-invocation: true
 ---

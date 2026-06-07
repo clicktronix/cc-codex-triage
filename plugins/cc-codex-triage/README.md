@@ -52,14 +52,22 @@ When you paste another agent's findings into `/codex-review`, the command wraps 
 ## Installation
 
 ```
-/plugin add cc-codex-triage @clicktronix/cc-codex-triage
+/plugin marketplace add clicktronix/cc-codex-triage
+/plugin install cc-codex-triage@cc-codex-triage
 ```
 
-Or clone and install locally:
+(The `@cc-codex-triage` suffix is the marketplace name — `plugin@marketplace`.)
 
-```
-git clone https://github.com/clicktronix/cc-codex-triage ~/.claude/plugins/cc-codex-triage
-```
+Plugin commands are **namespaced** under the plugin. Invoke them as
+`/cc-codex-triage:codex-review`, `/cc-codex-triage:codex-ask`, etc. Claude Code
+also accepts the bare `/codex-review` form when there is no name collision.
+
+## Scope: one-directional (Claude Code → Codex CLI)
+
+This is a **Claude Code** plugin. Its slash commands shell out to the `codex`
+CLI via the bundled driver. It is intentionally not packaged as a Codex plugin
+(`.codex-plugin/`) — there is nothing for Codex to run; Codex is the callee, not
+the host. If you want Codex to *host* skills, that is a different artifact.
 
 ## License
 

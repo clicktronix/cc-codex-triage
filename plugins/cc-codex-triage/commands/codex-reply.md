@@ -1,6 +1,6 @@
 ---
 description: Compose a reply from Claude Code back into an active Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback.
-argument-hint: [thread-name] <directive or position>
+argument-hint: "[thread-name] <directive or position>"
 allowed-tools: Bash, Read, Glob, Grep
 disable-model-invocation: true
 ---
@@ -11,9 +11,9 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 
 ## Steps
 
-1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive.
+1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive. Replying only makes sense for a thread that already exists — the driver is invoked with `--require-existing` (step 4), which exits 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/codex-ask`, `/codex-review`, or `/codex-plan`.
 
-2. Recover Codex's last message: read the tail of `.claude/codex-threads/<thread>.log` (the most recent `REPLY:` block).
+2. Recover Codex's last message: read the tail of `.claude/codex-threads/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 
 3. Classify what Codex's last message needs, then **follow the "Answering Codex back" rules in skill `codex-triage`**:
    - **Question** → answer it from project state (TodoWrite, plan, recent conversation).
@@ -24,10 +24,10 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 4. Compose the reply (≤500 words) and pipe to the driver:
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> <<< "$REPLY_TEXT"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
    ```
 
-5. Show Codex's next reply verbatim. Handle exit code 4 (resume failed) per the skill — ask before `--new`.
+5. Show Codex's next reply verbatim. Handle exit code 4 (resume failed) per the skill — ask before `--new`. Exit code 6 means no such thread — see step 1.
 
 ## Notes
 

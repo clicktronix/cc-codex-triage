@@ -1,6 +1,6 @@
 ---
 description: Send a plan, design doc, or architecture question to the persistent "plan" Codex thread to stress-test it. Supports focus lenses.
-argument-hint: [--lens <name>] [--oneshot] <plan or architecture question>
+argument-hint: "[--lens <name>] [--oneshot] <plan or architecture question>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---

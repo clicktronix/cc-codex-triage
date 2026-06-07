@@ -1,6 +1,6 @@
 ---
 description: Ask OpenAI Codex CLI an informational question in a persistent "ask" thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique.
-argument-hint: [--oneshot] <question>
+argument-hint: "[--oneshot] <question>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
