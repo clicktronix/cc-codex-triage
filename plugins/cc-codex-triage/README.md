@@ -4,12 +4,16 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 
 ## What it gives you
 
-- `/codex-review [paste]` — talk to the same Codex `review` thread across turns. Auto-wraps third-party reviews in Judge-mode framing.
-- `/codex-plan [paste]` — same, for the `plan` thread.
-- `/codex-thread <name> [message]` — arbitrary named threads.
-- `/codex-thread-list` — show active threads + last-activity timestamps.
+- `/codex-ask [--oneshot] <question>` — informational Q&A in the persistent `ask` thread (read-only sandbox). "How does X work here", "is there already a Y".
+- `/codex-review [--lens <name>] [--oneshot] <paste>` — critique in the `review` thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing.
+- `/codex-plan [--lens <name>] [--oneshot] <plan>` — stress-test in the `plan` thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
+- `/codex-reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
+- `/codex-thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
+- `/codex-thread-list` — active threads + last-activity timestamps.
 - `/codex-thread-new <name> [message]` — force-reset a thread (loses memory).
-- Skill `codex-triage` documents when to invoke each command and how Judge mode framing suppresses sycophantic capitulation.
+- Skill `codex-triage` documents routing, Judge-mode framing, and the `--oneshot` modifier.
+
+Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept).
 
 ## How it differs from the alternatives
 

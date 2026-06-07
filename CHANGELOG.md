@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-01
+
+### Added
+
+- `/codex-ask` — informational Q&A in a persistent `ask` thread, defaulting the Codex sandbox to read-only (you're asking, not mutating; never trips the tracked-file guard). Supports `--oneshot`.
+- `/codex-reply` — compose a reply from Claude Code back into an active Codex thread (answer a question, run a requested tool action, push back on a finding). Recovers Codex's last message from the thread log.
+- `--lens` on `/codex-review` (correctness/security/performance/architecture/ux/quick) and `/codex-plan` (stress-test/pre-mortem/devils-advocate/alternatives/adr). Lens templates live in `skills/codex-triage/references/review-lenses.md` (progressive disclosure). Review lenses share a Conventional Comments output contract + verdict.
+- `--oneshot` flag on the driver and all dispatch commands — throwaway via `codex exec --ephemeral`: no `.id` tracked, no rollout persisted. Mutually exclusive with `--new`.
+- Skill section "Answering Codex back" and routing table (which command for which intent) in `SKILL.md`. Description broadened to cover asking and replying.
+- New scenario `tests/scenarios/codex-triage/reply-tool-request.json`.
+
+### Changed
+
+- `SKILL.md` clarifies that Codex is an agent (it fetches diffs / runs tests itself) — send intent + scope + focus, not project context.
+- Driver `--oneshot` branch reuses the porcelain guard and audit log; `codex exec resume` continues to receive no `-C/-s/-m` (session-immutable).
+
+### Eval
+
+RED baselines run for the new `/codex-reply` claim (sonnet+neutral, haiku+adversarial; GREEN cells too):
+
+- `reply-tool-request` — **UNREPRODUCIBLE** on the happy path. With a working tool call, both models run the requested command and paste verbatim output unprompted, and neither re-affirms Codex's self-retracted claim. The "Answering Codex back" section was therefore **demoted** from a load-bearing rule to a brief reminder (same treatment as `thread-id-extraction` and `rsc-hybrid-read` before it). A narrower unhappy-path failure (tool fails → guess instead of debug) is noted but untested.
+
+Net across all four scenarios: only `resume-failure-handling` is a consistent RED. The lens templates are canned prompts, not behavioural claims, so they carry no RED requirement.
+
 ## [0.1.0] - 2026-05-31
 
 ### Added

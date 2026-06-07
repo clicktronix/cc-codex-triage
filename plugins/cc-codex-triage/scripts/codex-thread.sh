@@ -7,9 +7,12 @@
 # memory across turns.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new]
+#   codex-thread.sh <thread-name> [--new | --oneshot]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
-#       --new forces a fresh exec, discarding the existing thread.
+#       --new      forces a fresh persistent thread, discarding the existing one.
+#       --oneshot  throwaway: ignores thread state entirely, runs an ephemeral
+#                  exec (no .id written, no rollout persisted on the Codex side).
+#                  Mutually exclusive with --new.
 #
 # Storage:
 #   .claude/codex-threads/<thread>.id     — UUID of the active session.
@@ -19,7 +22,7 @@
 #   0   success
 #   1   usage error
 #   2   codex CLI missing
-#   3   codex exec failed (initial)
+#   3   codex exec failed (initial or oneshot)
 #   4   codex exec resume failed (warns instead of silent fresh — preserves the
 #       caller's memory by NOT clobbering the saved UUID).
 #   5   tracked-file mutation detected pre/post codex dispatch (workspace-write
@@ -29,10 +32,12 @@ set -euo pipefail
 
 # ── args ──────────────────────────────────────────────────────────────────
 FORCE_NEW=false
+ONESHOT=false
 THREAD=""
 while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
+    --oneshot) ONESHOT=true; shift ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -43,8 +48,12 @@ while (( $# )); do
   esac
 done
 
-[[ -z "$THREAD" ]] && { echo "usage: codex-thread.sh <thread-name> [--new]" >&2; exit 1; }
+[[ -z "$THREAD" ]] && { echo "usage: codex-thread.sh <thread-name> [--new | --oneshot]" >&2; exit 1; }
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
+if $FORCE_NEW && $ONESHOT; then
+  echo "--new and --oneshot are mutually exclusive (--new resets a persistent thread; --oneshot keeps none)." >&2
+  exit 1
+fi
 
 command -v codex >/dev/null 2>&1 || {
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
@@ -80,7 +89,8 @@ fi
 
 # ── dispatch ──────────────────────────────────────────────────────────────
 MODE=""
-if [[ -s "$ID_FILE" ]]; then
+SID=""
+if ! $ONESHOT && [[ -s "$ID_FILE" ]]; then
   SID="$(cat "$ID_FILE")"
   if ! [[ "$SID" =~ $UUID_RE ]]; then
     echo "WARN: saved session ID in $ID_FILE is not a valid UUID ('$SID'). Discarding and starting fresh." >&2
@@ -89,7 +99,20 @@ if [[ -s "$ID_FILE" ]]; then
   fi
 fi
 
-if [[ -n "${SID:-}" ]]; then
+if $ONESHOT; then
+  MODE="oneshot"
+  # Throwaway: no thread tracking, no rollout persisted on the Codex side.
+  # codex exec resume cannot continue an --ephemeral session — that is the point.
+  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  read -r -a EXTRA_FLAGS <<< "${CC_CODEX_FLAGS:-}"
+  if ! codex exec --json --ephemeral -C "$CWD_FOR_CODEX" "${EXTRA_FLAGS[@]}" \
+        -o "$OUT_FILE" \
+        - <<< "$PROMPT" \
+        > "$JSONL_FILE" 2>&1; then
+    echo "codex exec FAILED (oneshot). See $JSONL_FILE." >&2
+    exit 3
+  fi
+elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
   # codex exec resume does NOT accept -C/-s/-m/-c (session-immutable).
   if ! codex exec resume --json "$SID" \

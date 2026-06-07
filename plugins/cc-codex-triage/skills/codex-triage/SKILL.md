@@ -1,33 +1,48 @@
 ---
 name: codex-triage
-description: Use when the user wants to send code, a plan, or another agent's review to OpenAI Codex CLI for a second opinion, especially when the conversation will continue across multiple turns or when validating findings from a different agent.
+description: Use when the user wants to involve OpenAI Codex CLI from Claude Code — asking it a question, getting a second opinion on code or a plan, validating another agent's findings, or replying to something Codex said — especially across multiple turns of the same conversation.
 ---
 
 # Codex Triage
 
 ## When to invoke
 
-- The user types `/codex-review`, `/codex-plan`, `/codex-thread <name>`, `/codex-thread-list`, `/codex-thread-new` (the plugin's commands).
+- The user types any plugin command: `/codex-ask`, `/codex-review`, `/codex-plan`, `/codex-reply`, `/codex-thread <name>`, `/codex-thread-list`, `/codex-thread-new`.
 - The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
-- A long-running investigation where the same Codex thread needs context across many Claude Code turns (typically iterating on a plan, an architecture, or a finding).
+- A long-running investigation where the same Codex thread needs context across many Claude Code turns.
 
-Do not invoke for one-shot Codex use where no follow-up is planned — running `codex exec` directly via Bash is fine.
+### Routing — which command for which intent
+
+| Intent | Command | Thread |
+|---|---|---|
+| Informational question ("how does X work", "is there already a Y") | `/codex-ask` | `ask` (read-only) |
+| Critique of code / diff / PR / a third-party review | `/codex-review [--lens]` | `review` |
+| Stress-test a plan or design | `/codex-plan [--lens]` | `plan` |
+| Reply back to something Codex said | `/codex-reply` | the active thread |
+| Anything else, isolated by topic | `/codex-thread <name>` | `<name>` |
+
+`ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/codex-thread` is a plain passthrough.
+
+**`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
 ## Threads
-
-Default named threads:
-
-- `review` — used by `/codex-review`. For code, diffs, PRs, finding triage.
-- `plan` — used by `/codex-plan`. For architecture, design docs, plans.
-
-Custom names via `/codex-thread <name>`. List with `/codex-thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/codex-thread-new <name>`.
 
 State files live in `.claude/codex-threads/` in the current repo:
 
 - `<name>.id` — saved Codex session UUID for the thread.
 - `<name>.log` — append-only audit log of prompt/reply pairs (rotated at ~1 MB).
 
-The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those.
+List with `/codex-thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/codex-thread-new <name>`.
+
+The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral`, so no rollout is written at all.
+
+## Codex is an agent, not an LLM endpoint
+
+Codex CLI runs with `-C <repo>` and a sandbox. It reads files, runs `git diff`/`git log`, greps, and runs tests **on its own**. Do not stuff project context (CLAUDE.md, file contents, full diffs) into the prompt — Codex fetches what it needs. The only things it does NOT have are: the **intent** (what you were trying to do), the **scope** (what to look at), and your **specific focus**. Send those; let Codex gather the rest.
+
+## Review and plan lenses
+
+`/codex-review` and `/codex-plan` accept a `--lens` to focus the review and pick the report format. The lens templates live in `references/review-lenses.md` — read that file, pick the block matching the `--lens` argument (or the default), and substitute it into the Codex prompt. They are canned prompts, not behavioural rules.
 
 ## Judge-mode framing — load-bearing rule
 
@@ -67,6 +82,12 @@ Do NOT accept claims at face value. End with a one-line overall verdict.
 
 When the input is the user's own direct question with no third-party review, pass it through unwrapped.
 
+## Answering Codex back
+
+> **Status:** RED baseline run 2026-06-01 (`tests/scenarios/codex-triage/reply-tool-request.json`) — **did NOT reproduce** on the happy path. With a working tool call, both Sonnet and Haiku ran the command and pasted real output unprompted, and neither re-affirmed Codex's self-retracted claim. Kept as a brief reminder, not a strong rule. A narrow failure may remain when the tool call itself **fails** (lazy path = guess the output instead of debugging) — untested.
+
+When replying via `/codex-reply`: do the tool work Codex asks for and paste the **verbatim** output (don't predict it); represent the user's position, not Codex's; reject a finding only with a concrete file:line; and don't re-affirm a claim Codex already walked back mid-message. Capable models do this anyway — it is spelled out for weak-model and tool-failure cases. Keep replies short (≤500 words).
+
 ## Common failure modes
 
 | Failure | Trigger | Counter |
@@ -76,6 +97,8 @@ When the input is the user's own direct question with no third-party review, pas
 | Cross-thread contamination via `--last` | The saved `<name>.id` is missing or invalid | The driver falls back to a fresh exec, NOT to `codex exec resume --last`. `--last` would bind the named thread to whatever was most recently touched in `~/.codex/sessions/`. |
 | Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. |
 | Sycophantic capitulation on paste | A third-party review is pasted as "fix this" rather than "evaluate this" | Apply Judge-mode framing above. |
+| Guessing instead of running, when a tool call fails | `/codex-reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
+| Wrong intent → wrong sandbox | Using `/codex-review` for an informational question (or vice versa) | Route per the table above. `/codex-ask` is read-only and informational; `/codex-review` is adversarial. |
 
 ## Prerequisites
 
@@ -90,3 +113,4 @@ Before reporting the triage as done:
 - [ ] If the driver warned about a porcelain diff, the diff was surfaced before continuing.
 - [ ] If the driver exited with code 4 (resume failed), the user was asked whether to `--new` — not auto-resumed.
 - [ ] If the input was a third-party review, the wrapped prompt to Codex was constructed using the Judge-mode template above, not as a rebuttal.
+- [ ] If replying via `/codex-reply` and Codex requested tool work that failed, the failure was reported honestly — not papered over with a guessed result.

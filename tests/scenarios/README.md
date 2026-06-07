@@ -90,9 +90,17 @@ instruction):
   SKILL.md section exists — the driver script is the only artifact, and its
   design choices (strict UUID regex, no `--last` fallback) are sensible and
   would be reinvented by any agent. Scenario kept as design documentation.
+- **`reply-tool-request.json`** (added 2026-06-01) — **UNREPRODUCIBLE** on the
+  happy path. With a working tool call, both Sonnet and Haiku run the requested
+  command and paste verbatim output unprompted, and neither re-affirms Codex's
+  self-retracted claim. GREEN cells (skill loaded) confirmed the same correct
+  behaviour. The SKILL.md "Answering Codex back" section was **demoted** from a
+  load-bearing rule to a brief reminder. A narrower failure may survive on the
+  *unhappy* path (tool call fails → guess instead of debug) — untested; that is
+  the scenario worth writing next.
 
-GREEN cells (skill loaded) are not yet recorded — only RED was tested. For
-the scenarios whose baseline failure was reproduced (resume-failure under
-haiku+adversarial, judge-mode anti_expectation under sonnet+neutral),
-running the GREEN counterpart with the skill loaded would confirm the skill
-flips the behaviour. That is the natural v0.2 follow-up.
+**Net:** of four scenarios, only `resume-failure-handling` is a consistent RED.
+The rest are inconsistent or unreproducible — capable agents already do the right
+thing, so those skill sections are kept narrow or demoted rather than presented
+as strong, RED-backed rules. This is the eval doing its job: it stopped three
+hypotheses from masquerading as validated guidance.

@@ -1,33 +1,38 @@
 ---
-description: Send a message to the persistent "review" Codex thread; creates one if none exists. Use to triage code, diffs, PRs, or another agent's findings.
-argument-hint: <paste or question for Codex>
+description: Send code, a diff, a PR, or another agent's findings to the persistent "review" Codex thread for critique. Supports focus lenses.
+argument-hint: [--lens <name>] [--oneshot] <paste or "review my branch">
 allowed-tools: Bash
 disable-model-invocation: true
 ---
 
 # /codex-review
 
-Forwards `$ARGUMENTS` to the named Codex thread `review`, creating it on first use and resuming it on subsequent calls so Codex retains full context.
+Forwards a review request to the Codex thread `review`, creating it on first use and resuming it on subsequent calls so Codex retains context. Codex fetches the diff and runs tests itself — send it the **intent** and **focus**, not the file contents.
 
 ## Steps
 
-1. **Apply Judge-mode framing per skill `codex-triage`** if `$ARGUMENTS` looks like a third-party review or critique (see the skill for detection cues and the exact wrapping template). For direct questions, pass through unwrapped.
+1. Parse flags from the front of `$ARGUMENTS`:
+   - `--lens <name>` → one of: `correctness` (default), `security`, `performance`, `architecture`, `ux`, `quick`.
+   - `--oneshot` → pass through to the driver (throwaway, no thread kept).
+   The remainder is the user's paste/focus.
 
-2. Run via Bash tool (timeout 600000 — reviews can take several minutes):
+2. Build the Codex prompt:
+   - Read `references/review-lenses.md` (in this plugin's skill dir), take the block for the chosen lens plus the shared output contract, and use it as the INSTRUCTION.
+   - State the SCOPE if the user implied one ("this branch", "uncommitted", "last commit") so Codex knows what to diff. If unstated, default to uncommitted + current branch vs its merge base.
+   - **If the remainder is a third-party review/critique, apply Judge-mode framing per skill `codex-triage`** (classify, do not instruct Codex to apply fixes).
+
+3. Run via Bash (timeout 600000 — reviews take minutes):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" review <<< "$PROMPT_BODY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" review [--oneshot] <<< "$PROMPT_BODY"
    ```
 
-   Where `$PROMPT_BODY` is either the wrapped Judge-mode prompt from step 1 or the raw `$ARGUMENTS`.
+4. Show Codex's reply verbatim.
 
-3. Show Codex's reply verbatim to the user.
-
-4. If the script exits with **code 4** (resume failed), DO NOT auto-retry with `--new`. Tell the user, ask whether to start a fresh thread.
-
-5. If the script exits with **code 5** or warns about tracked-file mutations, surface the diff to the user — Codex touched files in the working tree.
+5. Exit code 4 (resume failed) → ask the user before `--new`, per skill. Exit code 5 / porcelain warning → surface the diff (Codex touched files).
 
 ## Notes
 
-- Thread state at `.claude/codex-threads/review.id`; audit log `.claude/codex-threads/review.log`.
-- Force-reset: `/codex-thread-new review` (loses memory of prior turns).
+- Lens templates: `references/review-lenses.md`. No `--lens` = `correctness`.
+- Thread state: `.claude/codex-threads/review.id` / `.log`. Force-reset: `/codex-thread-new review`.
+- For a one-off with no follow-up: `--oneshot`.

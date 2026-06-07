@@ -1,30 +1,35 @@
 ---
-description: Send a message to the persistent "plan" Codex thread; creates one if none exists. Use to discuss architecture, design docs, or implementation plans.
-argument-hint: <plan, design doc, or architecture question>
+description: Send a plan, design doc, or architecture question to the persistent "plan" Codex thread to stress-test it. Supports focus lenses.
+argument-hint: [--lens <name>] [--oneshot] <plan or architecture question>
 allowed-tools: Bash
 disable-model-invocation: true
 ---
 
 # /codex-plan
 
-Forwards `$ARGUMENTS` to the named Codex thread `plan`, creating it on first use and resuming on subsequent calls so Codex retains the full architecture context.
+Forwards a planning prompt to the Codex thread `plan`, creating it on first use and resuming on subsequent calls so Codex retains the full design context across turns ("here's the plan" → critique → you revise → Codex re-evaluates against its own prior critique).
 
 ## Steps
 
-1. Run via Bash tool (timeout 600000):
+1. Parse flags from the front of `$ARGUMENTS`:
+   - `--lens <name>` → one of: `stress-test` (default), `pre-mortem`, `devils-advocate`, `alternatives`, `adr`.
+   - `--oneshot` → pass through to the driver.
+   The remainder is the plan text or a pointer to it (e.g. a `docs/plans/*.md` path Codex should read).
+
+2. Build the Codex prompt: read `references/review-lenses.md`, take the plan block for the chosen lens, use it as the INSTRUCTION. Include the plan text (or tell Codex which file to read).
+
+3. Run via Bash (timeout 600000):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" plan <<< "$ARGUMENTS"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" plan [--oneshot] <<< "$PROMPT_BODY"
    ```
 
-2. Show Codex's reply verbatim.
+4. Show Codex's reply verbatim.
 
-3. If the script exits with **code 4** (resume failed), do NOT auto-retry with `--new`. Ask the user whether to start fresh.
-
-4. Surface any tracked-file mutation warnings (exit code 5).
+5. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
 
 ## Notes
 
-- The `plan` thread is for architecture discussions where context accumulates over many turns: "here's the plan" → Codex critiques → you revise → Codex re-evaluates against its prior critique.
-- Thread state: `.claude/codex-threads/plan.id`; audit log `.claude/codex-threads/plan.log`.
-- Force-reset: `/codex-thread-new plan`.
+- Lens templates: `references/review-lenses.md`. No `--lens` = `stress-test`.
+- Thread state: `.claude/codex-threads/plan.id` / `.log`. Force-reset: `/codex-thread-new plan`.
+- For a one-off: `--oneshot`.
