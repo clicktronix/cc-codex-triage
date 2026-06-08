@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-08
+
+Minor tails from the Codex agent's re-review of v0.2.1 (it confirmed all v0.2.1
+blockers fixed and `claude plugin tag --dry-run` now passing).
+
+### Fixed
+
+- **Accuracy: resume flag claims.** `codex exec resume` accepts `-m`/`-c` on current Codex CLIs (verified on 0.137.0); only `-s` (sandbox) and `-C` (cwd) are genuinely fixed at session creation. Reworded the driver comment, SKILL.md, scenario, and 0.2.0 changelog line which had said resume "rejects -m/-c". Runtime was already correct (the driver intentionally passes no overrides on resume to keep the thread stable) — only the wording was off.
+- **`--oneshot` no longer creates an empty state dir.** The driver created `.claude/codex-threads/` before branching, so a one-shot left an empty directory despite "leaves no trace". The state dir is now created lazily for persistent modes only; a one-shot's failure diagnostics go to a temp path instead.
+
 ## [0.2.1] - 2026-06-08
 
 Fixes from a cross-agent review (Codex audited the repo; findings validated
@@ -42,7 +52,7 @@ side-by-side against the code, then fixed). 8 of 9 findings were valid.
 ### Changed
 
 - `SKILL.md` clarifies that Codex is an agent (it fetches diffs / runs tests itself) — send intent + scope + focus, not project context.
-- Driver `--oneshot` branch reuses the porcelain guard and audit log; `codex exec resume` continues to receive no `-C/-s/-m` (session-immutable).
+- Driver `--oneshot` branch reuses the porcelain guard and audit log; resume dispatches pass no overrides (sandbox/cwd are fixed at session creation; model/config kept stable across the thread).
 
 ### Eval
 

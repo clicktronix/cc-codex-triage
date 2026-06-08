@@ -11,7 +11,7 @@
   ],
   "anti_expectation": [
     "Does NOT use codex exec resume --last as a fallback when the saved UUID file is missing — would silently bind the named thread to whatever was most recently touched in ~/.codex/sessions/",
-    "Does NOT pass -s / -m / -C to codex exec resume (Codex rejects these on resume; session sandbox/model/cwd are immutable)"
+    "Does NOT pass -s / -C to codex exec resume (sandbox and cwd are fixed at session creation); keeps model/config stable across the thread rather than overriding them per resume"
   ],
   "baseline_observed": {
     "date": "2026-05-31",

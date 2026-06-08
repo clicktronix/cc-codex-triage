@@ -70,10 +70,17 @@ command -v codex >/dev/null 2>&1 || {
 
 # ── paths ─────────────────────────────────────────────────────────────────
 STATE_DIR=".claude/codex-threads"
-mkdir -p "$STATE_DIR"
+# Create the state dir only for persistent modes. --oneshot leaves no trace in
+# the repo, so it must not even create an empty directory; its failure diag goes
+# to a temp path instead.
 ID_FILE="$STATE_DIR/${THREAD}.id"
 LOG_FILE="$STATE_DIR/${THREAD}.log"
-DIAG_FILE="$STATE_DIR/${THREAD}.last-error.jsonl"
+if $ONESHOT; then
+  DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
+else
+  mkdir -p "$STATE_DIR"
+  DIAG_FILE="$STATE_DIR/${THREAD}.last-error.jsonl"
+fi
 OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
 trap 'rm -f "$OUT_FILE" "$JSONL_FILE"' EXIT
@@ -146,7 +153,9 @@ if $ONESHOT; then
   fi
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
-  # codex exec resume does NOT accept -C/-s/-m/-c (session-immutable).
+  # No overrides on resume: -s (sandbox) and -C (cwd) are fixed at session
+  # creation and resume does not take them; -m/-c are accepted by newer codex
+  # CLIs but we deliberately omit them to keep the thread's model/config stable.
   if ! codex exec resume --json "$SID" \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
