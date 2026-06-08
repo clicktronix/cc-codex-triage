@@ -4,13 +4,13 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 
 ## What it gives you
 
-- `/codex-ask [--oneshot] <question>` — informational Q&A in the persistent `ask` thread (read-only sandbox). "How does X work here", "is there already a Y".
-- `/codex-review [--lens <name>] [--oneshot] <paste>` — critique in the `review` thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing.
-- `/codex-plan [--lens <name>] [--oneshot] <plan>` — stress-test in the `plan` thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
-- `/codex-reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
-- `/codex-thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
-- `/codex-thread-list` — active threads + last-activity timestamps.
-- `/codex-thread-new <name> [message]` — force-reset a thread (loses memory).
+- `/ask [--oneshot] <question>` — informational Q&A in the persistent `ask` thread (read-only sandbox). "How does X work here", "is there already a Y".
+- `/review [--lens <name>] [--oneshot] <paste>` — critique in the `review` thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing.
+- `/plan [--lens <name>] [--oneshot] <plan>` — stress-test in the `plan` thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
+- `/reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
+- `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
+- `/thread-list` — active threads + last-activity timestamps.
+- `/thread-new <name> [message]` — force-reset a thread (loses memory).
 - Skill `codex-triage` documents routing, Judge-mode framing, and the `--oneshot` modifier.
 
 Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept).
@@ -37,7 +37,7 @@ Use this when the conversation will iterate. Use `claude-review-loop` for a sing
 - `.claude/codex-threads/<name>.log` — append-only prompt/reply audit log.
 - `~/.codex/sessions/rollout-*.jsonl` — Codex's own rollout files (managed by Codex CLI).
 
-The plugin never deletes Codex's rollout files. `/codex-thread-new` only clears the local pointer.
+The plugin never deletes Codex's rollout files. `/thread-new` only clears the local pointer.
 
 ## Safety primitives
 
@@ -47,7 +47,7 @@ The plugin never deletes Codex's rollout files. `/codex-thread-new` only clears 
 
 ## Judge-mode framing
 
-When you paste another agent's findings into `/codex-review`, the command wraps the prompt as a third-party evaluation rather than sequential rebuttal. Empirically (arXiv 2509.16533, EMNLP 2025 Findings) this drops sycophantic capitulation rates from 23.5–80.3% down by 1.5–2×.
+When you paste another agent's findings into `/review`, the command wraps the prompt as a third-party evaluation rather than sequential rebuttal. Empirically (arXiv 2509.16533, EMNLP 2025 Findings) this drops sycophantic capitulation rates from 23.5–80.3% down by 1.5–2×.
 
 ## Installation
 
@@ -59,8 +59,10 @@ When you paste another agent's findings into `/codex-review`, the command wraps 
 (The `@cc-codex-triage` suffix is the marketplace name — `plugin@marketplace`.)
 
 Plugin commands are **namespaced** under the plugin. Invoke them as
-`/cc-codex-triage:codex-review`, `/cc-codex-triage:codex-ask`, etc. Claude Code
-also accepts the bare `/codex-review` form when there is no name collision.
+`/cc-codex-triage:review`, `/cc-codex-triage:ask`, etc. The bare `/<name>` form
+also works for names that don't collide with a built-in — but `/review` and
+`/plan` are taken by Claude Code's own commands, so use the namespaced form for
+those two.
 
 ## Scope: one-directional (Claude Code → Codex CLI)
 

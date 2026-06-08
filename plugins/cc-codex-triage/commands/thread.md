@@ -5,9 +5,9 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-thread
+# /thread
 
-Arbitrary named-thread variant of `/codex-review` and `/codex-plan` — a plain passthrough with no intent framing. Use to keep parallel Codex conversations isolated by topic.
+Arbitrary named-thread variant of `/review` and `/plan` — a plain passthrough with no intent framing. Use to keep parallel Codex conversations isolated by topic.
 
 ## Steps
 
@@ -16,8 +16,8 @@ Arbitrary named-thread variant of `/codex-review` and `/codex-plan` — a plain 
 2. If the thread name is missing or invalid, show usage and stop:
 
    ```
-   Usage: /codex-thread [--oneshot] <name> <message>
-   Name must be [a-zA-Z0-9_.-]+. Example: /codex-thread migration-rls "explain..."
+   Usage: /thread [--oneshot] <name> <message>
+   Name must be [a-zA-Z0-9_.-]+. Example: /thread migration-rls "explain..."
    ```
 
 3. Apply Judge-mode framing per skill `codex-triage` if the prompt body looks like a third-party review.
@@ -28,10 +28,10 @@ Arbitrary named-thread variant of `/codex-review` and `/codex-plan` — a plain 
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <NAME> [--oneshot] <<< "<PROMPT_BODY>"
    ```
 
-5. Show Codex's reply verbatim. Handle exit code 4 (resume failure) and code 5 (file mutation) the same way as `/codex-review`.
+5. Show Codex's reply verbatim. Handle exit code 4 (resume failure) and code 5 (file mutation) the same way as `/review`.
 
 ## Notes
 
 - Thread state at `.claude/codex-threads/<name>.id`.
-- `/codex-thread-list` shows all active named threads.
-- `/codex-thread-new <name>` forces a fresh exec (loses prior memory).
+- `/thread-list` shows all active named threads.
+- `/thread-new <name>` forces a fresh exec (loses prior memory).

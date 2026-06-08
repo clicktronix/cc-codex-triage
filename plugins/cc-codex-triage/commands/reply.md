@@ -5,13 +5,13 @@ allowed-tools: Bash, Read, Glob, Grep
 disable-model-invocation: true
 ---
 
-# /codex-reply
+# /reply
 
 Sends a reply from Claude Code into an existing Codex thread. This is the one place CC speaks back to Codex rather than forwarding the user — so the reverse-sycophancy rules in skill `codex-triage` apply: represent the user's position, execute tool requests for real, push back with evidence.
 
 ## Steps
 
-1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive. Replying only makes sense for a thread that already exists — the driver is invoked with `--require-existing` (step 4), which exits 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/codex-ask`, `/codex-review`, or `/codex-plan`.
+1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive. Replying only makes sense for a thread that already exists — the driver is invoked with `--require-existing` (step 4), which exits 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/ask`, `/review`, or `/plan`.
 
 2. Recover Codex's last message: read the tail of `.claude/codex-threads/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 
@@ -31,5 +31,5 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 
 ## Notes
 
-- `/codex-reply` only makes sense for a thread that already exists. If none does, you probably want `/codex-ask`, `/codex-review`, or `/codex-plan` to start one.
+- `/reply` only makes sense for a thread that already exists. If none does, you probably want `/ask`, `/review`, or `/plan` to start one.
 - Thread state: `.claude/codex-threads/<thread>.id` / `.log`.

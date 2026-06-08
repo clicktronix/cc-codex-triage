@@ -4,7 +4,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-thread-list
+# /thread-list
 
 Lists threads under `.claude/codex-threads/` in the current repo.
 

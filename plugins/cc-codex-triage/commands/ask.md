@@ -5,11 +5,11 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-ask
+# /ask
 
 Sends an informational question to the persistent Codex thread `ask`. Follow-up questions continue the same thread, so Codex retains prior Q&A. Use `--oneshot` for a throwaway question that leaves no thread state.
 
-This is the **informational** command — collaborative, not adversarial. For critique of your code use `/codex-review`; for stress-testing a plan use `/codex-plan`.
+This is the **informational** command — collaborative, not adversarial. For critique of your code use `/review`; for stress-testing a plan use `/plan`.
 
 ## Steps
 
@@ -40,5 +40,5 @@ This is the **informational** command — collaborative, not adversarial. For cr
 
 - Thread state: `.claude/codex-threads/ask.id`; audit log `.claude/codex-threads/ask.log`.
 - The `ask` thread is created read-only, so it never trips the tracked-file mutation guard.
-- Need write access (e.g. "try this fix")? That is a different intent — use `/codex-thread <name>` without the read-only default, or `/codex-review`.
-- Force-reset: `/codex-thread-new ask`.
+- Need write access (e.g. "try this fix")? That is a different intent — use `/thread <name>` without the read-only default, or `/review`.
+- Force-reset: `/thread-new ask`.

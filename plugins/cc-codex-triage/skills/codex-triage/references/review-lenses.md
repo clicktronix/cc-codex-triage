@@ -1,7 +1,7 @@
 # Review & plan lenses
 
-Canned INSTRUCTION blocks injected into the Codex prompt by `/codex-review` and
-`/codex-plan`. These are **templates**, not behavioural rules — pick the block
+Canned INSTRUCTION blocks injected into the Codex prompt by `/review` and
+`/plan`. These are **templates**, not behavioural rules — pick the block
 matching the `--lens` argument, substitute it into the payload, and pipe to the
 driver. No lens = the default for that command.
 
@@ -18,7 +18,7 @@ The lens tells it **what to look for and how to report**, not what to fetch.
 
 ## Shared review output contract
 
-Append this to every `/codex-review` lens (all review lenses share it):
+Append this to every `/review` lens (all review lenses share it):
 
 ```
 Output ONLY findings, using Conventional Comments format:
@@ -109,7 +109,7 @@ Do not do a deep pass. Keep it to the top few findings or "no blockers found".
 ## Plan lenses
 
 Plan lenses do NOT use the Conventional Comments contract (that is for code).
-Each is a standalone INSTRUCTION for `/codex-plan`.
+Each is a standalone INSTRUCTION for `/plan`.
 
 ### stress-test (default)
 

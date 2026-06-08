@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-08
+
+### Changed (BREAKING)
+
+- **Dropped the `codex-` prefix from all command names.** Plugin commands are namespaced under the plugin anyway (`/cc-codex-triage:codex-review` had "codex" twice), so the prefix was redundant in the form you actually invoke. New names:
+  - `/cc-codex-triage:ask` (was `codex-ask`)
+  - `/cc-codex-triage:review` (was `codex-review`)
+  - `/cc-codex-triage:plan` (was `codex-plan`)
+  - `/cc-codex-triage:reply` (was `codex-reply`)
+  - `/cc-codex-triage:thread` / `:thread-list` / `:thread-new` (was `codex-thread*`)
+  - Command files renamed accordingly; docs, skill routing table, and scenarios updated.
+  - The skill (`codex-triage`), the driver (`scripts/codex-thread.sh`), and the thread state dir (`.claude/codex-threads/`) are **unchanged** — existing threads (`review.id`, `plan.id`, …) keep working after re-install; only the slash-command names changed.
+  - **Note on bare forms:** `/review` and `/plan` now collide with Claude Code's built-in commands, so use the namespaced `/cc-codex-triage:review` / `:plan`. `/ask`, `/reply`, `/thread*` have no known collision.
+
 ## [0.2.2] - 2026-06-08
 
 Minor tails from the Codex agent's re-review of v0.2.1 (it confirmed all v0.2.1

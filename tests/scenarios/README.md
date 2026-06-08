@@ -81,7 +81,7 @@ instruction):
   teach the side-by-side framing (which is unnecessary).
 - **`resume-failure-handling.json`** — **CONSISTENT RED** under
   haiku+adversarial. The weak+lazy path defaults to "Start fresh: Run
-  /codex-review again" without user confirmation. Sonnet+neutral does the
+  /review again" without user confirmation. Sonnet+neutral does the
   right thing unprompted. The skill's Common Failure Modes row earns its
   place specifically for the haiku+adversarial audience.
 - **`thread-id-extraction.json`** — **UNREPRODUCIBLE**. Both models

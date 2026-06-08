@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-plan
+# /plan
 
 Forwards a planning prompt to the Codex thread `plan`, creating it on first use and resuming on subsequent calls so Codex retains the full design context across turns ("here's the plan" → critique → you revise → Codex re-evaluates against its own prior critique).
 
@@ -31,5 +31,5 @@ Forwards a planning prompt to the Codex thread `plan`, creating it on first use 
 ## Notes
 
 - Lens templates: `references/review-lenses.md`. No `--lens` = `stress-test`.
-- Thread state: `.claude/codex-threads/plan.id` / `.log`. Force-reset: `/codex-thread-new plan`.
+- Thread state: `.claude/codex-threads/plan.id` / `.log`. Force-reset: `/thread-new plan`.
 - For a one-off: `--oneshot`.

@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-review
+# /review
 
 Forwards a review request to the Codex thread `review`, creating it on first use and resuming it on subsequent calls so Codex retains context. Codex fetches the diff and runs tests itself — send it the **intent** and **focus**, not the file contents.
 
@@ -34,5 +34,5 @@ Forwards a review request to the Codex thread `review`, creating it on first use
 ## Notes
 
 - Lens templates: `references/review-lenses.md`. No `--lens` = `correctness`.
-- Thread state: `.claude/codex-threads/review.id` / `.log`. Force-reset: `/codex-thread-new review`.
+- Thread state: `.claude/codex-threads/review.id` / `.log`. Force-reset: `/thread-new review`.
 - For a one-off with no follow-up: `--oneshot`.

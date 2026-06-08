@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-# /codex-thread-new
+# /thread-new
 
 Drops the saved session UUID for the named thread so the next dispatch starts fresh. The Codex-side rollout file in `~/.codex/sessions/` is NOT deleted (Codex CLI manages those) — only the local pointer is cleared.
 
@@ -17,7 +17,7 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 
    ```bash
    rm -f ".claude/codex-threads/<NAME>.id"
-   echo "Thread '<NAME>' reset. Next /codex-thread <NAME>, /codex-review, or /codex-plan invocation starts fresh."
+   echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
    ```
 
 3. If an additional prompt is given on the same line → drop the pointer AND immediately fire the prompt with `--new`:

@@ -14,7 +14,7 @@
 #                           exec (no .id, no rollout, no audit log). Mutually
 #                           exclusive with --new.
 #       --require-existing  fail (exit 6) instead of creating a new thread when
-#                           none exists. Used by /codex-reply.
+#                           none exists. Used by /reply.
 #
 # Storage (under .claude/codex-threads/ — git-ignore this directory):
 #   <thread>.id               UUID of the active session.
@@ -137,7 +137,7 @@ fi
 
 if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
   echo "No existing thread '$THREAD' (.claude/codex-threads/${THREAD}.id not found or invalid)." >&2
-  echo "--require-existing refuses to create one. Start a thread first with /codex-ask, /codex-review, /codex-plan, or /codex-thread." >&2
+  echo "--require-existing refuses to create one. Start a thread first with /ask, /review, /plan, or /thread." >&2
   exit 6
 fi
 
@@ -208,7 +208,7 @@ fi
 if ! $ONESHOT; then
   # Rotate BEFORE appending so the newest entry always lands in the current
   # .log (a post-append rotation would move the just-written entry to .log.1
-  # and leave /codex-reply unable to find the last REPLY).
+  # and leave /reply unable to find the last REPLY).
   LOG_CAP_BYTES="${CC_CODEX_TRIAGE_LOG_CAP_BYTES:-1048576}"
   if [[ -f "$LOG_FILE" ]]; then
     LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
