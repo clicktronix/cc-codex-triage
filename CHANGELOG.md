@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-09
+
+Driven by a field study of the plugin's first production runs (marqa + stokli:
+a 5-round plan loop, an 8-round review loop, and a plan thread that absorbed
+two unrelated tasks), plus two cross-agent reviews of the analysis.
+
+### Added
+
+- **`/debate`** — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user (CC commits to a position BEFORE dispatching, rebuts following the skill's anti-capitulation rules, ends in an honest synthesis that states residual disagreements instead of forcing consensus). New SKILL section "Debating Codex"; RED scenario `debate-capitulation.json` (verdict: INCONSISTENT — haiku under wrap-up pressure concedes the opponent's false premise; rules target exactly that).
+- **`/autoreview on|off|status`** — opt-in self-verification gate. A plugin Stop hook blocks the end of any turn with unverified code changes on the armed branch, routing Claude to `/review --thread review-<branch>`; blocking ends on APPROVE in that thread's log, on the round cap (default 3), or on `off`. Runaway-safe three layers deep: `stop_hook_active` re-entrancy flag, blocks-vs-cap counter, APPROVE verdict gate. The hook never calls Codex itself and fails open on any error.
+- **`/autoplan on|off|status`** — same gate for plan documents (`docs/plans/**`, `docs/PLANS/**`): a turn that changed plans can't finish until one `/plan` stress-test ran since arming (round-count based; plan verdicts are prose and deliberately not parsed).
+- **`--thread <name>`** on `/review` and `/plan` — per-task threads. SKILL routing now states the rule: one task = one thread (`review-<branch>`, `plan-<topic>`). Motivated by a production plan thread that mixed two features and paid every later round's resume re-feeding the first feature's history.
+- **Round counter** — the driver tracks `<thread>.rounds` (reset by `--new` and `/thread-new`); `/review`/`/plan` inject "this is round N — re-check your prior findings first and state how close this is to APPROVE/sound" from round 2 on. `/thread-list` now shows rounds and log size.
+- **Exhaustive-instances rule** in the shared review contract and all plan lenses: when Codex finds an instance of a problem class it must enumerate ALL sites of that class in the same round — not one per round. Paired with the new SKILL rule **"fix the neighborhood, not the cited line"** for the fixing side (RED scenario `fix-neighborhood.json`; synthetic small-fixture baseline unreproducible, production regime directly documented — 3 rounds burned on one invariant in the stokli run).
+- **gitignore hint** — on first thread creation in a repo where `.claude/codex-threads/` is not ignored, the driver warns once (marker-file suppressed) to add it to `.gitignore`. Both real consumer repos had 100KB+ of session logs sitting untracked.
+
+### Verified
+
+- Driver regression (fake codex): rounds counting, `--new` reset, oneshot still traceless (no `.rounds`, no state dir), gitignore-warn fires once and stays silent when ignored.
+- Stop hook, 9 synthetic cases: not-armed/clean/wrong-branch/`stop_hook_active`/APPROVE-gate/round-released all allow; armed+dirty and plan-changed block with correct round counters; cap reached allows with an explanatory stderr note; the verdict regex is not fooled by the contract line inside logged PROMPTs.
+- Eval-method note for the record: the first `fix-neighborhood` RED attempt was confounded by two parallel cells sharing one fixture file (one agent watched the other's edits appear and attributed them to "a linter"). Re-run with per-cell fixture copies. Lesson: isolate fixtures per cell, same as CWD isolation.
+
 ## [0.3.0] - 2026-06-08
 
 ### Changed (BREAKING)

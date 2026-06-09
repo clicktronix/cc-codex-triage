@@ -41,12 +41,17 @@ plugins/
     skills/codex-triage/SKILL.md      # when to invoke + Judge mode
     commands/                         # invoked as /cc-codex-triage:<name>
       ask.md                          # :ask
-      review.md                       # :review
-      plan.md                         # :plan
+      review.md                       # :review (--lens, --thread, round counter)
+      plan.md                         # :plan (--lens, --thread, round counter)
       reply.md                        # :reply
+      debate.md                       # :debate — CC vs Codex, user watches
+      autoreview.md                   # :autoreview — Stop-hook code gate
+      autoplan.md                     # :autoplan — Stop-hook plan gate
       thread.md                       # :thread <name>
       thread-list.md                  # :thread-list
       thread-new.md                   # :thread-new <name>
+    hooks/hooks.json                  # Stop hook wiring
+    hooks/stop-hook.sh                # self-verification gate (fail-open)
     scripts/codex-thread.sh           # bash driver — codex exec / exec resume
     skills/codex-triage/references/   # review/plan lens templates
   tests/scenarios/codex-triage/       # RED→GREEN eval scenarios

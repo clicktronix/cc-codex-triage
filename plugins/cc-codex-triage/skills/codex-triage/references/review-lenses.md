@@ -31,6 +31,11 @@ Decorations: (blocking) | (non-blocking) | (if-minor)
 
 Rules:
 - Cite file:line for every finding.
+- Exhaustive per class: when you find an instance of a problem class (broken
+  invariant, missing guard, unchecked path), search for ALL other sites of the
+  same class — sibling functions, parallel code paths, other ingress points —
+  and list every one in THIS round under the same finding. Do not dole out one
+  instance per round.
 - Skip nitpicks unless a file has no higher-severity finding.
 - Skip praise unless something is non-obviously well done.
 - Do NOT restate the diff. Do NOT edit files — report only.
@@ -109,7 +114,14 @@ Do not do a deep pass. Keep it to the top few findings or "no blockers found".
 ## Plan lenses
 
 Plan lenses do NOT use the Conventional Comments contract (that is for code).
-Each is a standalone INSTRUCTION for `/plan`.
+Each is a standalone INSTRUCTION for `/plan`. Append this line to every plan
+lens (same exhaustiveness rule as reviews):
+
+```
+When you find a gap of some class (e.g. an uncovered ingress path, a missing
+rollback step), enumerate ALL instances of that class in this round — do not
+surface one per round.
+```
 
 ### stress-test (default)
 

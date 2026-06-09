@@ -1,0 +1,28 @@
+{
+  "skills": ["codex-triage"],
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#addressing-findings--fix-the-neighborhood-not-the-cited-line",
+  "query": "Codex review of my branch returned one blocking finding:\n\n  issue (blocking): empty tool_call_id only validated for the first pending write\n\n  File: writes.py line 12 (`validate_batch`): the guard checks `batch[0].tool_call_id` only; a batch whose SECOND element has an empty id passes validation and reaches dispatch.\n  Recommendation: validate every element.\n\nwrites.py is a real file on disk. Fix the finding so I can send the branch back for re-review.",
+  "fixture_note": "writes.py (provided on disk to the test agent, NOT described in the query) contains THREE functions with the identical first-element-only validation pattern: validate_batch (the cited one), validate_retry_batch, validate_import_batch. The query must NOT mention the siblings — discovering them is exactly what the scenario tests.",
+  "baseline_failure": "Without the codex-triage 'fix the neighborhood' rule, the agent patches ONLY validate_batch (the cited site), leaving validate_retry_batch and validate_import_batch with the identical first-element-only bug — guaranteeing the next review round flags a sibling and the loop burns another full Codex dispatch.",
+  "expected_behavior": [
+    "Identifies the finding as a problem CLASS (first-element-only validation of tool_call_id), not a line defect",
+    "Searches the file for sibling sites of the same class and fixes all three functions",
+    "States in the wrap-up which sites were covered (cited + 2 siblings) so the re-review request reflects the full fix"
+  ],
+  "anti_expectation": [
+    "Does NOT rewrite unrelated code or refactor beyond the invariant in question",
+    "Does NOT silently change behaviour of call-sites that legitimately validate a single element by design"
+  ],
+  "baseline_observed": {
+    "date": "2026-06-09",
+    "method": "Synthetic: fresh subagents with real Read/Edit/Bash and a real writes.py fixture on disk (3 sibling functions, identical first-element-only pattern; query cites only validate_batch and does NOT mention siblings). First attempt was CONFOUNDED (both cells shared one fixture file and raced — one agent saw the other's edits as 'a linter'); rerun used isolated per-cell copies. Cells: sonnet+neutral, haiku+adversarial ('fix quickly').",
+    "runs_synthetic_isolated": [
+      { "model": "sonnet", "framing": "neutral", "red": false, "note": "Read the whole file, fixed all THREE validators unprompted, reported each." },
+      { "model": "haiku", "framing": "adversarial", "red": false, "note": "Even under 'fix quickly', fixed all three validators unprompted." }
+    ],
+    "runs_production_observed": [
+      { "source": "stokli/backend .claude/codex-threads/review.log rounds 6-8 (2026-06-08/09)", "red": true, "note": "Real multi-file codebase: ONE invariant (malformed tool_call_id guard) took 3 review rounds because each fix patched exactly the cited site — first element only (R6), then all elements but after a bypassing branch (R7), then correct ordering (R8). Each extra round = a full Codex dispatch." }
+    ],
+    "verdict": "SPLIT. Synthetic small-scale baseline is UNREPRODUCIBLE — when the siblings sit in the same 40-line file, both models fix them unprompted, so the rule adds nothing there. The REAL failure mode is cross-file / cross-call-chain neighborhoods at production scale, where it is directly documented (3 burned rounds). Keep the SKILL rule, scoped honestly to that regime; the lens-side exhaustive-instances rule targets the reviewer half of the same loop. Re-test later with a multi-file fixture if a synthetic RED is wanted."
+  }
+}

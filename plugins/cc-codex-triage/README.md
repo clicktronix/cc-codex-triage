@@ -5,23 +5,26 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 ## What it gives you
 
 - `/ask [--oneshot] <question>` — informational Q&A in the persistent `ask` thread (read-only sandbox). "How does X work here", "is there already a Y".
-- `/review [--lens <name>] [--oneshot] <paste>` — critique in the `review` thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing.
-- `/plan [--lens <name>] [--oneshot] <plan>` — stress-test in the `plan` thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
+- `/review [--lens <name>] [--thread <name>] [--oneshot] <paste>` — critique in a review thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing; injects a round counter so Codex states how close the diff is to APPROVE.
+- `/plan [--lens <name>] [--thread <name>] [--oneshot] <plan>` — stress-test in a plan thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
 - `/reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
+- `/debate [--rounds N] <question>` — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user, ending in an honest synthesis (residual disagreements stated, not papered over).
+- `/autoreview on|off|status` — arms a Stop hook: Claude Code cannot finish a turn with unverified code changes until a Codex review of them reaches APPROVE (or the round cap). Runaway-safe by three independent layers.
+- `/autoplan on|off|status` — same gate for plan documents: a turn that changed `docs/plans/**` can't finish until the plan has been stress-tested at least once.
 - `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
-- `/thread-list` — active threads + last-activity timestamps.
+- `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
-- Skill `codex-triage` documents routing, Judge-mode framing, and the `--oneshot` modifier.
+- Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, the fix-the-neighborhood rule, and the `--oneshot` modifier.
 
-Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept).
+Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: pass `--thread review-<branch>` when starting a new task instead of reusing a default thread that already holds a different one.
 
 ## How it differs from the alternatives
 
 | | This plugin | `hamelsmu/claude-review-loop` | `dementev-dev/adversarial-review` |
 |---|---|---|---|
 | Codex sessions | **Persistent via `exec resume`** | Fresh each time | Persistent via `exec resume` |
-| Round cap | **None — open-ended** | 1 | 5 (approve/revise) |
-| Purpose | **Iterative triage dialogue** | Multi-agent one-shot review | Approve/revise fix loop |
+| Round cap | **Open-ended (capped only in `/autoreview` gate)** | 1 | 5 (approve/revise) |
+| Purpose | **Iterative triage dialogue + opt-in self-verification gate** | Multi-agent one-shot review | Approve/revise fix loop |
 | Output | Markdown stream, raw | Consolidated Markdown file | JSON + Markdown + VERDICT literal |
 
 Use this when the conversation will iterate. Use `claude-review-loop` for a single comprehensive review. Use `adversarial-review` when you want a hard pass/fail gate after a bounded number of rounds.

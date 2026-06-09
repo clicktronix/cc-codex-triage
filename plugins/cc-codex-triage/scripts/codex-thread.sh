@@ -75,11 +75,20 @@ STATE_DIR=".claude/codex-threads"
 # to a temp path instead.
 ID_FILE="$STATE_DIR/${THREAD}.id"
 LOG_FILE="$STATE_DIR/${THREAD}.log"
+ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
   mkdir -p "$STATE_DIR"
   DIAG_FILE="$STATE_DIR/${THREAD}.last-error.jsonl"
+  # One-time hygiene nudge: thread state should never be committed. Warn once
+  # per repo (marker file suppresses repeats), only when inside a git repo.
+  if git -C . rev-parse --show-toplevel >/dev/null 2>&1 \
+     && ! git -C . check-ignore -q "$STATE_DIR/x" 2>/dev/null \
+     && [[ ! -f "$STATE_DIR/.gitignore-warned" ]]; then
+    echo "HINT: $STATE_DIR is not gitignored — add '.claude/codex-threads/' to .gitignore (these are transient session logs; a 'git add -A' would stage them)." >&2
+    touch "$STATE_DIR/.gitignore-warned"
+  fi
 fi
 OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
@@ -107,7 +116,7 @@ PROMPT="$(cat)"
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW; then
-  rm -f "$ID_FILE"
+  rm -f "$ID_FILE" "$ROUNDS_FILE"
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is
@@ -204,8 +213,13 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 
-# ── audit log (skipped for --oneshot to keep it traceless) ────────────────
+# ── round counter + audit log (skipped for --oneshot, traceless) ──────────
 if ! $ONESHOT; then
+  # Round = number of successful dispatches on this thread. Commands read
+  # <thread>.rounds to tell Codex "this is round N" (convergence signal).
+  ROUND=$(( $(cat "$ROUNDS_FILE" 2>/dev/null || echo 0) + 1 ))
+  echo "$ROUND" > "$ROUNDS_FILE"
+
   # Rotate BEFORE appending so the newest entry always lands in the current
   # .log (a post-append rotation would move the just-written entry to .log.1
   # and leave /reply unable to find the last REPLY).
@@ -217,7 +231,7 @@ if ! $ONESHOT; then
     fi
   fi
   {
-    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD"
+    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
     echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
     echo "---"

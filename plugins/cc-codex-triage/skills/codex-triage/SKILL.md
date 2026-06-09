@@ -7,7 +7,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 ## When to invoke
 
-- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/thread <name>`, `/thread-list`, `/thread-new`.
+- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/thread <name>`, `/thread-list`, `/thread-new`, `/autoreview`, `/autoplan`.
 - The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
 - A long-running investigation where the same Codex thread needs context across many Claude Code turns.
 
@@ -16,12 +16,16 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Intent | Command | Thread |
 |---|---|---|
 | Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
-| Critique of code / diff / PR / a third-party review | `/review [--lens]` | `review` |
-| Stress-test a plan or design | `/plan [--lens]` | `plan` |
+| Critique of code / diff / PR / a third-party review | `/review [--lens] [--thread]` | `review` or per-task |
+| Stress-test a plan or design | `/plan [--lens] [--thread]` | `plan` or per-task |
 | Reply back to something Codex said | `/reply` | the active thread |
+| Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
 | Anything else, isolated by topic | `/thread <name>` | `<name>` |
+| Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
+
+**One task = one thread.** Default thread names (`review`, `plan`) are conveniences for a single active task. Starting a NEW task while the default thread still holds a different one? Pass `--thread review-<branch>` / `--thread plan-<topic>`. A production run that mixed two features in one `plan` thread paid every later round's resume re-feeding the first feature's history, and the audit log needs manual slicing to see what was reviewed for which task.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
@@ -88,6 +92,35 @@ When the input is the user's own direct question with no third-party review, pas
 > **Status:** RED baseline run 2026-06-01 (`tests/scenarios/codex-triage/reply-tool-request.json`) — **did NOT reproduce** on the happy path. With a working tool call, both Sonnet and Haiku ran the command and pasted real output unprompted, and neither re-affirmed Codex's self-retracted claim. Kept as a brief reminder, not a strong rule. A narrow failure may remain when the tool call itself **fails** (lazy path = guess the output instead of debugging) — untested.
 
 When replying via `/reply`: do the tool work Codex asks for and paste the **verbatim** output (don't predict it); represent the user's position, not Codex's; reject a finding only with a concrete file:line; and don't re-affirm a claim Codex already walked back mid-message. Capable models do this anyway — it is spelled out for weak-model and tool-failure cases. Keep replies short (≤500 words).
+
+## Debating Codex — anti-capitulation rules
+
+> **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/debate-capitulation.json`) — **INCONSISTENT, narrow but real**. Sonnet+neutral holds a correct position unaided; Haiku under "wrap it up" pressure concedes the opponent's false premise ("you're right that RFC allows retry") and slides into common-ground-seeking, while still holding the core behaviour. These rules target that premise-level capitulation onset (the first stage of the 23.5–80.3% collapse measured in arXiv 2509.16533).
+
+When running `/debate`, you are a party with a position, not a moderator:
+
+- **Commit first.** Form and state your own position (with evidence) BEFORE sending the topic to Codex and before reading its reply. Show it to the user.
+- **Concede only on evidence.** You may change your stance on a point ONLY by naming the specific evidence (file:line, doc, measurement, counter-example) that changed your assessment. "That's a fair point" without named evidence is forbidden.
+- **Advance or sharpen.** Each round must add new evidence or sharpen the disagreement. Repeating the prior round's argument means the debate is done — move to synthesis.
+- **No unearned middle ground.** Do not split the difference to end the discussion. A compromise needs its own justification.
+- **Honest synthesis.** The final round lists: points of agreement, residual disagreements (stated plainly, not papered over), what changed whose mind and why, and a recommendation that admits uncertainty where it exists.
+
+## Addressing findings — fix the neighborhood, not the cited line
+
+> **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/fix-neighborhood.json`) — **SPLIT**. On a small single-file fixture both models fix sibling sites unprompted (synthetic baseline unreproducible). The rule's regime is **cross-file / cross-call-chain neighborhoods at production scale**, where the failure is directly documented: a real 8-round review loop spent 3 rounds on ONE invariant because each fix patched exactly the cited site (first element → all elements → correct ordering).
+
+When fixing a review finding, treat it as an instance of a **problem class**, not a line defect:
+
+1. Before patching, ask: *what invariant does this finding describe?*
+2. Search for every other site where that invariant applies — sibling functions, parallel code paths, other ingress points, the same check elsewhere in the call chain.
+3. Fix ALL of them in this round, and say which sites you covered in the re-review request.
+4. Check ordering/interaction: a guard added in the right place but after an earlier branch that bypasses it is not a fix.
+
+A fix that addresses only the cited line invites the next round to flag the sibling — every such round costs a full Codex dispatch.
+
+## Self-verification gates (`/autoreview`, `/autoplan`)
+
+When armed, a Stop hook blocks the end of a turn that left unverified work: `/autoreview` gates code changes until the per-branch review thread reaches **APPROVE** (or the round cap); `/autoplan` gates plan-document changes until one `/plan` stress-test has run since arming. The hook never calls Codex itself — when blocked, run the named `/review` / `/plan` command it points you to, address findings (fix the neighborhood), and finish the turn. Runaway-safe via three layers: `stop_hook_active` re-entrancy flag, per-arming round cap, and the verdict/round gate. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped.
 
 ## Common failure modes
 

@@ -16,7 +16,7 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 2. If no further text after the name → just drop the pointer:
 
    ```bash
-   rm -f ".claude/codex-threads/<NAME>.id"
+   rm -f ".claude/codex-threads/<NAME>.id" ".claude/codex-threads/<NAME>.rounds"
    echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
    ```
 

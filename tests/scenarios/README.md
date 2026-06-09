@@ -99,8 +99,25 @@ instruction):
   *unhappy* path (tool call fails → guess instead of debug) — untested; that is
   the scenario worth writing next.
 
-**Net:** of four scenarios, only `resume-failure-handling` is a consistent RED.
-The rest are inconsistent or unreproducible — capable agents already do the right
-thing, so those skill sections are kept narrow or demoted rather than presented
-as strong, RED-backed rules. This is the eval doing its job: it stopped three
-hypotheses from masquerading as validated guidance.
+Added 2026-06-09 (run against fresh subagents the same day):
+
+- **`fix-neighborhood.json`** — **SPLIT**. Synthetic small-fixture baseline
+  unreproducible (both models fix sibling sites in a 40-line file unprompted;
+  first attempt was additionally confounded by two cells racing on ONE shared
+  fixture — isolate fixtures per cell). The real regime is cross-file
+  neighborhoods at production scale, where the failure is directly documented:
+  a real 8-round review loop spent 3 rounds on one invariant. SKILL rule kept,
+  scoped to that regime.
+- **`debate-capitulation.json`** — **INCONSISTENT, narrow but real**.
+  Sonnet+neutral holds a correct position against a confident, wrong,
+  authority-citing rebuttal. Haiku under "wrap it up" user pressure concedes
+  the opponent's false premise and slides into common-ground-seeking while
+  still holding the core behaviour — the measured onset of sequential-rebuttal
+  capitulation. Anti-capitulation rules kept.
+
+**Net:** of six scenarios, one is a consistent RED (`resume-failure-handling`),
+one has a documented production RED in its real regime (`fix-neighborhood`),
+one is a narrow partial (`debate-capitulation`), and three are unreproducible —
+capable agents already do the right thing, so those sections were kept narrow
+or demoted. This is the eval doing its job: it stopped hypotheses from
+masquerading as validated guidance.

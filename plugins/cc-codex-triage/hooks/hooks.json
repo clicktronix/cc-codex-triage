@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/stop-hook.sh",
+            "timeout": 30,
+            "statusMessage": "cc-codex-triage: checking self-verification arming"
+          }
+        ]
+      }
+    ]
+  }
+}

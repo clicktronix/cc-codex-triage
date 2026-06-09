@@ -18,13 +18,15 @@ Lists threads under `.claude/codex-threads/` in the current repo.
      echo "No active threads in this repo."
      exit 0
    fi
-   printf '%-30s  %-40s  %s\n' THREAD SESSION_UUID LAST_ACTIVITY
+   printf '%-26s  %-38s  %-7s  %-9s  %s\n' THREAD SESSION_UUID ROUNDS LOG_SIZE LAST_ACTIVITY
    for f in "$STATE_DIR"/*.id; do
      [ -f "$f" ] || continue
      name="$(basename "$f" .id)"
      sid="$(cat "$f")"
+     rounds="$(cat "$STATE_DIR/$name.rounds" 2>/dev/null || echo 0)"
+     logsz="$(wc -c < "$STATE_DIR/$name.log" 2>/dev/null | tr -d ' ' || echo 0)"
      mtime="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null || stat -c '%y' "$f" 2>/dev/null | cut -d. -f1)"
-     printf '%-30s  %-40s  %s\n' "$name" "$sid" "$mtime"
+     printf '%-26s  %-38s  %-7s  %-9s  %s\n' "$name" "$sid" "$rounds" "${logsz:-0}" "$mtime"
    done
    ```
 
