@@ -120,7 +120,7 @@ A fix that addresses only the cited line invites the next round to flag the sibl
 
 ## Self-verification gates (`/autoreview`, `/autoplan`)
 
-When armed, a Stop hook blocks the end of a turn that left unverified work: `/autoreview` gates code changes until the per-branch review thread reaches **APPROVE** (or the round cap); `/autoplan` gates plan-document changes until one `/plan` stress-test has run since arming. The hook never calls Codex itself — when blocked, run the named `/review` / `/plan` command it points you to, address findings (fix the neighborhood), and finish the turn. Runaway-safe via three layers: `stop_hook_active` re-entrancy flag, per-arming round cap, and the verdict/round gate. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped.
+When armed, a Stop hook blocks the end of a turn that left unverified work: `/autoreview` gates code changes until the per-branch review thread reaches **APPROVE** (or the round cap); `/autoplan` gates plan-document changes until one `/plan` stress-test has run since arming. The hook never calls Codex itself — when blocked, run the named `/review` / `/plan` command it points you to, address findings (fix the neighborhood), and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the verdict/round gate is the success release, branch+dirty scoping keeps it out of unrelated turns. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped. Arm on a clean tree — pre-existing dirt counts as unverified.
 
 ## Common failure modes
 

@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-09
+
+Fixes from a post-release code review (subagent reviewer, live-tested under
+bash 3.2/5, jq present/absent). 3 Important hook-robustness gaps + a semantics
+decision, all reproduced before fixing.
+
+### Fixed
+
+- **Hook JSON injection.** A `"` in a branch name or lens value (legal in git refs; lens is model-written) broke the block JSON. `emit_block` now strips `"`/`\`/newlines from the reason.
+- **Malformed counters blocked instead of failing open.** Non-numeric `cap`/`blocks` in the armed file made bash `-ge` error out and fall through to *blocking* — the opposite of fail-open, with the cap layer dead. All counters are now numeric-validated; ANY malformed value allows (with a stderr re-arm hint).
+- **Unslugified fallback thread.** When `thread=` was missing from the armed file on a `feat/x` branch, the hook told Claude to use `--thread review-feat/x`, which the driver rejects — unsatisfiable APPROVE gate until cap. Fallback (and invalid `thread=` values) now slugify `/`→`-`.
+- **`/thread-new` dead zone in autoplan.** Release condition changed from `rounds > rounds_at_arming` to `rounds != rounds_at_arming`, so a counter reset followed by a fresh `/plan` run still releases the gate.
+- **Orphaned `.rounds`.** The driver no longer bumps the round counter when the thread failed to persist (no `.id`).
+- Verdict matcher also accepts the `Verdict: APPROVE` prefixed form (still standalone-line only — the contract line inside logged PROMPTs still cannot fake a verdict).
+
+### Changed
+
+- **`stop_hook_active` is no longer an unconditional allow.** Honoring it capped the gate at one block per user turn, silently breaking the advertised "blocks until APPROVE or cap" contract. The numeric-validated round cap is now the hard terminator (worst case: `cap` review dispatches per arming); docs updated to state the real semantics, including the "arm on a clean tree" warning (pre-existing dirt counts as unverified).
+- Manifests' descriptions now list `/debate`, `/autoreview`, `/autoplan`.
+
+### Added
+
+- `tests/hook-regression.sh` — 19-assertion committed regression suite for the Stop hook (the review's repro cases included: quote-in-branch JSON validity, malformed-counter fail-open, slugified fallback, contract-line-vs-verdict, autoplan reset release). Run: `bash tests/hook-regression.sh`.
+- Eval-method note: the suite initially failed 3 of its own cases — twice because the harness wrote its stderr capture file *inside* the test repo (dirtying the tree it was asserting clean), once because it armed autoplan with a snapshot the arming command could never produce. Test harnesses are subject to the same isolation rules as eval fixtures.
+
 ## [0.4.0] - 2026-06-09
 
 Driven by a field study of the plugin's first production runs (marqa + stokli:

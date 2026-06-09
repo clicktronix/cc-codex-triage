@@ -19,6 +19,7 @@
 # Storage (under .claude/codex-threads/ — git-ignore this directory):
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
+#   <thread>.rounds           successful-dispatch counter (reset by --new).
 #   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure.
 #
 # Exit codes:
@@ -215,10 +216,15 @@ fi
 
 # ── round counter + audit log (skipped for --oneshot, traceless) ──────────
 if ! $ONESHOT; then
-  # Round = number of successful dispatches on this thread. Commands read
-  # <thread>.rounds to tell Codex "this is round N" (convergence signal).
-  ROUND=$(( $(cat "$ROUNDS_FILE" 2>/dev/null || echo 0) + 1 ))
-  echo "$ROUND" > "$ROUNDS_FILE"
+  # Round = number of successful dispatches on this PERSISTED thread. Skip the
+  # bump when the thread failed to persist (no .id) — otherwise a never-resumed
+  # thread accumulates rounds invisible to /thread-list, which iterates *.id.
+  if [[ -s "$ID_FILE" ]]; then
+    ROUND=$(( $(cat "$ROUNDS_FILE" 2>/dev/null || echo 0) + 1 ))
+    echo "$ROUND" > "$ROUNDS_FILE"
+  else
+    ROUND=0
+  fi
 
   # Rotate BEFORE appending so the newest entry always lands in the current
   # .log (a post-append rotation would move the just-written entry to .log.1
