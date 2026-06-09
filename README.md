@@ -55,6 +55,7 @@ plugins/
     scripts/codex-thread.sh           # bash driver — codex exec / exec resume
     skills/codex-triage/references/   # review/plan lens templates
   tests/scenarios/codex-triage/       # RED→GREEN eval scenarios
+  tests/hook-regression.sh            # 19-assertion Stop-hook suite (bash tests/hook-regression.sh)
 CHANGELOG.md
 LICENSE                               # MIT
 ```

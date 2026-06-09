@@ -9,8 +9,8 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/plan [--lens <name>] [--thread <name>] [--oneshot] <plan>` — stress-test in a plan thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
 - `/reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
 - `/debate [--rounds N] <question>` — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user, ending in an honest synthesis (residual disagreements stated, not papered over).
-- `/autoreview on|off|status` — arms a Stop hook: Claude Code cannot finish a turn with unverified code changes until a Codex review of them reaches APPROVE (or the round cap). Runaway-safe by three independent layers.
-- `/autoplan on|off|status` — same gate for plan documents: a turn that changed `docs/plans/**` can't finish until the plan has been stress-tested at least once.
+- `/autoreview on|off|status` — arms a Stop hook: Claude Code cannot finish a turn with unverified code changes until a Codex review of them reaches APPROVE (or the round cap). Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the APPROVE gate is the success release, branch+dirty scoping keeps it out of unrelated turns. **Arm on a clean tree** — pre-existing dirt counts as unverified.
+- `/autoplan on|off|status` — same gate for plan documents: a turn that changed `docs/plans/**` can't finish until the plan has been stress-tested at least once. Same cap semantics.
 - `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
 - `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
