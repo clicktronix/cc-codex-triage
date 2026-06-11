@@ -35,7 +35,9 @@ Forwards a review request to a Codex review thread, creating it on first use and
 
 6. Exit code 4 (resume failed) → ask the user before `--new`, per skill. Exit code 5 / porcelain warning → surface the diff (Codex touched files).
 
-7. When addressing the findings afterwards, follow the skill's **"fix the neighborhood"** rule — fix every site of the flagged problem class, not just the cited line, and say which sites you covered in the next round's prompt.
+7. **Before applying anything, validate each finding against the code** — per the skill's **"validating inbound Codex findings"** rule. Read the cited site *and its consumers*, check for a documented reason the current code stands, confirm the suggested fix doesn't regress, and classify each finding valid / borderline / invalid / outdated. Apply only the valid ones; reject invalid/outdated ones via `/reply` with the concrete file:line that refutes them; surface borderline/architectural ones to the user. Do not apply a finding you believe is wrong just to release the `/autoreview` gate.
+
+8. When applying the **valid** findings, follow the skill's **"fix the neighborhood"** rule — fix every site of the flagged problem class, not just the cited line, and say which sites you covered in the next round's prompt.
 
 ## Notes
 

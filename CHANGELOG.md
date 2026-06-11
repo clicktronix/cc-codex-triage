@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **"Validating inbound Codex findings" rule** in the `codex-triage` skill, and a VERIFY/EVALUATE step in `/review` before fixes are applied. A Codex review reply is now treated as claims to verify against the code (read the cited site *and its consumers*, check for a documented reason the current code stands, confirm the suggested fix doesn't regress, classify valid/borderline/invalid/outdated) before applying — invalid findings get rejected via `/reply` with file:line. Explicitly forbids applying a finding you believe is wrong just to release the `/autoreview` APPROVE gate (the round cap, not compliance, is the escape hatch). Encodes the verify-before-apply principle inline so it no longer depends on an external skill (`superpowers:receiving-code-review`) being installed. RED scenario `tests/scenarios/codex-triage/inbound-finding-validation.json` (did-not-reproduce on strong models with in-context evidence; kept as a brief, self-containing reminder — see the scenario for the honest verdict).
+
 ## [0.4.2] - 2026-06-11
 
 ### Changed

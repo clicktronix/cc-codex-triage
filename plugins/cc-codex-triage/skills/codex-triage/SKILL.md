@@ -105,6 +105,26 @@ When running `/debate`, you are a party with a position, not a moderator:
 - **No unearned middle ground.** Do not split the difference to end the discussion. A compromise needs its own justification.
 - **Honest synthesis.** The final round lists: points of agreement, residual disagreements (stated plainly, not papered over), what changed whose mind and why, and a recommendation that admits uncertainty where it exists.
 
+## Validating inbound Codex findings — verify before you apply
+
+> **Status:** RED run 2026-06-11 (`tests/scenarios/codex-triage/inbound-finding-validation.json`) — **did NOT reproduce** on strong models when the refuting evidence is in-context: both cells (neutral, and under APPROVE-gate + "тороплюсь" pressure) traced a wrong-in-context CRITICAL to the code, refused to merge the regression Codex's fix would introduce, and pushed back with file:line. Kept as a brief reminder for two reasons: (1) both agents justified verifying by citing `superpowers:receiving-code-review` **by name** — a skill most plugin users don't have installed, so the right behaviour was depending on a dependency the plugin doesn't ship; this section encodes the principle inline. (2) The test handed over the refuting code; the untested real failure is laziness about *going to read the files* when a finding looks plausible and the gate/user push for speed.
+
+A Codex `/review` reply is a set of **claims to evaluate**, not orders to execute. Codex ran with `-C <repo>` but it saw the scope you sent and reasoned from the diff — it does **not** have the intent, the surrounding render/call path, or the reasons behind the current code. Treat every finding as "defensible until checked against the code."
+
+Before applying ANY finding:
+
+1. **Read the cited site and its consumers** — not just the line Codex quoted. The bug it describes often lives in how the value is *used* (a "stale field leaks" claim is false if the consumer gates on a different field).
+2. **Check for a reason the current code is the way it is** — a comment, a named bug/issue, a test that pins the behaviour. Codex can't see why; you can.
+3. **Check the suggested fix doesn't regress** — a "fix" that resets/widens/reorders can reintroduce exactly what the current code guards against.
+4. **Classify:** valid (code+evidence back it) / borderline (style or judgement) / invalid (refuted by code) / outdated (was true, code moved on).
+5. **Then act:** apply valid findings (and fix the neighborhood, below); reject invalid/outdated ones via `/reply` with the concrete file:line that refutes them; surface borderline ones — and anything that conflicts with a deliberate architectural decision — to the user rather than silently complying.
+
+**If you can't verify** a finding without something you don't have (a runtime trace, a missing file, prod data), say so — "I can't confirm this without X; investigate, ask, or apply on your judgement?" — instead of applying on faith.
+
+**The `/autoreview` APPROVE gate is not a reason to comply.** The gate releases on APPROVE *or* the round cap; an evidence-backed rejection is a legitimate way to resolve a round. Never apply a finding you believe is wrong just to make the gate release — that ships a regression to satisfy a counter. If Codex holds a finding you've refuted with file:line, escalate to the user (lower the gate, accept the cap), don't rubber-stamp it.
+
+This is the inbound mirror of Judge-mode: there you tell Codex not to take a third party's claims at face value; here you don't take Codex's.
+
 ## Addressing findings — fix the neighborhood, not the cited line
 
 > **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/fix-neighborhood.json`) — **SPLIT**. On a small single-file fixture both models fix sibling sites unprompted (synthetic baseline unreproducible). The rule's regime is **cross-file / cross-call-chain neighborhoods at production scale**, where the failure is directly documented: a real 8-round review loop spent 3 rounds on ONE invariant because each fix patched exactly the cited site (first element → all elements → correct ordering).
@@ -131,6 +151,7 @@ Arming reviews existing work first, then gates future turns. `/autoreview on`: i
 | Cross-thread contamination via `--last` | The saved `<name>.id` is missing or invalid | The driver falls back to a fresh exec, NOT to `codex exec resume --last`. `--last` would bind the named thread to whatever was most recently touched in `~/.codex/sessions/`. |
 | Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch (filtering its own state dir) and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. **Limitation:** porcelain detects status *transitions* only — if a file was already dirty and Codex changes it further, the status line is unchanged and the guard stays silent. Commit/stash WIP first for full protection. |
 | Sycophantic capitulation on paste | A third-party review is pasted as "fix this" rather than "evaluate this" | Apply Judge-mode framing above. |
+| Applying a wrong Codex finding to release the gate | `/autoreview` armed, Codex returns a plausible-but-wrong-in-context CRITICAL, user/gate push for speed | Validate against the code first (read the consumers, not just the cited line); reject with file:line via `/reply`; the gate's round cap, not compliance, is the escape hatch. |
 | Guessing instead of running, when a tool call fails | `/reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
 | Wrong intent → wrong sandbox | Using `/review` for an informational question (or vice versa) | Route per the table above. `/ask` is read-only and informational; `/review` is adversarial. |
 
@@ -147,4 +168,5 @@ Before reporting the triage as done:
 - [ ] If the driver warned about a porcelain diff, the diff was surfaced before continuing.
 - [ ] If the driver exited with code 4 (resume failed), the user was asked whether to `--new` — not auto-resumed.
 - [ ] If the input was a third-party review, the wrapped prompt to Codex was constructed using the Judge-mode template above, not as a rebuttal.
+- [ ] If Codex returned review findings, each was validated against the code before applying — invalid/outdated ones rejected via `/reply` with file:line, not applied to release the gate.
 - [ ] If replying via `/reply` and Codex requested tool work that failed, the failure was reported honestly — not papered over with a guessed result.

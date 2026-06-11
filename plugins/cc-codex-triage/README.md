@@ -14,7 +14,7 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
 - `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
-- Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, the fix-the-neighborhood rule, and the `--oneshot` modifier.
+- Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, validating inbound Codex findings (verify before you apply — don't rubber-stamp to release the gate), the fix-the-neighborhood rule, and the `--oneshot` modifier.
 
 Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: pass `--thread review-<branch>` when starting a new task instead of reusing a default thread that already holds a different one.
 
