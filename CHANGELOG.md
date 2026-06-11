@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-11
+
+### Changed
+
+- **`/autoreview on` and `/autoplan on` now review/stress-test existing work immediately.** Previously arming only set the gate, so already-implemented changes sat unreviewed until the next turn-end and users ran `/review` by hand. Arming now checks the tree: if the branch is already dirty (code for autoreview, `docs/plans|PLANS` for autoplan) it runs the review/stress-test right away on the per-branch thread, then keeps gating future turns. Clean tree → no-op, gate armed for future changes. Removes the manual first `/review`.
+
 ## [0.4.1] - 2026-06-09
 
 Fixes from a post-release code review (subagent reviewer, live-tested under

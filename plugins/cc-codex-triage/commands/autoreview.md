@@ -1,5 +1,5 @@
 ---
-description: Arm or disarm the self-verification loop — when armed, Claude Code cannot finish a turn with unverified code changes until a Codex review of them reaches APPROVE (or the round cap).
+description: Arm or disarm the self-verification loop. Arming immediately reviews any work already on the branch, then blocks future turn-ends with unverified code changes until a Codex review reaches APPROVE (or the round cap).
 argument-hint: "on [--lens <name>] [--cap N] | off | status"
 allowed-tools: Bash
 disable-model-invocation: true
@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /autoreview
 
-Arms a Stop hook that blocks the end of every turn while there are uncommitted/unreviewed code changes on the current branch, instructing Claude to run `/review --thread review-<branch>` and address blocking findings. Blocking ends when the review thread's last verdict is **APPROVE**, when the round cap is hit (each block consumes one of `cap` rounds, within or across turns), or on `/autoreview off`.
+Two parts: (1) **on arming, if the branch already has code changes, run the review immediately** — so existing work gets reviewed right away without you typing `/review`; (2) arms a Stop hook that blocks the end of every future turn while there are uncommitted/unreviewed code changes on the current branch, instructing Claude to run `/review --thread review-<branch>` and address blocking findings. Blocking ends when the review thread's last verdict is **APPROVE**, when the round cap is hit (each block consumes one of `cap` rounds, within or across turns), or on `/autoreview off`.
 
 Runaway-safe: the per-arming round cap is the hard terminator (counters are numeric-validated; malformed state fails OPEN), the APPROVE gate is the success release, and branch/dirty scoping keeps the gate out of unrelated work. The hook itself never calls Codex — it only routes you to the normal `/review` flow, so the worst case costs `cap` review dispatches per arming.
 
@@ -17,7 +17,7 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
 
 1. Parse `$ARGUMENTS`: first token is `on` (default if flags/empty follow), `off`, or `status`. For `on`, optional `--lens <name>` (default `correctness`) and `--cap N` (default 3, max 5).
 
-2. `on` — write the armed file (per-branch thread per the skill's one-task-one-thread rule):
+2. `on` — write the armed file (per-branch thread per the skill's one-task-one-thread rule), and capture whether the branch is already dirty:
 
    ```bash
    STATE_DIR=".claude/codex-threads"; mkdir -p "$STATE_DIR"
@@ -26,13 +26,19 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" > "$STATE_DIR/autoreview.armed"
    echo "autoreview armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
+   # Is there already work to review on this branch?
+   git status --porcelain -uall | grep -vF '.claude/codex-threads/' | grep -q . \
+     && echo "DIRTY: existing changes present — reviewing now" \
+     || echo "CLEAN: nothing to review yet; gate will engage when you make changes"
    ```
 
-3. `off` — `rm -f .claude/codex-threads/autoreview.armed` and confirm.
+3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Run `/review --thread <THREAD> --lens <LENS>` right now on the current changes (following the `/review` command's own steps: round header, lens contract, verbatim output), show Codex's findings, and address blocking ones per the skill's fix-the-neighborhood rule. This is the part that removes the manual `/review` step. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
 
-4. `status` — cat the armed file (or "not armed"), plus the target thread's last verdict if its log exists.
+4. `off` — `rm -f .claude/codex-threads/autoreview.armed` and confirm.
 
-5. Tell the user: the gate engages at the end of each turn with code changes; it releases on APPROVE, on cap, or on `off`. The hook requires the plugin's hooks to be loaded (restart or `/reload-plugins` after install).
+5. `status` — cat the armed file (or "not armed"), plus the target thread's last verdict if its log exists.
+
+6. Tell the user: existing work was just reviewed (if any); from now on the gate engages at the end of each turn with code changes and releases on APPROVE, on cap, or on `off`. The hook requires the plugin's hooks to be loaded (restart or `/reload-plugins` after install).
 
 ## Notes
 

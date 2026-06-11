@@ -1,5 +1,5 @@
 ---
-description: Arm or disarm the plan-verification gate — when armed, Claude Code cannot finish a turn that changed plan documents until the updated plan has been stress-tested via /plan at least once.
+description: Arm or disarm the plan-verification gate. Arming immediately stress-tests any plan document already changed on the branch, then blocks future turn-ends that change plan docs until they have been stress-tested via /plan.
 argument-hint: "on [--lens <name>] [--cap N] | off | status"
 allowed-tools: Bash
 disable-model-invocation: true
@@ -25,13 +25,18 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nrounds_at_arming=%s\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$ROUNDS" > "$STATE_DIR/autoplan.armed"
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
+   # Already-changed plan docs to stress-test now?
+   git status --porcelain -uall -- 'docs/plans' 'docs/PLANS' | grep -q . \
+     && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
-3. `off` — `rm -f .claude/codex-threads/autoplan.armed` and confirm.
+3. **`on` + changed plan docs → stress-test immediately.** Run `/plan --thread <THREAD> --lens <LENS>` now on the updated plan (per the `/plan` command's steps), show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `status` — cat the armed file (or "not armed").
+4. `off` — `rm -f .claude/codex-threads/autoplan.armed` and confirm.
 
-5. Tell the user how it releases: one `/plan` round on the target thread since arming, cap, or `off`. Requires plugin hooks loaded (restart or `/reload-plugins` after install).
+5. `status` — cat the armed file (or "not armed").
+
+6. Tell the user how it releases: one `/plan` round on the target thread since arming, cap, or `off`. Requires plugin hooks loaded (restart or `/reload-plugins` after install).
 
 ## Notes
 
