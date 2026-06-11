@@ -18,7 +18,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
 | Critique of code / diff / PR / a third-party review | `/review [--lens] [--thread]` | `review` or per-task |
 | Stress-test a plan or design | `/plan [--lens] [--thread]` | `plan` or per-task |
-| Reply back to something Codex said | `/reply` | the active thread |
+| Reply back to something Codex said | `/reply [thread]` | named thread, default `review` |
 | Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
 | Anything else, isolated by topic | `/thread <name>` | `<name>` |
 | Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
@@ -41,17 +41,27 @@ List with `/thread-list`. Force-reset (drop saved UUID, next dispatch starts fre
 
 The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral` and writes **no** `.id`, `.log`, or rollout — a true throwaway.
 
+## The driver — how every dispatch actually runs
+
+All commands shell out to the bundled driver. When you need to dispatch without a command body in context (e.g. the autoreview gate pointed you here, or the user asked in prose), call it directly:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing] <<< "$PROMPT"
+```
+
+The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread. The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.
+
 ## Codex is an agent, not an LLM endpoint
 
 Codex CLI runs with `-C <repo>` and a sandbox. It reads files, runs `git diff`/`git log`, greps, and runs tests **on its own**. Do not stuff project context (CLAUDE.md, file contents, full diffs) into the prompt — Codex fetches what it needs. The only things it does NOT have are: the **intent** (what you were trying to do), the **scope** (what to look at), and your **specific focus**. Send those; let Codex gather the rest.
 
 ## Review and plan lenses
 
-`/review` and `/plan` accept a `--lens` to focus the review and pick the report format. The lens templates live in `references/review-lenses.md` — read that file, pick the block matching the `--lens` argument (or the default), and substitute it into the Codex prompt. They are canned prompts, not behavioural rules.
+`/review` and `/plan` accept a `--lens` to focus the review and pick the report format. The lens templates live at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` — read that file, pick the block matching the `--lens` argument (or the default), and substitute it into the Codex prompt. They are canned prompts, not behavioural rules.
 
 ## Judge-mode framing — load-bearing rule
 
-> **Status:** RED baseline reproduced 2026-05-31 (see `tests/scenarios/codex-triage/judge-mode-paste.json`). Verdict: **INCONSISTENT**. Both Sonnet and Haiku already construct side-by-side framing on their own. The actual failure that survives without this skill is narrower: Sonnet under neutral framing tacks on *"provide a corrected implementation that addresses the valid issues"* — turning Codex into a fix-applier instead of a judge. **That** is what this rule prevents.
+> **Status:** RED baseline reproduced 2026-05-31 (see `tests/scenarios/codex-triage/judge-mode-paste.json` — scenario paths here and below live in the plugin's source repo, not in the installed plugin). Verdict: **INCONSISTENT**. Both Sonnet and Haiku already construct side-by-side framing on their own. The actual failure that survives without this skill is narrower: Sonnet under neutral framing tacks on *"provide a corrected implementation that addresses the valid issues"* — turning Codex into a fix-applier instead of a judge. **That** is what this rule prevents.
 
 When the user's input to `/review` (or `/thread`) contains **another agent's review or critique**, Codex's job is to **classify** the findings — not to apply fixes per them. The fix decision is the user's, after they see the classification.
 
@@ -140,7 +150,7 @@ A fix that addresses only the cited line invites the next round to flag the sibl
 
 ## Self-verification gates (`/autoreview`, `/autoplan`)
 
-Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch is already dirty, run `/review` on it immediately (no manual step); then a Stop hook blocks the end of every future turn with unverified code changes until the per-branch review thread reaches **APPROVE** (or the round cap). `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until one `/plan` stress-test has run since arming. The hook never calls Codex itself — when blocked, run the named `/review` / `/plan` command it points you to, address findings (fix the neighborhood), and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the verdict/round gate is the success release, branch+dirty scoping keeps it out of unrelated turns. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped. Arm on a clean tree — pre-existing dirt counts as unverified.
+Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch is already dirty, run the review flow on it immediately (no manual step); then a Stop hook blocks the end of every future turn with unverified code changes until the per-branch review thread reaches an **APPROVE earned after arming** (the hook only parses verdicts from log content appended after an arming-time byte-offset snapshot — a stale APPROVE from a previous arming can never release, and `/thread-new`'s counter reset can neither fake nor mask a run) or the round cap. `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until the plan thread has seen one post-arming dispatch (normally your `/plan` stress-test — the gate detects thread-log growth, not command identity). The hook never calls Codex itself — when blocked, Read the command file its reason points you to (`<plugin>/commands/review.md` or `plan.md` — the commands are not model-invocable as slash commands) and follow its steps with the thread/lens from the reason, validate and address findings (fix the neighborhood), and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the success release is the post-arming verdict (autoreview) / post-arming dispatch on the plan thread (autoplan), branch+dirty scoping keeps it out of unrelated turns. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped. Arm on a clean tree — pre-existing dirt counts as unverified.
 
 ## Common failure modes
 

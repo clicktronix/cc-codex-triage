@@ -4,9 +4,122 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-12
+
+Fixes from a full plugin audit (two parallel audit subagents — shell scripts and
+structure-vs-spec — checked against current official plugin/hooks/skills docs,
+every Important+ finding re-verified against the code before fixing; one
+finding refuted in validation: `statusMessage` IS a documented hook field).
+
+### Fixed
+
+- **The self-verification gate was not satisfiable by the model alone.**
+  `/review` and `/plan` are `disable-model-invocation`, but the Stop hook's
+  block reason and `/autoreview`/`/autoplan` step 3 told Claude to "run
+  /review" — a command it cannot invoke and whose steps it cannot see. The
+  hook now derives the plugin root from its own location and points the block
+  reason at the command FILE to read and follow
+  (`<plugin>/commands/review.md`); arming steps reference
+  `${CLAUDE_PLUGIN_ROOT}/commands/*.md` the same way; the skill documents the
+  direct driver invocation (`scripts/codex-thread.sh`) and the absolute lens
+  template path, so the model-facing route is complete without making the
+  commands model-invocable (Codex dispatches stay user-pace, cost-bounded).
+- **Stale APPROVE from a previous arming released a new `/autoreview` gate.**
+  The verdict check wasn't tied to the arming moment, so re-arming on a branch
+  whose log ended in an old APPROVE released instantly — new code never
+  reviewed. Final mechanics (hardened across two rounds of Codex's own review
+  of this changeset, thread `review-v0.5.0-audit`): `autoreview.armed`
+  snapshots **`log_bytes_at_arming`** and the hook parses verdicts ONLY from
+  log content appended after that offset. The offset is self-sufficient — a
+  post-offset APPROVE proves a post-arming round — so no `.rounds`-based
+  check remains anywhere in the hook: that counter is reset by `/thread-new`,
+  letting a bare reset fake a run (and a post-reset run collide with a
+  snapshot). For the same reason **`/autoplan` now releases on log-size
+  change since arming** instead of a round-counter comparison (honest caveat,
+  documented in the command: any dispatch to the plan thread grows the log,
+  so strictly the gate guarantees a post-arming dispatch, not specifically a
+  `/plan` run). A missing `log_bytes_at_arming` (pre-0.5 armed file) is
+  treated as malformed state: fail open with a re-arm note — NOT a zero
+  offset, which would rescan the whole log and re-open the stale-APPROVE hole
+  on upgrade. Required numeric fields are read raw, so a present-but-EMPTY
+  `log_bytes_at_arming=`/`cap=`/`blocks=` is also malformed (fail open), not
+  a silent default that would bypass the same guard. The offset cut also
+  replaced the old 400-line tail window, so a single long reply can no
+  longer push its verdict out of the parser's scope. Re-arm after upgrading.
+- **A verdict literal inside a logged PROMPT could fake the gate's APPROVE.**
+  The verdict scanner grepped the whole log tail; PROMPT and REPLY bodies are
+  indented identically, so a `/reply` quoting "earlier you said: APPROVE"
+  released the gate. The scanner is now a section-aware parser that only reads
+  verdicts between the driver's column-0 `REPLY:` and `---` markers (the log
+  format contract is now documented in the driver).
+- **Leading-zero counters (`blocks=08`) fail-closed the gate forever.** bash
+  parses `08` as invalid octal in `[[ -ge ]]` and in the bump arithmetic, so
+  the cap never compared and the counter never persisted — unlimited blocking,
+  the exact inverse of the documented fail-open contract. `is_num` now rejects
+  leading zeros; malformed counters fail open.
+- **Unwritable state dir bypassed the cap into unlimited blocking.**
+  `bump_blocks` ignored persist failures while the caller emitted the block
+  unconditionally. A block is now emitted only when the incremented counter
+  was actually persisted; otherwise the hook fails open with a stderr note.
+- **Tab/CR in the armed lens value produced invalid block JSON.** The reason
+  sanitizer only stripped quote/backslash/newline. It now maps ALL control
+  characters to spaces, and lens values are validated against exact per-gate
+  allowlists (see below).
+- **Corrupted/CRLF `.rounds` killed the driver AFTER a successful paid
+  dispatch** (arithmetic error under `set -e` before the reply was printed or
+  logged). The counter is validated and garbage resets to 0 — including
+  leading-zero values (`08`), which bash arithmetic parses as invalid octal;
+  the first validation pass used `^[0-9]+$` and Codex's review caught that it
+  re-admitted the exact octal trap fixed in the hook. Same fix for
+  `CC_CODEX_TRIAGE_LOG_CAP_BYTES`.
+- **`--new --require-existing` destroyed the thread it then refused to use**
+  (`rm` ran before the check). The combination is now refused up front as
+  mutually exclusive.
+- **UUID extraction silently broke on whitespace in codex JSON output.** The
+  awk used fixed substr offsets valid only for fully compact JSON while its
+  regex pretended to tolerate spaces. Now a two-step match-then-strip with no
+  offsets; a `"thread_id": "..."` (space after colon) persists correctly.
+- **cwd drift split thread state.** State paths are repo-relative but the Bash
+  tool's cwd persists across calls; dispatching from a subdirectory created a
+  second `.claude/codex-threads/` the Stop hook never saw. Driver and hook now
+  anchor to `CLAUDE_PROJECT_DIR`/git toplevel before touching state — and so
+  do all model-facing bash snippets in the command files (arming, off/status,
+  round-counter reads, `/reply` thread detection, `/thread-list`,
+  `/thread-new`), which Codex's review flagged as the remaining unanchored
+  ingress points of the same class.
+- **The hook's lens check is now an exact allowlist per gate** (review and
+  plan lens sets), not a character-class filter — a printable-but-unknown
+  lens in a corrupted armed file falls back to the gate default instead of
+  routing the model to an invalid `--lens` invocation.
+- **Branch-to-thread slugs now map every character outside the driver's
+  `[a-zA-Z0-9_.-]` alphabet to `-`**, not just `/` — git allows `+`, `#`,
+  `@` etc. in branch names, and the old slug produced thread names the driver
+  rejects, making the gate's requested route unsatisfiable until cap. One
+  shared rule in the hook fallback and both arming snippets.
+- **A mistyped flag (`--oneshto`) silently became a thread name** and burned a
+  dispatch. Unknown `-*` arguments are now rejected.
+- A transient `git status` failure (e.g. index.lock) no longer masquerades as
+  a clean porcelain — the mutation guard skips the comparison (instead of
+  false-positiving, fatal under `CC_CODEX_TRIAGE_STRICT=1`), and the strict
+  exit 5 now happens AFTER the audit log append so the suspicious exchange is
+  logged. Non-numeric `CC_CODEX_TRIAGE_LOG_CAP_BYTES` falls back to the
+  default instead of disabling rotation. Detached HEAD (`branch=HEAD`) no
+  longer matches an armed gate.
+- Docs/manifest hygiene: root README caught up to 0.4.x (command list, repo
+  layout, round-cap claim); codex CLI floor corrected to the verified 0.137.0;
+  `/ask` steps reordered (compose prompt before dispatch); two scenario
+  `tests_reference` anchors fixed; `/reply` default-thread routing synced
+  between SKILL table and command; `keywords` moved to plugin.json (with
+  `displayName` and `repository` added); LICENSE copied into the plugin dir;
+  documented the CC_CODEX_FLAGS no-spaces-in-values limitation and the
+  one-session-per-repo concurrency assumption.
+
 ### Added
 
 - **"Validating inbound Codex findings" rule** in the `codex-triage` skill, and a VERIFY/EVALUATE step in `/review` before fixes are applied. A Codex review reply is now treated as claims to verify against the code (read the cited site *and its consumers*, check for a documented reason the current code stands, confirm the suggested fix doesn't regress, classify valid/borderline/invalid/outdated) before applying — invalid findings get rejected via `/reply` with file:line. Explicitly forbids applying a finding you believe is wrong just to release the `/autoreview` APPROVE gate (the round cap, not compliance, is the escape hatch). Encodes the verify-before-apply principle inline so it no longer depends on an external skill (`superpowers:receiving-code-review`) being installed. RED scenario `tests/scenarios/codex-triage/inbound-finding-validation.json` (did-not-reproduce on strong models with in-context evidence; kept as a brief, self-containing reminder — see the scenario for the honest verdict).
+- **"The driver" section in the skill** — the direct `codex-thread.sh` invocation, exit codes, and command-file paths, so the model has an executable route when no command body is in context.
+- **`tests/driver-regression.sh`** — 23-assertion driver suite against a stubbed `codex` CLI (usage errors, UUID persistence, corrupted-state survival incl. the octal trap, whitespace-tolerant extraction, oneshot tracelessness, cwd anchoring, failure diagnostics).
+- Hook suite grown from 19 to 48 assertions; both halves of the fail-open contract are now asserted on every run (decision AND exit code), plus regressions for every gate bug above (stale-APPROVE offset cut, PROMPT spoof, octal counters, pre-0.5 armed files, present-but-empty required fields, bare-reset fake runs, lens allowlist fallback, branch-slug alphabet, read-only state dir, detached HEAD).
 
 ## [0.4.2] - 2026-06-11
 

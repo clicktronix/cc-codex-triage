@@ -15,14 +15,7 @@ This is the **informational** command — collaborative, not adversarial. For cr
 
 1. Parse `$ARGUMENTS`: if it starts with `--oneshot`, strip it and pass `--oneshot` to the driver. The rest is the question.
 
-2. Default the Codex sandbox to read-only — you are asking, not asking Codex to change anything. Respect a user-set `CC_CODEX_FLAGS`. Run via Bash (timeout 600000):
-
-   ```bash
-   CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
-     bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" ask [--oneshot] <<< "$QUESTION"
-   ```
-
-3. Prepend this one-line framing to `$QUESTION` so Codex answers rather than acts:
+2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts:
 
    ```
    Answer this question about the project. You may read files and run read-only
@@ -30,6 +23,13 @@ This is the **informational** command — collaborative, not adversarial. For cr
    code review — just answer.
 
    <the question>
+   ```
+
+3. Default the Codex sandbox to read-only — you are asking, not asking Codex to change anything. Respect a user-set `CC_CODEX_FLAGS`. Run via Bash (timeout 600000):
+
+   ```bash
+   CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" ask [--oneshot] <<< "$QUESTION"
    ```
 
 4. Show Codex's reply verbatim.

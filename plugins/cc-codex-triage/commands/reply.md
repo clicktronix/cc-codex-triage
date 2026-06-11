@@ -11,7 +11,7 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 
 ## Steps
 
-1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive. Replying only makes sense for a thread that already exists — the driver is invoked with `--require-existing` (step 4), which exits 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/ask`, `/review`, or `/plan`.
+1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists — thread state lives at the repo root, `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted), that is the target thread; the rest is the directive. Otherwise target `review` and treat all of `$ARGUMENTS` as the directive. Replying only makes sense for a thread that already exists — the driver is invoked with `--require-existing` (step 4), which exits 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/ask`, `/review`, or `/plan`.
 
 2. Recover Codex's last message: read the tail of `.claude/codex-threads/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 

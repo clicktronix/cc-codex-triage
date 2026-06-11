@@ -2,9 +2,9 @@
 
 Claude Code plugin for **persistent triage dialogue** with the OpenAI Codex CLI.
 
-Adds slash commands `/ask`, `/review`, `/plan`, `/reply`, `/thread` that talk to **named Codex threads** via `codex exec resume <UUID>` — Codex retains full conversation memory across Claude Code turns. Unlike `claude-review-loop` (one-shot) or `adversarial-review` (5-round approve/revise fix loop), this plugin is for **open-ended cross-agent triage**: paste, ask follow-ups, dig in, no round cap.
+Adds slash commands `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/autoreview`, `/autoplan`, `/thread`, `/thread-list`, `/thread-new` that talk to **named Codex threads** via `codex exec resume <UUID>` — Codex retains full conversation memory across Claude Code turns. Unlike `claude-review-loop` (one-shot) or `adversarial-review` (5-round approve/revise fix loop), this plugin is for **open-ended cross-agent triage**: paste, ask follow-ups, dig in, no fixed round cap (only the opt-in `/autoreview`/`/autoplan` gates are capped).
 
-Plus a skill (`codex-triage`) that frames third-party reviews in **Judge mode** to suppress sycophantic capitulation (arXiv 2509.16533).
+Plus a skill (`codex-triage`) that frames third-party reviews in **Judge mode** to suppress sycophantic capitulation (arXiv 2509.16533), requires validating Codex's own findings against the code before applying them, and enforces fix-the-neighborhood on accepted findings.
 
 This is a **Claude Code** plugin and is one-directional: its commands call the `codex` CLI. Codex is the callee, not the host — there is no `.codex-plugin/` packaging by design.
 
@@ -54,8 +54,10 @@ plugins/
     hooks/stop-hook.sh                # self-verification gate (fail-open)
     scripts/codex-thread.sh           # bash driver — codex exec / exec resume
     skills/codex-triage/references/   # review/plan lens templates
-  tests/scenarios/codex-triage/       # RED→GREEN eval scenarios
-  tests/hook-regression.sh            # 19-assertion Stop-hook suite (bash tests/hook-regression.sh)
+tests/
+  scenarios/codex-triage/             # RED→GREEN eval scenarios
+  hook-regression.sh                  # Stop-hook suite (bash tests/hook-regression.sh)
+  driver-regression.sh                # driver suite with a stubbed codex CLI
 CHANGELOG.md
 LICENSE                               # MIT
 ```

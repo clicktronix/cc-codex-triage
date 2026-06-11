@@ -16,6 +16,7 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 2. If no further text after the name → just drop the pointer:
 
    ```bash
+   cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
    rm -f ".claude/codex-threads/<NAME>.id" ".claude/codex-threads/<NAME>.rounds"
    echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
    ```

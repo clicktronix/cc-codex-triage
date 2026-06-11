@@ -1,11 +1,24 @@
 {
   "name": "cc-codex-triage",
+  "displayName": "Codex Triage",
   "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review, /plan, /reply, /debate, /autoreview, /autoplan, /thread, /thread-list, /thread-new.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "author": {
     "name": "Clicktronix",
     "url": "https://github.com/clicktronix"
   },
   "homepage": "https://github.com/clicktronix/cc-codex-triage",
-  "license": "MIT"
+  "repository": "https://github.com/clicktronix/cc-codex-triage",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "codex-cli",
+    "cross-agent-review",
+    "triage",
+    "adversarial-review",
+    "judge-mode",
+    "anti-sycophancy",
+    "agent-skills",
+    "slash-commands"
+  ]
 }

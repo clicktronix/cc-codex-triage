@@ -46,6 +46,10 @@ while (( $# )); do
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
+    -*)
+      # A mistyped flag must not silently become a thread name (and burn a
+      # dispatch on it) — the thread-name regex would otherwise accept it.
+      echo "unknown flag: $1" >&2; exit 1 ;;
     *)
       if [[ -z "$THREAD" ]]; then THREAD="$1"; shift
       else echo "unknown arg: $1" >&2; exit 1
@@ -63,11 +67,28 @@ if $ONESHOT && $REQUIRE_EXISTING; then
   echo "--oneshot and --require-existing are mutually exclusive (oneshot keeps no thread to require)." >&2
   exit 1
 fi
+if $FORCE_NEW && $REQUIRE_EXISTING; then
+  # Order matters: --new deletes the saved UUID before --require-existing is
+  # checked — allowing the combo would destroy the very thread it then refuses
+  # to use. Refuse up front instead.
+  echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
+  exit 1
+fi
 
 command -v codex >/dev/null 2>&1 || {
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
   exit 2
 }
+
+# ── anchor cwd ────────────────────────────────────────────────────────────
+# State paths are repo-relative, but the Bash tool's cwd persists across calls
+# and can drift into subdirectories. Anchor to the project root so the same
+# thread name always resolves to the same state files — and so the Stop hook
+# (which anchors the same way) reads the directory the driver wrote.
+ANCHOR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+if [[ -n "$ANCHOR" && -d "$ANCHOR" ]]; then
+  cd "$ANCHOR"
+fi
 
 # ── paths ─────────────────────────────────────────────────────────────────
 STATE_DIR=".claude/codex-threads"
@@ -126,7 +147,16 @@ porcelain() {
   [[ -n "$REPO_ROOT" ]] || return 0
   # -uall lists untracked files individually; without it git collapses a new
   # untracked dir to "?? .claude/" and our own state writes leak past the filter.
-  git -C "$REPO_ROOT" status --porcelain -uall 2>/dev/null | grep -vF '.claude/codex-threads/' || true
+  local out
+  if ! out="$(git -C "$REPO_ROOT" status --porcelain -uall 2>/dev/null)"; then
+    # A transient git failure (e.g. another process holding index.lock) must
+    # not masquerade as an empty status — that would false-positive the guard
+    # (fatal under CC_CODEX_TRIAGE_STRICT=1). Emit a sentinel; the guard skips
+    # the comparison when either side carries it.
+    echo "__PORCELAIN_UNAVAILABLE__"
+    return 0
+  fi
+  printf '%s\n' "$out" | grep -vF '.claude/codex-threads/' || true
 }
 
 # ── tracked-file mutation guard (pre) ─────────────────────────────────────
@@ -182,11 +212,19 @@ else
     fail_with_diag 3 "codex exec FAILED (initial)."
   fi
   # Extract the session UUID from the JSONL stream. First event carrying a
-  # thread_id / session_id / conversation_id wins. Strict UUID shape only.
+  # thread_id / session_id / conversation_id wins. Two-step: match the whole
+  # key:value pair (whitespace-tolerant), then strip down to the value — no
+  # fixed substr offsets, so a formatting change in codex --json output (e.g.
+  # a space after the colon) cannot silently break thread persistence. The
+  # strict UUID shape check happens below in bash ($UUID_RE).
   SID="$(awk '
-    /"thread_id"/      { match($0, /"thread_id" *: *"[0-9a-f-]+"/);     if (RSTART) { print substr($0, RSTART+13, RLENGTH-14); exit } }
-    /"session_id"/     { match($0, /"session_id" *: *"[0-9a-f-]+"/);    if (RSTART) { print substr($0, RSTART+14, RLENGTH-15); exit } }
-    /"conversation_id"/{ match($0, /"conversation_id" *: *"[0-9a-f-]+"/); if (RSTART) { print substr($0, RSTART+19, RLENGTH-20); exit } }
+    match($0, /"(thread_id|session_id|conversation_id)"[ \t]*:[ \t]*"[0-9a-fA-F-]+"/) {
+      s = substr($0, RSTART, RLENGTH)
+      sub(/^.*"[ \t]*:[ \t]*"/, "", s)   # drop key, colon, opening quote
+      sub(/"$/, "", s)                   # drop closing quote
+      print s
+      exit
+    }
   ' "$JSONL_FILE")"
   if [[ -n "$SID" && "$SID" =~ $UUID_RE ]]; then
     echo "$SID" > "$ID_FILE"
@@ -203,14 +241,19 @@ fi
 # was already dirty before the dispatch and Codex changes its content further,
 # the porcelain line is unchanged and this guard will not fire. Commit/stash WIP
 # or use CC_CODEX_FLAGS="-s read-only" for stronger protection.
+STRICT_MUTATION_EXIT=false
 if [[ -n "$REPO_ROOT" ]]; then
   POST_PORCELAIN="$(porcelain)"
-  if [[ "$PRE_PORCELAIN" != "$POST_PORCELAIN" ]]; then
+  if [[ "$PRE_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* || "$POST_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* ]]; then
+    echo "WARN: git status was unavailable for the mutation guard (pre or post) — skipping the comparison this round." >&2
+  elif [[ "$PRE_PORCELAIN" != "$POST_PORCELAIN" ]]; then
     echo "WARN: tracked-file status changed during codex dispatch ($MODE)." >&2
     echo "Diff (pre vs post):" >&2
     diff <(echo "$PRE_PORCELAIN") <(echo "$POST_PORCELAIN") >&2 || true
     echo "Codex was likely run with a writable sandbox. Inspect the working tree before continuing." >&2
-    [[ "${CC_CODEX_TRIAGE_STRICT:-0}" == "1" ]] && exit 5
+    # Exit 5 is deferred until AFTER the audit log append below — the one
+    # exchange you most want in the log is the suspicious one.
+    if [[ "${CC_CODEX_TRIAGE_STRICT:-0}" == "1" ]]; then STRICT_MUTATION_EXIT=true; fi
   fi
 fi
 
@@ -220,7 +263,14 @@ if ! $ONESHOT; then
   # bump when the thread failed to persist (no .id) — otherwise a never-resumed
   # thread accumulates rounds invisible to /thread-list, which iterates *.id.
   if [[ -s "$ID_FILE" ]]; then
-    ROUND=$(( $(cat "$ROUNDS_FILE" 2>/dev/null || echo 0) + 1 ))
+    # Validate before arithmetic: a corrupted/CRLF .rounds would otherwise be
+    # an arithmetic error under set -e — killing the script AFTER the paid
+    # dispatch succeeded, losing the reply. Garbage resets the counter to 0.
+    # Leading zeros count as garbage too: bash arithmetic parses 08 as invalid
+    # octal — the exact trap the hook's is_num guards against.
+    PREV_ROUNDS="$(cat "$ROUNDS_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$PREV_ROUNDS" =~ ^(0|[1-9][0-9]*)$ ]] || PREV_ROUNDS=0
+    ROUND=$(( PREV_ROUNDS + 1 ))
     echo "$ROUND" > "$ROUNDS_FILE"
   else
     ROUND=0
@@ -230,18 +280,30 @@ if ! $ONESHOT; then
   # .log (a post-append rotation would move the just-written entry to .log.1
   # and leave /reply unable to find the last REPLY).
   LOG_CAP_BYTES="${CC_CODEX_TRIAGE_LOG_CAP_BYTES:-1048576}"
+  # A non-numeric (or leading-zero octal-trap) override would error inside the
+  # [[ -gt ]] below and silently disable rotation forever — fall back instead.
+  [[ "$LOG_CAP_BYTES" =~ ^(0|[1-9][0-9]*)$ ]] || LOG_CAP_BYTES=1048576
   if [[ -f "$LOG_FILE" ]]; then
     LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
     if [[ -n "$LOG_SIZE" && "$LOG_SIZE" -gt "$LOG_CAP_BYTES" ]]; then
       mv -f "$LOG_FILE" "${LOG_FILE}.1"
     fi
   fi
+  # Log format contract: the column-0 markers ([timestamp], PROMPT:, REPLY:,
+  # ---) are load-bearing — the Stop hook's verdict parser uses them to read
+  # verdicts from REPLY sections ONLY (a verdict literal inside a logged
+  # PROMPT must never release the autoreview gate). Body lines are always
+  # indented two spaces, so prompt/reply content cannot fake a marker.
   {
     echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
     echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
     echo "---"
   } >> "$LOG_FILE"
+fi
+
+if $STRICT_MUTATION_EXIT; then
+  exit 5
 fi
 
 cat "$OUT_FILE"

@@ -1,5 +1,5 @@
 ---
-description: List active named Codex threads in the current repo with their session UUIDs and last-activity timestamps.
+description: List active named Codex threads in the current repo with their session UUIDs, round counts, log sizes, and last-activity timestamps.
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -13,6 +13,7 @@ Lists threads under `.claude/codex-threads/` in the current repo.
 1. Run via Bash tool:
 
    ```bash
+   cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
    STATE_DIR=".claude/codex-threads"
    if [ ! -d "$STATE_DIR" ]; then
      echo "No active threads in this repo."

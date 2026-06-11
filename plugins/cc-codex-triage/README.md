@@ -8,9 +8,9 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/review [--lens <name>] [--thread <name>] [--oneshot] <paste>` — critique in a review thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing; injects a round counter so Codex states how close the diff is to APPROVE.
 - `/plan [--lens <name>] [--thread <name>] [--oneshot] <plan>` — stress-test in a plan thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
 - `/reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
-- `/debate [--rounds N] <question>` — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user, ending in an honest synthesis (residual disagreements stated, not papered over).
-- `/autoreview on|off|status` — on arming, if the branch already has changes it reviews them immediately (no manual `/review`); then a Stop hook blocks any future turn with unverified code changes until a Codex review reaches APPROVE (or the round cap). Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the APPROVE gate is the success release, branch+dirty scoping keeps it out of unrelated turns.
-- `/autoplan on|off|status` — same as `/autoreview` but for plan documents: on arming, if `docs/plans/**` already changed it stress-tests them immediately; then blocks any future turn that changes plan docs until one `/plan` stress-test has run. Same cap semantics.
+- `/debate [--rounds N] [--thread <name>] <question>` — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user, ending in an honest synthesis (residual disagreements stated, not papered over).
+- `/autoreview on|off|status` — on arming, if the branch already has changes it reviews them immediately (no manual `/review`); then a Stop hook blocks any future turn with unverified code changes until a Codex review reaches an APPROVE **earned after arming** (a stale APPROVE from a previous arming doesn't count), or the round cap. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the APPROVE gate is the success release, branch+dirty scoping keeps it out of unrelated turns.
+- `/autoplan on|off|status` — same as `/autoreview` but for plan documents: on arming, if `docs/plans/**` already changed it stress-tests them immediately; then blocks any future turn that changes plan docs until the plan thread has seen a post-arming dispatch (normally your `/plan` stress-test; the gate detects log growth, not command identity). Same cap semantics.
 - `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
 - `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
@@ -23,7 +23,7 @@ Every command keeps a persistent Codex thread by default; `--oneshot` makes any 
 | | This plugin | `hamelsmu/claude-review-loop` | `dementev-dev/adversarial-review` |
 |---|---|---|---|
 | Codex sessions | **Persistent via `exec resume`** | Fresh each time | Persistent via `exec resume` |
-| Round cap | **Open-ended (capped only in `/autoreview` gate)** | 1 | 5 (approve/revise) |
+| Round cap | **Open-ended (capped only in the `/autoreview`/`/autoplan` gates)** | 1 | 5 (approve/revise) |
 | Purpose | **Iterative triage dialogue + opt-in self-verification gate** | Multi-agent one-shot review | Approve/revise fix loop |
 | Output | Markdown stream, raw | Consolidated Markdown file | JSON + Markdown + VERDICT literal |
 
@@ -31,8 +31,9 @@ Use this when the conversation will iterate. Use `claude-review-loop` for a sing
 
 ## Prerequisites
 
-- `codex` CLI ≥ 0.132.0 (`npm install -g @openai/codex`).
-- `~/.codex/config.toml` with a model you're authorised for. Override per-call via `CC_CODEX_FLAGS="-m gpt-5.5 -s read-only"`.
+- `codex` CLI ≥ 0.137.0 (`npm install -g @openai/codex`) — the version the resume/`--ephemeral` semantics were verified on; older CLIs may work but are untested.
+- `~/.codex/config.toml` with a model you're authorised for. Override per-call via `CC_CODEX_FLAGS="-m gpt-5.5 -s read-only"`. Limitation: the flags string is split on whitespace, so individual flag values cannot contain spaces.
+- One Claude Code session per repo at a time: thread state under `.claude/codex-threads/` is not locked, so two concurrent sessions dispatching the same thread can race on the counters/log (last writer wins).
 
 ## Where state lives
 

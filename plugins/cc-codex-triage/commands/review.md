@@ -17,10 +17,10 @@ Forwards a review request to a Codex review thread, creating it on first use and
    - `--oneshot` → pass through to the driver (throwaway, no thread kept).
    The remainder is the user's paste/focus.
 
-2. Read the round counter: `N=$(cat .claude/codex-threads/<THREAD>.rounds 2>/dev/null || echo 0)`. This dispatch is round `N+1`.
+2. Read the round counter (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): `N=$(cat .claude/codex-threads/<THREAD>.rounds 2>/dev/null || echo 0)`. This dispatch is round `N+1`.
 
 3. Build the Codex prompt:
-   - Read `references/review-lenses.md` (in this plugin's skill dir), take the block for the chosen lens plus the shared output contract, and use it as the INSTRUCTION.
+   - Read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the block for the chosen lens plus the shared output contract, and use it as the INSTRUCTION.
    - State the SCOPE if the user implied one ("this branch", "uncommitted", "last commit") so Codex knows what to diff. If unstated, default to uncommitted + current branch vs its merge base.
    - If `N >= 1`, prepend the convergence header: `This is round N+1 of this review. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
    - **If the remainder is a third-party review/critique, apply Judge-mode framing per skill `codex-triage`** (classify, do not instruct Codex to apply fixes).
@@ -41,6 +41,6 @@ Forwards a review request to a Codex review thread, creating it on first use and
 
 ## Notes
 
-- Lens templates: `references/review-lenses.md`. No `--lens` = `correctness`.
+- Lens templates: `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. No `--lens` = `correctness`.
 - Thread state: `.claude/codex-threads/<thread>.{id,log,rounds}`. Force-reset: `/thread-new <thread>`.
 - For a one-off with no follow-up: `--oneshot`.
