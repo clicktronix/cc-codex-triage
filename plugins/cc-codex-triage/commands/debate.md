@@ -12,7 +12,7 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
 ## Steps
 
 1. Parse flags from the front of `$ARGUMENTS`:
-   - `--rounds N` → number of argument rounds before synthesis (default `3`, max `5`).
+   - `--rounds N` → maximum number of argument rounds before synthesis (default `5`, max `15`). This is a ceiling, not a target: the "advance or sharpen" rule below ends the debate early once a round stops adding new evidence, so a deep disagreement can use all 15 while a shallow one wraps in 2–3.
    - `--thread <name>` → thread name (default: `debate-<short-slug-of-topic>`; one debate = one thread, never reuse).
    The remainder is the question/decision under debate.
 
@@ -41,14 +41,45 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
    arguments. You may read the repo to ground them.
    ```
 
-4. Show Codex's reply verbatim. Then compose your rebuttal **following the skill's anti-capitulation rules** (concede only on named evidence; advance or sharpen; no unearned middle ground), show it to the user, and dispatch it to the same thread. Repeat until N rounds are spent — or stop early if a round adds nothing new (say so).
+4. Compose and dispatch your rebuttal **following the skill's anti-capitulation rules** (concede only on named evidence; advance or sharpen; no unearned middle ground) — but **argue, don't narrate those rules** (skill `codex-triage`): no "уступаю по правилу", "на этом не уступаю", "вопрос на спор", no untranslated jargon. Present the exchange in the **Presentation format** below. Repeat until N rounds are spent — or stop early if a round adds nothing new (say so).
 
-5. **Synthesis round.** Send: `Final round — synthesis. List: (1) points we agree on, (2) residual disagreements stated plainly, (3) what changed your mind, if anything, and on what evidence. Recommend a course of action, admitting uncertainty where it exists.` Show Codex's synthesis verbatim, then add YOUR closing synthesis: agreements, honest residual disagreements, what changed your mind and why, and your recommendation to the user. If you and Codex still disagree, present both options to the user — do not fake a winner.
+5. **Synthesis round.** Send: `Final round — synthesis. List: (1) points we agree on, (2) residual disagreements stated plainly, (3) what changed your mind, if anything, and on what evidence. Recommend a course of action, admitting uncertainty where it exists.` Then render the **Result** block (below) from both your and Codex's synthesis. If you and Codex still disagree, present both options to the user — do not fake a winner.
 
 6. Handle driver exit code 4 (resume failed) per the skill — ask before `--new` (a broken debate thread loses the whole exchange).
+
+## Presentation format
+
+The user reads the debate, not the rulebook. Render it as a clean, scannable transcript — one labelled, visually separated block per speaker per round — then a single Result block at the end. Argue the point; never narrate which anti-capitulation rule you are applying.
+
+Each round looks like this (the `---` rules are the "frames"):
+
+```
+---
+### Round N
+
+**Claude Code**
+
+<your argument — plain language in the conversation's language, evidence as inline file:line. NO rule-labels ("уступаю с называнием доказательства", "residual ... на котором не уступаю", "вопрос на спор"); NO untranslated English jargon (wedge/moat/residual/sequencing).>
+
+**Codex**
+
+<Codex's reply, VERBATIM — never paraphrase, trim, or summarise it; it may carry its own markdown, that's fine>
+---
+```
+
+Round 1 also shows your committed opening position (step 2) as the first **Claude Code** block. After the final round, close with:
+
+```
+### Result
+
+- **Agreed:** …
+- **Still open:** … (residual disagreements stated plainly — do not fake a winner)
+- **What moved, on what evidence:** …
+- **Recommendation:** … (if still split, both options for the user to decide)
+```
 
 ## Notes
 
 - Thread: `.claude/codex-threads/debate-<slug>.{id,log,rounds}` — the full exchange is auditable in the `.log`.
-- The debate costs ~(N+1) Codex dispatches; tell the user the round count before starting if the topic looks small enough for a plain `/ask`.
+- The debate costs up to ~(N+1) Codex dispatches (fewer if it ends early). At the higher round counts this adds up — for `--rounds 10`+ confirm the cost with the user before starting, and for a small topic suggest a plain `/ask` instead.
 - For "critique my code/plan" use `/review` / `/plan` — a debate is for genuine decision disagreements with defensible positions on both sides.

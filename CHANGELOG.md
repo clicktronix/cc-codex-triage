@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-14
+
+### Changed
+
+- **`/debate` round count raised: default `3`→`5`, max `5`→`15`.** The cap only ever bounded cost; the "advance or sharpen" rule already ends a debate early once a round adds no new evidence, so a higher ceiling lets a genuinely deep disagreement run longer without padding shallow ones. Cost note updated: for `--rounds 10`+, confirm with the user first.
+- **`/debate` output is now a clean per-speaker transcript, and the anti-capitulation rules no longer leak into the prose.** A real debate (marqa, thread `debate-product-functional-additions`) showed Claude narrating the rulebook out loud — "Уступаю с называнием доказательства:", "Держу и заостряю:", "residual-решение, на котором не уступаю — SEQUENCING плацдарма" — plus untranslated jargon (wedge/moat/residual/sequencing). Added an **"argue, don't narrate the rules"** bullet to the skill's Debating-Codex section (the rules govern reasoning, not wording; write in the conversation's language, no rule-labels, no untranslated jargon — Codex's verbatim reply exempt) and an explicit **Presentation format** to the `/debate` command: each round rendered as framed, visually separated **Claude Code** / **Codex** (verbatim) blocks, closing with a single **Result** block (agreed / still open / what moved / recommendation). RED→GREEN documented in `tests/scenarios/codex-triage/debate-presentation.json`.
+
 ## [0.5.0] - 2026-06-12
 
 Fixes from a full plugin audit (two parallel audit subagents — shell scripts and
