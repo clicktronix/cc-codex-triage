@@ -39,8 +39,12 @@ Rules:
 - Skip nitpicks unless a file has no higher-severity finding.
 - Skip praise unless something is non-obviously well done.
 - Do NOT restate the diff. Do NOT edit files — report only.
-- Last line is the verdict: APPROVE | REQUEST_CHANGES | COMMENT
-If you have a code-review skill loaded, use it. Honour AGENTS.md if present.
+- Last line is the verdict: APPROVE | REQUEST_CHANGES | COMMENT.
+  Use REQUEST_CHANGES only when at least one (blocking) finding remains. If the
+  open items are all (non-blocking)/(if-minor) — test hygiene, naming, optional
+  cleanups — use COMMENT (or APPROVE when nothing is left). Do not hold the
+  verdict on nitpicks.
+Honour AGENTS.md if present.
 ```
 
 ---
@@ -113,14 +117,22 @@ Do not do a deep pass. Keep it to the top few findings or "no blockers found".
 
 ## Plan lenses
 
-Plan lenses do NOT use the Conventional Comments contract (that is for code).
-Each is a standalone INSTRUCTION for `/plan`. Append this line to every plan
-lens (same exhaustiveness rule as reviews):
+Plan lenses do NOT use the Conventional Comments findings format (that is for
+code). Each is a standalone INSTRUCTION for `/plan`. Append this block to every
+plan lens (the exhaustiveness rule plus the same machine verdict reviews use, so
+`/autoplan` and tooling can detect "plan approved" instead of guessing from
+prose):
 
 ```
 When you find a gap of some class (e.g. an uncovered ingress path, a missing
 rollback step), enumerate ALL instances of that class in this round — do not
 surface one per round.
+
+End with a standalone verdict line: APPROVE | REQUEST_CHANGES | COMMENT.
+APPROVE = the plan is sound to execute as written; REQUEST_CHANGES = at least
+one blocking gap remains; COMMENT = only minor or optional concerns. Use
+REQUEST_CHANGES only for a genuinely blocking gap — do not hold APPROVE on
+nice-to-haves.
 ```
 
 ### stress-test (default)
