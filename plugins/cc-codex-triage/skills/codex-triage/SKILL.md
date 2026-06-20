@@ -7,7 +7,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 ## When to invoke
 
-- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/thread <name>`, `/thread-list`, `/thread-new`, `/autoreview`, `/autoplan`.
+- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/status`, `/thread <name>`, `/thread-list`, `/thread-new`, `/cleanup`, `/autoreview`, `/autoplan`.
 - The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
 - A long-running investigation where the same Codex thread needs context across many Claude Code turns.
 
@@ -16,16 +16,19 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Intent | Command | Thread |
 |---|---|---|
 | Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
-| Critique of code / diff / PR / a third-party review | `/review [--lens] [--thread]` | `review` or per-task |
-| Stress-test a plan or design | `/plan [--lens] [--thread]` | `plan` or per-task |
+| Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
+| Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
 | Reply back to something Codex said | `/reply [thread]` | named thread, default `review` |
 | Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
+| See plugin / thread / gate state in this repo | `/status` (read-only) | — |
 | Anything else, isolated by topic | `/thread <name>` | `<name>` |
 | Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
 
-**One task = one thread.** Default thread names (`review`, `plan`) are conveniences for a single active task. Starting a NEW task while the default thread still holds a different one? Pass `--thread review-<branch>` / `--thread plan-<topic>`. A production run that mixed two features in one `plan` thread paid every later round's resume re-feeding the first feature's history, and the audit log needs manual slicing to see what was reviewed for which task.
+**`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
+
+**One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`) when you are not on `main`/`master`, so different branches stay isolated automatically; the bare `review`/`plan` names are used only on the main branch or via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
