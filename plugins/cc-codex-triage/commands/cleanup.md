@@ -7,7 +7,7 @@ disable-model-invocation: true
 # /cleanup
 
 Surfaces stale state and, on confirmation, archives it. Never deletes — `--apply`
-moves items into a `.archive-<timestamp>/` subdir, so it is reversible.
+moves items into a `.archive-<timestamp>-*/` subdir, so it is reversible.
 
 ## Steps
 
@@ -19,7 +19,7 @@ moves items into a `.archive-<timestamp>/` subdir, so it is reversible.
 
 2. If it found stale/orphan items, summarize them for the user and ask whether to archive. Note that **generic threads (`review`/`plan`) are listed but never auto-archived** — they may be active; the user decides via `/thread-new` or a per-task `--thread`.
 
-3. **Only after the user agrees**, archive (non-destructive — moves to `.archive-<timestamp>/`):
+3. **Only after the user agrees**, archive (non-destructive — moves to `.archive-<timestamp>-*/`):
 
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.sh" --apply

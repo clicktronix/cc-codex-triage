@@ -85,7 +85,7 @@ if [ "$APPLY" = true ]; then
   # Unique dir (mktemp) so a second run in the same second can't reuse it; no
   # `mv -f` and an explicit name-clash skip so the "never deletes/overwrites"
   # contract holds; count only successful moves.
-  dest="$(mktemp -d "$STATE_DIR/.archive-XXXXXX")" || { echo "ERROR: could not create archive dir"; exit 1; }
+  dest="$(mktemp -d "$STATE_DIR/.archive-$(date +%Y%m%d-%H%M%S)-XXXXXX")" || { echo "ERROR: could not create archive dir"; exit 1; }
   moved=0
   for p in "${ARCHIVE[@]}"; do
     [ -e "$p" ] || continue

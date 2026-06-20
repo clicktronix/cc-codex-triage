@@ -37,7 +37,8 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # Already-changed plan docs to stress-test now? Locations honor
    # CC_CODEX_PLAN_PATHS (space-separated pathspecs; default = the two dirs).
    PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
-   git status --porcelain -uall -- $PLAN_PATHS | grep -q . \
+   # set -f: pass the pathspecs to git unexpanded (no shell globbing first).
+   ( set -f; git status --porcelain -uall -- $PLAN_PATHS | grep -q . ) \
      && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
