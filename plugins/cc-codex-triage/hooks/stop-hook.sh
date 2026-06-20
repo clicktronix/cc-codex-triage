@@ -124,7 +124,12 @@ dirty_code() {
 }
 
 dirty_plans() {
-  git status --porcelain -uall -- 'docs/plans' 'docs/PLANS' 2>/dev/null | grep -q .
+  # Plan-doc locations are configurable via CC_CODEX_PLAN_PATHS (space-separated
+  # pathspecs); defaults to the two conventional dirs. Word-splitting of the
+  # variable into separate pathspecs is intentional.
+  local paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+  # shellcheck disable=SC2086
+  git status --porcelain -uall -- $paths 2>/dev/null | grep -q .
 }
 
 last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.

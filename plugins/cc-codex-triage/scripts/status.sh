@@ -42,7 +42,9 @@ echo "  repo branch : $BRANCH"
 
 if $IN_GIT; then
   code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
-  plan_changes=$(git status --porcelain -uall -- 'docs/plans' 'docs/PLANS' 2>/dev/null | grep -c . | tr -d ' ')
+  plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+  # shellcheck disable=SC2086
+  plan_changes=$(git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ')
   echo "  working tree: ${code_changes:-0} code change(s), ${plan_changes:-0} plan-doc change(s)"
 fi
 
