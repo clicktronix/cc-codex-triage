@@ -13,7 +13,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 
 1. Parse flags from the front of `$ARGUMENTS`:
    - `--lens <name>` → one of: `correctness` (default), `security`, `performance`, `architecture`, `ux`, `quick`.
-   - `--thread <name>` → target thread. **Default: `review-<branch-slug>` when the branch is not `main`/`master`, else `review`.** `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` (same slug rule the hook uses). Per-task threads keep one task per thread; mixing tasks inflates every later resume.
+   - `--thread <name>` → target thread. **Default: `review-<branch-slug>`** (e.g. `review-main` on `main` — no main/master special-case; the bare `review` thread only via an explicit `--thread`). `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` — the SAME slug rule the hook and `/autoreview` use, so a manual review and the gate share one thread. Per-task threads keep one task per thread; mixing tasks inflates every later resume.
    - `--once` → a single dispatch, no iterate-loop (you decide after one round).
    - `--oneshot` → throwaway ephemeral run (no thread kept). Implies `--once`.
    - `--cap N` → max review rounds in the loop (default 5).

@@ -18,7 +18,7 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/cleanup [--apply]` — find stale/pre-0.5 armed gates and orphan thread logs; dry-run by default, `--apply` **archives** them (never deletes, reversible).
 - Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, validating inbound Codex findings (verify before you apply — don't rubber-stamp to release the gate), the fix-the-neighborhood rule, and the `--oneshot` modifier.
 
-Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: `/review` and `/plan` default to a branch-scoped thread (`review-<branch>` / `plan-<branch>`) when off the main branch, so different branches stay isolated automatically; pass `--thread <topic>` to split further.
+Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: `/review` and `/plan` default to a branch-scoped thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — no main special-case), so each branch and its matching gate stay isolated; pass `--thread <topic>` to split further, or `--thread review` for a shared one.
 
 ## How it differs from the alternatives
 

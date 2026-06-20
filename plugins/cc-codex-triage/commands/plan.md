@@ -13,7 +13,7 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
 
 1. Parse flags from the front of `$ARGUMENTS`:
    - `--lens <name>` → one of: `stress-test` (default), `pre-mortem`, `devils-advocate`, `alternatives`, `adr`.
-   - `--thread <name>` → target thread. **Default: `plan-<branch-slug>` when the branch is not `main`/`master`, else `plan`.** `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-`. Per-task threads keep one task per thread.
+   - `--thread <name>` → target thread. **Default: `plan-<branch-slug>`** (e.g. `plan-main` on `main` — no main/master special-case; the bare `plan` thread only via an explicit `--thread`). `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` — the same slug rule the hook and `/autoplan` use. Per-task threads keep one task per thread.
    - `--once` → a single stress-test pass, no iterate-loop.
    - `--oneshot` → throwaway ephemeral run. Implies `--once`.
    - `--cap N` → max rounds in the loop (default 5).

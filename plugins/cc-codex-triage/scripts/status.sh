@@ -121,8 +121,11 @@ for idf in "$STATE_DIR"/*.id; do
   n="$(basename "$idf" .id)"
   r="$(cat "$STATE_DIR/$n.rounds" 2>/dev/null || echo 0)"
   sz="$(wc -c < "$STATE_DIR/$n.log" 2>/dev/null | tr -d ' ')"
+  # Only review/plan threads run a verdict contract; ask/debate/plain threads do
+  # not, so don't mislabel a coincidental APPROVE-shaped last line as a verdict.
+  case "$n" in review*|plan*) v="$(last_verdict "$n")" ;; *) v="n/a" ;; esac
   printf '  %-30s rounds=%-3s size=%-8s last=%-16s verdict=%s\n' \
-    "$n" "$r" "${sz:-0}" "$(_mtime "$idf")" "$(last_verdict "$n")"
+    "$n" "$r" "${sz:-0}" "$(_mtime "$idf")" "$v"
 done
 [ "$any" = 0 ] && echo "  (none)"
 # Explicit success — the final test above is false when threads exist, which

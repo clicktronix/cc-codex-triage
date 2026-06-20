@@ -28,7 +28,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 **`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
 
-**One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`) when you are not on `main`/`master`, so different branches stay isolated automatically; the bare `review`/`plan` names are used only on the main branch or via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
+**One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — there is no main/master special-case) so each branch, and the matching `/autoreview` / `/autoplan` gate, stay on one isolated thread; the bare `review`/`plan` names are only via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
