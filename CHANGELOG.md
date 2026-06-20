@@ -4,6 +4,61 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-21
+
+Backlog from a usage audit of ~23 real review/plan threads across two repos,
+validated against the source with a Codex `/plan` stress-test.
+
+### Added
+
+- **`/status`** — one-screen, read-only view of the plugin's state in a repo:
+  current branch, dirty tree, armed `/autoreview` / `/autoplan` gates with
+  **stale-branch**, **pre-0.5** and **missing-target-thread** warnings, last
+  verdict per thread, gitignore status, and the Codex CLI version vs the
+  required minimum. Folds together state that used to need hand-reading
+  `.armed` / `.rounds` / `.log` + `git`.
+- **`/cleanup`** — finds stale/pre-0.5 armed gates, orphan thread logs (a
+  `.log` with no `.id`), and generic-name threads. Dry-run by default; `--apply`
+  **archives** (never deletes) into a reversible `.archive-<timestamp>/`.
+- **Plan lenses now emit a machine verdict** (`APPROVE | REQUEST_CHANGES |
+  COMMENT`), the same token reviews use — so `/autoplan` and tooling can detect
+  "plan approved" instead of guessing from prose.
+- **`CC_CODEX_PLAN_PATHS`** — configurable plan-doc locations for `/autoplan`
+  (space-separated pathspecs; default `docs/plans docs/PLANS`).
+
+### Changed
+
+- **`/review` and `/plan` iterate to APPROVE by default** (dispatch → address
+  blocking findings → re-review, until APPROVE or `--cap` rounds, default 5).
+  `--once` does a single pass; `--oneshot` stays ephemeral. ~89% of real review
+  threads were already multi-round, so the loop is now the default rather than a
+  separate gated command. A pasted third-party review (Judge-mode) always runs a
+  **single classification pass**, never a loop.
+- **Default threads are branch-scoped** — `review-<branch>` / `plan-<branch>`
+  when not on `main`/`master`; the bare `review`/`plan` names are used only on
+  the main branch or via explicit `--thread`. Plus a reuse guard that warns when
+  a thread already holds a different task.
+- **Verdict is gated on blocking findings only** — `REQUEST_CHANGES` requires at
+  least one `(blocking)` finding; nitpicks (test hygiene, naming) no longer hold
+  the verdict.
+- **Round numbers come from the driver header**, not hand-written prose — the
+  commands stopped injecting "round N" (which drifted from the driver's
+  `round=N`), and the **lens contract is sent only on the initial dispatch**
+  (the thread already retains it on resume).
+- **Untracked new files are explicitly pulled into review scope** (they are not
+  in `git diff HEAD` and previously fell out of the review).
+
+### Fixed
+
+- Dropped a dead boilerplate line ("If you have a code-review skill loaded…")
+  from the shared review contract.
+
+### Notes
+
+- Backlog items deferred to a focused follow-up: a structured `findings.jsonl`
+  ledger and the `/review --continue` / dispute-accept-defer flows built on it,
+  plus state-file locking. Tracked for a later release.
+
 ## [0.5.1] - 2026-06-14
 
 ### Changed

@@ -1,8 +1,8 @@
 {
   "name": "cc-codex-triage",
   "displayName": "Codex Triage",
-  "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review, /plan, /reply, /debate, /autoreview, /autoplan, /thread, /thread-list, /thread-new.",
-  "version": "0.5.1",
+  "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review, /plan, /reply, /debate, /status, /cleanup, /autoreview, /autoplan, /thread, /thread-list, /thread-new.",
+  "version": "0.6.0",
   "author": {
     "name": "Clicktronix",
     "url": "https://github.com/clicktronix"

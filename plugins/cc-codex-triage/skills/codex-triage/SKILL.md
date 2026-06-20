@@ -168,6 +168,7 @@ Arming reviews existing work first, then gates future turns. `/autoreview on`: i
 | Applying a wrong Codex finding to release the gate | `/autoreview` armed, Codex returns a plausible-but-wrong-in-context CRITICAL, user/gate push for speed | Validate against the code first (read the consumers, not just the cited line); reject with file:line via `/reply`; the gate's round cap, not compliance, is the escape hatch. |
 | Guessing instead of running, when a tool call fails | `/reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
 | Wrong intent → wrong sandbox | Using `/review` for an informational question (or vice versa) | Route per the table above. `/ask` is read-only and informational; `/review` is adversarial. |
+| Codex run stalled mid-investigation | A dispatch returned but produced no verdict / an incomplete reply (Codex was interrupted or ran long) | Do NOT restart the whole investigation. Resume the SAME thread asking it to report what it already concluded without re-running: `Your previous run stalled before a verdict. Do NOT restart — report the findings you already reached and give your verdict line.` The thread keeps its memory, so this recovers the work for one extra dispatch. |
 
 ## Prerequisites
 

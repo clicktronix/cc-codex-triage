@@ -5,8 +5,8 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 ## What it gives you
 
 - `/ask [--oneshot] <question>` — informational Q&A in the persistent `ask` thread (read-only sandbox). "How does X work here", "is there already a Y".
-- `/review [--lens <name>] [--thread <name>] [--oneshot] <paste>` — critique in a review thread. Lenses: correctness (default), security, performance, architecture, ux, quick. Auto-wraps third-party reviews in Judge-mode framing; injects a round counter so Codex states how close the diff is to APPROVE.
-- `/plan [--lens <name>] [--thread <name>] [--oneshot] <plan>` — stress-test in a plan thread. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr.
+- `/review [--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] <paste>` — critique in a review thread; **iterates to APPROVE by default** (dispatch → fix → re-review until APPROVE or `--cap` rounds), `--once` for a single pass. Lenses: correctness (default), security, performance, architecture, ux, quick. Default thread is branch-scoped (`review-<branch>`). A pasted third-party review is auto-wrapped in Judge-mode as a single classification pass (no loop).
+- `/plan [--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] <plan>` — stress-test in a plan thread; **iterates to APPROVE by default**. Lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr. Plan lenses now end in a machine verdict (`APPROVE | REQUEST_CHANGES | COMMENT`).
 - `/reply [thread] <directive>` — Claude Code replies back into an active thread (answer a question, run a requested tool action, push back on a finding).
 - `/debate [--rounds N] [--thread <name>] <question>` — structured multi-round disagreement between Claude Code and Codex on a decision, every exchange visible to the user, ending in an honest synthesis (residual disagreements stated, not papered over).
 - `/autoreview on|off|status` — on arming, if the branch already has changes it reviews them immediately (no manual `/review`); then a Stop hook blocks any future turn with unverified code changes until a Codex review reaches an APPROVE **earned after arming** (a stale APPROVE from a previous arming doesn't count), or the round cap. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the APPROVE gate is the success release, branch+dirty scoping keeps it out of unrelated turns.
@@ -14,9 +14,11 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/thread [--oneshot] <name> <message>` — arbitrary named threads (plain passthrough).
 - `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
+- `/status` — one-screen, read-only view: branch, dirty tree, armed gates (with stale-branch / pre-0.5 / missing-target warnings), last verdict per thread, gitignore status, and the Codex CLI version vs the required minimum.
+- `/cleanup [--apply]` — find stale/pre-0.5 armed gates and orphan thread logs; dry-run by default, `--apply` **archives** them (never deletes, reversible).
 - Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, validating inbound Codex findings (verify before you apply — don't rubber-stamp to release the gate), the fix-the-neighborhood rule, and the `--oneshot` modifier.
 
-Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: pass `--thread review-<branch>` when starting a new task instead of reusing a default thread that already holds a different one.
+Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: `/review` and `/plan` default to a branch-scoped thread (`review-<branch>` / `plan-<branch>`) when off the main branch, so different branches stay isolated automatically; pass `--thread <topic>` to split further.
 
 ## How it differs from the alternatives
 
