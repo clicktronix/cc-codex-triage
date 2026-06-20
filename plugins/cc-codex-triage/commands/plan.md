@@ -1,23 +1,26 @@
 ---
-description: Send a plan, design doc, or architecture question to a persistent Codex plan thread to stress-test it. Supports focus lenses and per-task threads.
-argument-hint: "[--lens <name>] [--thread <name>] [--oneshot] <plan or architecture question>"
+description: Send a plan, design doc, or architecture question to a persistent Codex plan thread to stress-test it. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
+argument-hint: "[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] <plan or architecture question>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
 
 # /plan
 
-Forwards a planning prompt to a Codex plan thread, creating it on first use and resuming on subsequent calls so Codex retains the full design context across turns ("here's the plan" → critique → you revise → Codex re-evaluates against its own prior critique).
+Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by default** — stress-test → revise the plan → re-stress — until the plan is sound (APPROVE) or a round cap. Codex retains the full design context across rounds.
 
 ## Steps
 
 1. Parse flags from the front of `$ARGUMENTS`:
    - `--lens <name>` → one of: `stress-test` (default), `pre-mortem`, `devils-advocate`, `alternatives`, `adr`.
-   - `--thread <name>` → target thread (default `plan`). **Planning a NEW task while `plan` already holds a different one? Use a per-task thread (`plan-<topic>`)** — a production run that mixed two features in one `plan` thread paid every later round's resume cost re-feeding the first feature's full history.
-   - `--oneshot` → pass through to the driver.
+   - `--thread <name>` → target thread. **Default: `plan-<branch-slug>` when the branch is not `main`/`master`, else `plan`.** `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-`. Per-task threads keep one task per thread.
+   - `--once` → a single stress-test pass, no iterate-loop.
+   - `--oneshot` → throwaway ephemeral run. Implies `--once`.
+   - `--cap N` → max rounds in the loop (default 5).
    The remainder is the plan text or a pointer to it (e.g. a `docs/plans/*.md` path Codex should read).
+   - **Reuse guard (#8):** if the chosen thread already holds a clearly different plan/artifact, warn the user and suggest a fresh `--thread plan-<topic>` — one task = one thread (a thread reused across artifacts pays to re-feed the old context every round and muddies round semantics).
 
-2. Decide **initial vs resume** (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): it is a **resume** if `.claude/codex-threads/<THREAD>.id` exists, otherwise **initial**. Do NOT hand-compute a round number into the prompt — the driver stamps `round=N` in the log header itself.
+2. Decide **initial vs resume**: it is a resume if `.claude/codex-threads/<THREAD>.id` exists (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted). Do NOT hand-compute a round number — the driver stamps `round=N` in the log header.
 
 3. Build the Codex prompt:
    - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the plan block for the chosen lens (plus the exhaustive-instances + verdict block), use it as the INSTRUCTION, and include the plan text (or tell Codex which file to read). **On a resume the thread already holds the lens instruction — do NOT re-paste it;** point Codex at the revised plan (which file to re-read / what changed) and send only the follow-up header.
@@ -29,12 +32,16 @@ Forwards a planning prompt to a Codex plan thread, creating it on first use and 
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] <<< "$PROMPT_BODY"
    ```
 
-5. Show Codex's reply verbatim.
+5. Show Codex's reply verbatim. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
 
-6. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
+6. **Iterate to APPROVE (default — skipped for `--once`, `--oneshot`):** if the verdict is `REQUEST_CHANGES`, revise the plan to address the blocking objections (validate them first — a plan objection can be wrong too), then go back to step 3 (resume) and re-stress, saying what you changed. Repeat until one of:
+   - **APPROVE** → the plan is sound to execute; done.
+   - **only minor/optional concerns remain** (`COMMENT`) → done; report them.
+   - **`--cap` rounds reached** → stop and surface the open objections — do not keep looping.
+   If an objection is wrong, refute it with evidence and escalate to the user rather than reshaping the plan around a bad objection.
 
 ## Notes
 
+- Default **iterates** to APPROVE; `--once` for a single stress-test; `--oneshot` ephemeral.
 - Lens templates: `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. No `--lens` = `stress-test`.
 - Thread state: `.claude/codex-threads/<thread>.{id,log,rounds}`. Force-reset: `/thread-new <thread>`.
-- For a one-off: `--oneshot`.
