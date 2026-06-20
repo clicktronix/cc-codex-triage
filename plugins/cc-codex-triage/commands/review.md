@@ -17,12 +17,12 @@ Forwards a review request to a Codex review thread, creating it on first use and
    - `--oneshot` → pass through to the driver (throwaway, no thread kept).
    The remainder is the user's paste/focus.
 
-2. Read the round counter (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): `N=$(cat .claude/codex-threads/<THREAD>.rounds 2>/dev/null || echo 0)`. This dispatch is round `N+1`.
+2. Decide **initial vs resume** (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): it is a **resume** if `.claude/codex-threads/<THREAD>.id` exists, otherwise **initial**. Do NOT hand-compute a round number into the prompt — the driver stamps `round=N` in the log header itself, and a hand-written "round N" only drifts from it.
 
 3. Build the Codex prompt:
-   - Read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the block for the chosen lens plus the shared output contract, and use it as the INSTRUCTION.
-   - State the SCOPE if the user implied one ("this branch", "uncommitted", "last commit") so Codex knows what to diff. If unstated, default to uncommitted + current branch vs its merge base.
-   - If `N >= 1`, prepend the convergence header: `This is round N+1 of this review. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
+   - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the block for the chosen lens plus the shared output contract, and use it as the INSTRUCTION. **On a resume the thread already holds the lens contract — do NOT re-paste it;** send only the follow-up header, any scope change, and what changed since the last round.
+   - State the SCOPE if the user implied one ("this branch", "uncommitted", "last commit") so Codex knows what to diff. If unstated, default to uncommitted + current branch vs its merge base. When the scope is uncommitted, **explicitly include untracked new files** — they are NOT in `git diff HEAD`; tell Codex to also read `git status --porcelain -uall` and `cat` the new files so added-but-unstaged coverage is reviewed.
+   - **Resume only:** prepend the follow-up header (no hand-written round number): `This is a follow-up review round. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
    - **If the remainder is a third-party review/critique, apply Judge-mode framing per skill `codex-triage`** (classify, do not instruct Codex to apply fixes).
 
 4. Run via Bash (timeout 600000 — reviews take minutes):

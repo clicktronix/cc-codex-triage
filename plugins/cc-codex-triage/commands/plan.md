@@ -17,9 +17,11 @@ Forwards a planning prompt to a Codex plan thread, creating it on first use and 
    - `--oneshot` → pass through to the driver.
    The remainder is the plan text or a pointer to it (e.g. a `docs/plans/*.md` path Codex should read).
 
-2. Read the round counter (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): `N=$(cat .claude/codex-threads/<THREAD>.rounds 2>/dev/null || echo 0)`. This dispatch is round `N+1`.
+2. Decide **initial vs resume** (state lives at the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first if your cwd drifted): it is a **resume** if `.claude/codex-threads/<THREAD>.id` exists, otherwise **initial**. Do NOT hand-compute a round number into the prompt — the driver stamps `round=N` in the log header itself.
 
-3. Build the Codex prompt: read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the plan block for the chosen lens (plus the exhaustive-instances line), use it as the INSTRUCTION. Include the plan text (or tell Codex which file to read). If `N >= 1`, prepend: `This is round N+1. Re-evaluate against your OWN prior objections first (resolved / partial / not addressed), then new ones. State explicitly how close the plan is to sound.`
+3. Build the Codex prompt:
+   - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, take the plan block for the chosen lens (plus the exhaustive-instances + verdict block), use it as the INSTRUCTION, and include the plan text (or tell Codex which file to read). **On a resume the thread already holds the lens instruction — do NOT re-paste it;** point Codex at the revised plan (which file to re-read / what changed) and send only the follow-up header.
+   - **Resume only:** prepend (no hand-written round number): `This is a follow-up round. Re-evaluate against your OWN prior objections first (resolved / partial / not addressed), then new ones. State explicitly how close the plan is to APPROVE.`
 
 4. Run via Bash (timeout 600000):
 
