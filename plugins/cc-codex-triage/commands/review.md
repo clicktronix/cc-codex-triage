@@ -48,5 +48,6 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 ## Notes
 
 - Default **iterates** to APPROVE; `--once` for a single opinion you act on yourself; `--oneshot` ephemeral.
+- `--cap` here bounds *this command's* iterate-loop. The `/autoreview` gate has a **separate** cap that counts hook-blocks (each block runs `/review --once`, not a loop) — see `autoreview.md`.
 - Lens templates: `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. No `--lens` = `correctness`.
 - Thread state: `.claude/codex-threads/<thread>.{id,log,rounds}`. Force-reset: `/thread-new <thread>`.

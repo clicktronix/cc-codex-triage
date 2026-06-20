@@ -35,7 +35,15 @@ last_verdict() {
 }
 
 IN_GIT=false; git rev-parse --show-toplevel >/dev/null 2>&1 && IN_GIT=true
-BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(no git)')"
+# On an unborn HEAD (git init, no commits) `rev-parse --abbrev-ref HEAD` prints
+# "HEAD" to stdout AND exits non-zero — so a `|| echo …` fallback would append a
+# second line. Compute it cleanly and collapse detached/unborn to one label.
+if $IN_GIT; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  { [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; } && BRANCH="(detached or unborn HEAD)"
+else
+  BRANCH="(no git)"
+fi
 
 echo "cc-codex-triage status"
 echo "  repo branch : $BRANCH"
@@ -98,7 +106,7 @@ for kind in autoreview autoplan; do
   if [ -n "$at" ] && [ ! -f "$STATE_DIR/$at.log" ] && [ ! -f "$STATE_DIR/$at.id" ]; then
     echo "      WARNING target thread '$at' has no log/id on disk — the gate cannot find it. Did you run /$base with a different --thread name?"
   fi
-  [ -n "$at" ] && echo "      last verdict on $at: $(last_verdict "$at")"
+  [ -n "$at" ] && echo "      last verdict on $at (whole log — the gate releases only on an APPROVE made AFTER arming): $(last_verdict "$at")"
 done
 [ "$shown" = 0 ] && echo "  (none)"
 echo "  note: 'cap' counts hook-blocks (gated turn-ends), NOT Codex review rounds."
