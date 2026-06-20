@@ -120,8 +120,9 @@ Do not do a deep pass. Keep it to the top few findings or "no blockers found".
 Plan lenses do NOT use the Conventional Comments findings format (that is for
 code). Each is a standalone INSTRUCTION for `/plan`. Append this block to every
 plan lens (the exhaustiveness rule plus the same machine verdict reviews use, so
-`/autoplan` and tooling can detect "plan approved" instead of guessing from
-prose):
+`/status` and tooling can read the plan's verdict instead of guessing from prose
+— note the `/autoplan` gate itself still releases on log-growth, not the verdict;
+verdict-gating the plan gate is a future change):
 
 ```
 When you find a gap of some class (e.g. an uncovered ingress path, a missing

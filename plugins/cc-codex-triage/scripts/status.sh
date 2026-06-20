@@ -43,8 +43,9 @@ echo "  repo branch : $BRANCH"
 if $IN_GIT; then
   code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
   plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
-  # shellcheck disable=SC2086
-  plan_changes=$(git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ')
+  # Word-split the pathspecs (intentional) but disable shell globbing so they
+  # reach git unexpanded — git does its own pathspec matching. shellcheck disable=SC2086
+  plan_changes=$( set -f; git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ' )
   echo "  working tree: ${code_changes:-0} code change(s), ${plan_changes:-0} plan-doc change(s)"
 fi
 
@@ -116,3 +117,6 @@ for idf in "$STATE_DIR"/*.id; do
     "$n" "$r" "${sz:-0}" "$(_mtime "$idf")" "$(last_verdict "$n")"
 done
 [ "$any" = 0 ] && echo "  (none)"
+# Explicit success — the final test above is false when threads exist, which
+# would otherwise make this read-only command exit non-zero on the normal path.
+exit 0

@@ -82,12 +82,18 @@ if [ "${#ARCHIVE[@]}" -eq 0 ]; then
 fi
 
 if [ "$APPLY" = true ]; then
-  dest="$STATE_DIR/.archive-$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$dest"
+  # Unique dir (mktemp) so a second run in the same second can't reuse it; no
+  # `mv -f` and an explicit name-clash skip so the "never deletes/overwrites"
+  # contract holds; count only successful moves.
+  dest="$(mktemp -d "$STATE_DIR/.archive-XXXXXX")" || { echo "ERROR: could not create archive dir"; exit 1; }
+  moved=0
   for p in "${ARCHIVE[@]}"; do
-    [ -e "$p" ] && mv -f "$p" "$dest/" && echo "  archived: $(basename "$p")"
+    [ -e "$p" ] || continue
+    b="$(basename "$p")"
+    if [ -e "$dest/$b" ]; then echo "  SKIP (name clash, not overwritten): $b"; continue; fi
+    if mv "$p" "$dest/"; then moved=$((moved+1)); echo "  archived: $b"; else echo "  FAILED to move: $b"; fi
   done
-  echo "Moved ${#ARCHIVE[@]} item(s) to $dest (reversible — move them back to restore)."
+  echo "Archived $moved/${#ARCHIVE[@]} item(s) to $dest (reversible — move them back to restore)."
 else
   echo "Would archive ${#ARCHIVE[@]} item(s). Re-run with --apply to move them to an archive subdir (non-destructive)."
 fi

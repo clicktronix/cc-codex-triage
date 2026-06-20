@@ -21,8 +21,10 @@ validated against the source with a Codex `/plan` stress-test.
   `.log` with no `.id`), and generic-name threads. Dry-run by default; `--apply`
   **archives** (never deletes) into a reversible `.archive-<timestamp>/`.
 - **Plan lenses now emit a machine verdict** (`APPROVE | REQUEST_CHANGES |
-  COMMENT`), the same token reviews use — so `/autoplan` and tooling can detect
-  "plan approved" instead of guessing from prose.
+  COMMENT`), the same token reviews use — so `/status` and tooling can read a
+  plan's verdict instead of guessing from prose. (The `/autoplan` gate still
+  releases on thread-log growth, not the verdict; verdict-gating the plan gate is
+  a deferred follow-up.)
 - **`CC_CODEX_PLAN_PATHS`** — configurable plan-doc locations for `/autoplan`
   (space-separated pathspecs; default `docs/plans docs/PLANS`).
 

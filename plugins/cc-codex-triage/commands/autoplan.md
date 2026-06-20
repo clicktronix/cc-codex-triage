@@ -41,7 +41,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
      && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
-3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--thread <THREAD> --lens <LENS>` on the updated plan — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
+3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
 4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first) and confirm.
 
