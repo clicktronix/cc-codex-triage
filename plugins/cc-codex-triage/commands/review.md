@@ -17,6 +17,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - `--once` → a single dispatch, no iterate-loop (you decide after one round).
    - `--oneshot` → throwaway ephemeral run (no thread kept). Implies `--once`.
    - `--cap N` → max review rounds in the loop (default 5).
+   - `--continue` → resume from the last APPROVE: rebuild the prompt from the findings ledger (still-open findings) + the diff since the approved baseline, instead of re-authoring it. See **Findings ledger** below.
    The remainder is the user's paste/focus.
    - **Reuse guard (#8):** if the chosen thread already has a `.log` from a clearly different task (different feature/area than the current request), warn the user and suggest a fresh `--thread review-<topic>` — Codex would otherwise re-feed the old task's history every round.
 
@@ -44,6 +45,29 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - **only `(non-blocking)`/`(if-minor)` items remain** → done; report them, do not loop on nitpicks (the verdict contract already keeps those out of `REQUEST_CHANGES`).
    - **`--cap` rounds reached** → stop and tell the user the open findings — do not keep looping.
    A finding you've refuted with file:line is resolved; if Codex still holds it, **escalate to the user** (they lower the bar or accept the open item) — do not fix a wrong finding just to release.
+
+## Findings ledger (machine-readable history, needs `jq`)
+
+The ledger lets `--continue` and `/review-dispute|accept|defer` work from state instead of prose. If `jq` is absent, skip it — the review still works.
+
+- **Record findings** as you validate them (step 7). Let the helper allocate the id:
+  ```bash
+  id=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" create <THREAD> --file F --line L --severity blocking|non-blocking --label issue --title "short title")
+  ```
+  When you resolve/reject/defer a finding from a prior round, append a status event by its id:
+  ```bash
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" status <THREAD> <id> resolved|false-positive|accepted|deferred [--note "..."]
+  ```
+  Render the user-visible summary from `ledger.sh list <THREAD>` — so what they see is exactly what was recorded.
+- **Pin the scope once (#9)** on the initial dispatch so later rounds don't re-author it:
+  ```bash
+  printf 'base=%s\nmode=%s\n' "$(git merge-base HEAD @{u} 2>/dev/null || git rev-parse HEAD)" 'uncommitted+untracked' > .claude/codex-threads/<THREAD>.scope
+  ```
+- **Record the approval baseline on APPROVE** — snapshot what was approved:
+  ```bash
+  printf 'head=%s\nround=%s\nts=%s\n' "$(git rev-parse HEAD)" '<round>' "$(date -u +%FT%TZ)" > .claude/codex-threads/<THREAD>.approved
+  ```
+- **`--continue`**: read `head` from `.approved`. If HEAD has advanced (the approved work was committed), scope the resume to `<approved-head>..HEAD`; otherwise re-review the current uncommitted diff. Prepend the still-open findings from `ledger.sh open <THREAD>`. This rebuilds the resume prompt from state — no hand-narrated "what changed". (For uncommitted scope the since-approval boundary is approximate; the open-findings carry-forward is exact.)
 
 ## Notes
 

@@ -7,7 +7,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 ## When to invoke
 
-- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/status`, `/thread <name>`, `/thread-list`, `/thread-new`, `/cleanup`, `/autoreview`, `/autoplan`.
+- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/status`, `/thread <name>`, `/thread-list`, `/thread-new`, `/cleanup`, `/review-dispute`, `/review-accept`, `/review-defer`, `/autoreview`, `/autoplan`.
 - The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
 - A long-running investigation where the same Codex thread needs context across many Claude Code turns.
 
@@ -21,6 +21,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Reply back to something Codex said | `/reply [thread]` | named thread, default `review` |
 | Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
 | See plugin / thread / gate state in this repo | `/status` (read-only) | — |
+| Dispose of a recorded finding (false-positive / accepted / deferred) | `/review-dispute` / `/review-accept` / `/review-defer <id>` | the finding's review thread |
 | Anything else, isolated by topic | `/thread <name>` | `<name>` |
 | Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
 

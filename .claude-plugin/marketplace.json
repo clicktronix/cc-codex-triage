@@ -12,7 +12,7 @@
     {
       "name": "cc-codex-triage",
       "source": "./plugins/cc-codex-triage",
-      "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review, /plan, /reply, /debate, /status, /cleanup, /autoreview, /autoplan, /thread, /thread-list, /thread-new.",
+      "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review (iterates to APPROVE, findings ledger, --continue), /plan, /reply, /debate, /status, /cleanup, /review-dispute, /review-accept, /review-defer, /autoreview, /autoplan, /thread, /thread-list, /thread-new.",
       "version": "0.6.0"
     }
   ]

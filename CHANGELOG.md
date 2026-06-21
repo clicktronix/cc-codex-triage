@@ -27,6 +27,16 @@ validated against the source with a Codex `/plan` stress-test.
   a deferred follow-up.)
 - **`CC_CODEX_PLAN_PATHS`** — configurable plan-doc locations for `/autoplan`
   (space-separated pathspecs; default `docs/plans docs/PLANS`).
+- **Findings ledger** (`scripts/ledger.sh` + `<thread>.findings.jsonl`) — an
+  event-sourced, machine-readable record of review findings (helper-allocated
+  stable ids, folded to a current status). `/review` records findings as it
+  validates them and renders the user summary from the ledger; **`/review
+  --continue`** rebuilds the resume prompt from the still-open findings + the
+  diff since a recorded APPROVE baseline instead of hand-narration. New
+  **`/review-dispute`**, **`/review-accept`**, **`/review-defer`** dispose of a
+  finding by id. The sidecars (`.findings.jsonl`, `.scope`, `.approved`) are
+  reset on `--new` / `/thread-new` and archived with orphans by `/cleanup`.
+  (Ledger features need `jq`; without it the core review still works.)
 
 ### Changed
 
@@ -37,9 +47,10 @@ validated against the source with a Codex `/plan` stress-test.
   separate gated command. A pasted third-party review (Judge-mode) always runs a
   **single classification pass**, never a loop.
 - **Default threads are branch-scoped** — `review-<branch>` / `plan-<branch>`
-  when not on `main`/`master`; the bare `review`/`plan` names are used only on
-  the main branch or via explicit `--thread`. Plus a reuse guard that warns when
-  a thread already holds a different task.
+  (e.g. `review-main` on `main` — no main/master special-case, matching the
+  hook's slug rule so a manual review and the gate share one thread); the bare
+  `review`/`plan` names are only via an explicit `--thread`. Plus a reuse guard
+  that warns when a thread already holds a different task.
 - **Verdict is gated on blocking findings only** — `REQUEST_CHANGES` requires at
   least one `(blocking)` finding; nitpicks (test hygiene, naming) no longer hold
   the verdict.
@@ -57,9 +68,10 @@ validated against the source with a Codex `/plan` stress-test.
 
 ### Notes
 
-- Backlog items deferred to a focused follow-up: a structured `findings.jsonl`
-  ledger and the `/review --continue` / dispute-accept-defer flows built on it,
-  plus state-file locking. Tracked for a later release.
+- One backlog item is deferred to a focused follow-up: **state-file locking**
+  (the README's documented "one session per repo" limitation — the `.rounds` /
+  `.log` / ledger writes are not yet locked across concurrent sessions). Tracked
+  for a later release.
 
 ## [0.5.1] - 2026-06-14
 
