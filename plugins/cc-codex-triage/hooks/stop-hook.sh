@@ -124,7 +124,14 @@ dirty_code() {
 }
 
 dirty_plans() {
-  git status --porcelain -uall -- 'docs/plans' 'docs/PLANS' 2>/dev/null | grep -q .
+  # Plan-doc locations are configurable via CC_CODEX_PLAN_PATHS (space-separated
+  # pathspecs); defaults to the two conventional dirs. Word-splitting of the
+  # variable into separate pathspecs is intentional.
+  local paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+  # `set -f` (in a subshell) disables shell globbing so the pathspecs reach git
+  # unexpanded — git does its own pathspec matching.
+  # shellcheck disable=SC2086
+  ( set -f; git status --porcelain -uall -- $paths 2>/dev/null | grep -q . )
 }
 
 last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.
@@ -186,7 +193,7 @@ if [[ -f "$AR" ]]; then
       elif [[ "$blocks" -ge "$cap" ]]; then
         echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
       elif n="$(bump_blocks "$AR" "$blocks")"; then
-        emit_block "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --thread $thread --lens $lens. Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)."
+        emit_block "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks, and a default loop here would multiply cost). Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)."
       else
         echo "autoreview: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
       fi
@@ -225,7 +232,7 @@ if [[ -f "$AP" ]]; then
     elif [[ "$blocks" -ge "$cap" ]]; then
       echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
     elif n="$(bump_blocks "$AP" "$blocks")"; then
-      emit_block "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --thread $thread --lens $lens, address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)."
+      emit_block "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks). Address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)."
     else
       echo "autoplan: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
     fi

@@ -34,12 +34,15 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" > "$STATE_DIR/autoplan.armed"
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
-   # Already-changed plan docs to stress-test now?
-   git status --porcelain -uall -- 'docs/plans' 'docs/PLANS' | grep -q . \
+   # Already-changed plan docs to stress-test now? Locations honor
+   # CC_CODEX_PLAN_PATHS (space-separated pathspecs; default = the two dirs).
+   PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+   # set -f: pass the pathspecs to git unexpanded (no shell globbing first).
+   ( set -f; git status --porcelain -uall -- $PLAN_PATHS | grep -q . ) \
      && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
-3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--thread <THREAD> --lens <LENS>` on the updated plan — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
+3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
 4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first) and confirm.
 
@@ -50,5 +53,5 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoplan.armed`. Branch-scoped.
-- Plan-doc detection covers `docs/plans/` and `docs/PLANS/` (the two conventions seen in real repos). Other layouts: keep plans in one of these, or use `/plan` manually.
+- Plan-doc detection covers `docs/plans/` and `docs/PLANS/` by default. For other layouts, set `CC_CODEX_PLAN_PATHS` (space-separated pathspecs, e.g. `CC_CODEX_PLAN_PATHS="docs/rfcs planning"`) in your environment — the hook and the arming check both honor it. Or use `/plan` manually.
 - Pairs with `/autoreview` (same hook, code gate).

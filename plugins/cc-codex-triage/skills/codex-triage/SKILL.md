@@ -7,7 +7,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 ## When to invoke
 
-- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/thread <name>`, `/thread-list`, `/thread-new`, `/autoreview`, `/autoplan`.
+- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/status`, `/thread <name>`, `/thread-list`, `/thread-new`, `/cleanup`, `/review-dispute`, `/review-accept`, `/review-defer`, `/autoreview`, `/autoplan`.
 - The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
 - A long-running investigation where the same Codex thread needs context across many Claude Code turns.
 
@@ -16,16 +16,20 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Intent | Command | Thread |
 |---|---|---|
 | Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
-| Critique of code / diff / PR / a third-party review | `/review [--lens] [--thread]` | `review` or per-task |
-| Stress-test a plan or design | `/plan [--lens] [--thread]` | `plan` or per-task |
+| Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
+| Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
 | Reply back to something Codex said | `/reply [thread]` | named thread, default `review` |
 | Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
+| See plugin / thread / gate state in this repo | `/status` (read-only) | — |
+| Dispose of a recorded finding (false-positive / accepted / deferred) | `/review-dispute` / `/review-accept` / `/review-defer <id>` | the finding's review thread |
 | Anything else, isolated by topic | `/thread <name>` | `<name>` |
 | Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
 
-**One task = one thread.** Default thread names (`review`, `plan`) are conveniences for a single active task. Starting a NEW task while the default thread still holds a different one? Pass `--thread review-<branch>` / `--thread plan-<topic>`. A production run that mixed two features in one `plan` thread paid every later round's resume re-feeding the first feature's history, and the audit log needs manual slicing to see what was reviewed for which task.
+**`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
+
+**One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — there is no main/master special-case) so each branch, and the matching `/autoreview` / `/autoplan` gate, stay on one isolated thread; the bare `review`/`plan` names are only via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
@@ -165,6 +169,7 @@ Arming reviews existing work first, then gates future turns. `/autoreview on`: i
 | Applying a wrong Codex finding to release the gate | `/autoreview` armed, Codex returns a plausible-but-wrong-in-context CRITICAL, user/gate push for speed | Validate against the code first (read the consumers, not just the cited line); reject with file:line via `/reply`; the gate's round cap, not compliance, is the escape hatch. |
 | Guessing instead of running, when a tool call fails | `/reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
 | Wrong intent → wrong sandbox | Using `/review` for an informational question (or vice versa) | Route per the table above. `/ask` is read-only and informational; `/review` is adversarial. |
+| Codex run stalled mid-investigation | A dispatch returned but produced no verdict / an incomplete reply (Codex was interrupted or ran long) | Do NOT restart the whole investigation. Resume the SAME thread asking it to report what it already concluded without re-running: `Your previous run stalled before a verdict. Do NOT restart — report the findings you already reached and give your verdict line.` The thread keeps its memory, so this recovers the work for one extra dispatch. |
 
 ## Prerequisites
 

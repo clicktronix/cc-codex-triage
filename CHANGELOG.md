@@ -4,6 +4,82 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-21
+
+Backlog from a usage audit of ~23 real review/plan threads across two repos,
+validated against the source with a Codex `/plan` stress-test.
+
+### Added
+
+- **`/status`** — one-screen, read-only view of the plugin's state in a repo:
+  current branch, dirty tree, armed `/autoreview` / `/autoplan` gates with
+  **stale-branch**, **pre-0.5** and **missing-target-thread** warnings, last
+  verdict per thread, gitignore status, and the Codex CLI version vs the
+  required minimum. Folds together state that used to need hand-reading
+  `.armed` / `.rounds` / `.log` + `git`.
+- **`/cleanup`** — finds stale/pre-0.5 armed gates, orphan thread logs (a
+  `.log` with no `.id`), and generic-name threads. Dry-run by default; `--apply`
+  **archives** (never deletes) into a reversible `.archive-<timestamp>/`.
+- **Plan lenses now emit a machine verdict** (`APPROVE | REQUEST_CHANGES |
+  COMMENT`), the same token reviews use — so `/status` and tooling can read a
+  plan's verdict instead of guessing from prose. (The `/autoplan` gate still
+  releases on thread-log growth, not the verdict; verdict-gating the plan gate is
+  a deferred follow-up.)
+- **`CC_CODEX_PLAN_PATHS`** — configurable plan-doc locations for `/autoplan`
+  (space-separated pathspecs; default `docs/plans docs/PLANS`).
+- **Findings ledger** (`scripts/ledger.sh` + `<thread>.findings.jsonl`) — an
+  event-sourced, machine-readable record of review findings (helper-allocated
+  stable ids, folded to a current status). `/review` records findings as it
+  validates them and renders the user summary from the ledger; **`/review
+  --continue`** rebuilds the resume prompt from the still-open findings + the
+  diff since a recorded APPROVE baseline instead of hand-narration. New
+  **`/review-dispute`**, **`/review-accept`**, **`/review-defer`** dispose of a
+  finding by id. The sidecars (`.findings.jsonl`, `.scope`, `.approved`) are
+  reset on `--new` / `/thread-new` and archived with orphans by `/cleanup`.
+  The ledger is **fail-closed**: a corrupt or partial JSONL is refused by both
+  the readers (`open`/`list`/`get`) and the writers (`create`/`status`) through
+  one shared validator — never rendered as silently-empty, never appended onto —
+  and id allocation ignores malformed ids, so a finding can't be lost,
+  re-numbered onto an existing one, or hidden by a bad line. `create` requires a
+  `file:line` citation; the pinned `.scope` records the integration-branch
+  merge-base (not the upstream one, which on a pushed branch is only the last
+  push). (Ledger features need `jq`; without it the core review still works.)
+
+### Changed
+
+- **`/review` and `/plan` iterate to APPROVE by default** (dispatch → address
+  blocking findings → re-review, until APPROVE or `--cap` rounds, default 5).
+  `--once` does a single pass; `--oneshot` stays ephemeral. ~89% of real review
+  threads were already multi-round, so the loop is now the default rather than a
+  separate gated command. A pasted third-party review (Judge-mode) always runs a
+  **single classification pass**, never a loop.
+- **Default threads are branch-scoped** — `review-<branch>` / `plan-<branch>`
+  (e.g. `review-main` on `main` — no main/master special-case, matching the
+  hook's slug rule so a manual review and the gate share one thread); the bare
+  `review`/`plan` names are only via an explicit `--thread`. Plus a reuse guard
+  that warns when a thread already holds a different task.
+- **Verdict is gated on blocking findings only** — `REQUEST_CHANGES` requires at
+  least one `(blocking)` finding; nitpicks (test hygiene, naming) no longer hold
+  the verdict.
+- **Round numbers come from the driver header**, not hand-written prose — the
+  commands stopped injecting "round N" (which drifted from the driver's
+  `round=N`), and the **lens contract is sent only on the initial dispatch**
+  (the thread already retains it on resume).
+- **Untracked new files are explicitly pulled into review scope** (they are not
+  in `git diff HEAD` and previously fell out of the review).
+
+### Fixed
+
+- Dropped a dead boilerplate line ("If you have a code-review skill loaded…")
+  from the shared review contract.
+
+### Notes
+
+- One backlog item is deferred to a focused follow-up: **state-file locking**
+  (the README's documented "one session per repo" limitation — the `.rounds` /
+  `.log` / ledger writes are not yet locked across concurrent sessions). Tracked
+  for a later release.
+
 ## [0.5.1] - 2026-06-14
 
 ### Changed
