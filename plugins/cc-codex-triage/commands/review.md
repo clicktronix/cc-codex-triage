@@ -59,18 +59,23 @@ The ledger lets `--continue` and `/review-dispute|accept|defer` work from state 
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" status <THREAD> <id> resolved|false-positive|accepted|deferred [--note "..."]
   ```
   Render the user-visible summary from `ledger.sh list <THREAD>` — so what they see is exactly what was recorded.
-- **Pin the scope once (#9)** — after the FIRST *successful* dispatch (the thread now has a `.id`, so a failed dispatch leaves no orphan sidecar), record the scope, and on later rounds READ it back instead of re-deriving:
+- **Pin the scope once (#9)** — after the FIRST *successful* dispatch (the thread now has a `.id`, so a failed dispatch leaves no orphan sidecar), record the **same base/mode you actually sent Codex this round**, and on later rounds READ it back instead of re-deriving. Do **not** hardcode `@{u}` as the base: on a pushed branch the upstream merge-base is only the *last push*, so a resume would silently narrow the diff to "since I pushed" and omit the rest of the branch. Pin the integration-branch merge-base (the base the review is actually against):
   ```bash
-  # write once, on the first successful dispatch:
-  printf 'base=%s\nmode=%s\n' "$(git merge-base HEAD @{u} 2>/dev/null || git rev-parse HEAD)" 'uncommitted+untracked' > .claude/codex-threads/<THREAD>.scope
+  # write once, on the first successful dispatch. TRUNK = the branch you reviewed
+  # against; REVIEW_MODE = the scope you used ("branch-vs-<trunk>",
+  # "uncommitted+untracked", "<sha>..HEAD", ...) — record what you actually sent.
+  TRUNK="$(git rev-parse --verify -q main >/dev/null 2>&1 && echo main || echo master)"
+  base="$(git merge-base HEAD "$TRUNK" 2>/dev/null || git rev-parse HEAD)"
+  printf 'base=%s\nmode=%s\n' "$base" "$REVIEW_MODE" > .claude/codex-threads/<THREAD>.scope
   # reuse on resume instead of recomputing the base:
   base="$(sed -n 's/^base=//p' .claude/codex-threads/<THREAD>.scope 2>/dev/null)"
+  mode="$(sed -n 's/^mode=//p' .claude/codex-threads/<THREAD>.scope 2>/dev/null)"
   ```
 - **Record the approval baseline on APPROVE** — snapshot what was approved (after the dispatch, only on a real APPROVE):
   ```bash
   printf 'head=%s\nround=%s\nts=%s\n' "$(git rev-parse HEAD)" '<round>' "$(date -u +%FT%TZ)" > .claude/codex-threads/<THREAD>.approved
   ```
-- **`--continue`**: if `.claude/codex-threads/<THREAD>.approved` is **absent** (the thread never reached APPROVE), fall back to a normal resume — the current diff + still-open findings. Otherwise read `head="$(sed -n 's/^head=//p' .claude/codex-threads/<THREAD>.approved)"`: if HEAD has advanced since approval (committed work) scope to `<head>..HEAD`, else re-review the current uncommitted diff. Either way, prepend the still-open findings from `ledger.sh open <THREAD>`. This rebuilds the resume from state — no hand-narrated "what changed". (For uncommitted scope the since-approval boundary is approximate; the open-findings carry-forward is exact.)
+- **`--continue`**: if `.claude/codex-threads/<THREAD>.approved` is **absent** (the thread never reached APPROVE), fall back to a resume scoped to the **pinned `.scope` base** (`<base>..HEAD` plus the uncommitted diff) — not just the current uncommitted diff, which would drop every already-committed round + still-open findings. Otherwise read `head="$(sed -n 's/^head=//p' .claude/codex-threads/<THREAD>.approved)"`: if HEAD has advanced since approval (committed work) scope to `<head>..HEAD`, else re-review the current uncommitted diff. Either way, prepend the still-open findings from `ledger.sh open <THREAD>`. This rebuilds the resume from state — no hand-narrated "what changed". (For uncommitted scope the since-approval boundary is approximate; the open-findings carry-forward is exact.)
 
 ## Notes
 

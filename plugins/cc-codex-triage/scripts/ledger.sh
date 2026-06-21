@@ -38,15 +38,21 @@ F="$STATE_DIR/$THREAD.findings.jsonl"
 ts() { date -u +%FT%TZ; }
 
 # Fold the event log into one folded record per id (create fields + last status).
+# Fails CLOSED on a corrupt/partial JSONL: a swallowed jq parse error would
+# otherwise make `open`/`list`/`get` render an unreadable ledger as EMPTY,
+# silently hiding findings. On parse failure: nothing on stdout, return 1.
 fold() {
-  [ -f "$F" ] || { echo '[]'; return; }
+  [ -f "$F" ] || { echo '[]'; return 0; }
   jq -s '
     (map(select(.event=="create")) | group_by(.id) | map(.[-1])) as $creates
     | (map(select(.event=="status")) | group_by(.id)
        | map({key:.[0].id, value:(.[-1])}) | from_entries)        as $last
     | [ $creates[] | . + {status:($last[.id].status // .status),
                           note:($last[.id].note // null)} ]
-  ' "$F"
+  ' "$F" 2>/dev/null || {
+    echo "ledger: $F is not valid JSONL (corrupt or partial write) — refusing to render a partial view" >&2
+    return 1
+  }
 }
 
 case "$SUB" in
@@ -67,6 +73,7 @@ case "$SUB" in
       esac
     done
     [ -n "$title" ] || { echo "ledger create: --title is required" >&2; exit 1; }
+    [ -n "$file" ] || { echo "ledger create: --file is required (findings need a file:line citation)" >&2; exit 1; }
     case "$sev" in blocking|non-blocking) ;; *) echo "ledger create: --severity must be blocking|non-blocking" >&2; exit 1 ;; esac
     # Keep .line a non-negative integer or null — reject non-numeric/negative/float.
     case "$line" in ''|*[!0-9]*) line="" ;; esac
@@ -74,7 +81,12 @@ case "$SUB" in
     # next id = max existing fN + 1 (create events only)
     maxn=0
     if [ -f "$F" ]; then
-      maxn="$(jq -r 'select(.event=="create").id' "$F" 2>/dev/null | sed -n 's/^f//p' | sort -n | tail -1)"
+      # Only well-formed ids (^f[0-9]+$) feed the max. A malformed id (e.g. f9x
+      # from a hand-edit) must not poison allocation: previously one bad id at the
+      # numeric top reset maxn to 0 and re-handed-out f1, colliding with an
+      # existing finding (which fold() then silently merged). sed emits the
+      # numeric suffix ONLY for ids matching the shape; everything else is dropped.
+      maxn="$(jq -r 'select(.event=="create").id' "$F" 2>/dev/null | sed -n 's/^f\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
       case "${maxn:-}" in ''|*[!0-9]*) maxn=0 ;; esac
     fi
     id="f$((maxn + 1))"
@@ -97,14 +109,19 @@ case "$SUB" in
        '{event:"status",id:$id,ts:$ts,status:$st,note:($note|if .=="" then null else . end)}' >> "$F"
     ;;
   open)
-    fold | jq -r '.[] | select(.status=="open") | "\(.id)  [\(.severity)] \(.status)  \(.file // "?"):\(.line // "?")  \(.title)"'
+    # Capture fold separately so its non-zero exit (corrupt ledger) aborts here
+    # instead of being swallowed by the pipe, which would print an empty list.
+    recs="$(fold)" || exit 3
+    printf '%s\n' "$recs" | jq -r '.[] | select(.status=="open") | "\(.id)  [\(.severity)] \(.status)  \(.file // "?"):\(.line // "?")  \(.title)"'
     ;;
   list)
-    fold | jq -r '.[] | "\(.id)  [\(.severity)] \(.status)  \(.file // "?"):\(.line // "?")  \(.title)"'
+    recs="$(fold)" || exit 3
+    printf '%s\n' "$recs" | jq -r '.[] | "\(.id)  [\(.severity)] \(.status)  \(.file // "?"):\(.line // "?")  \(.title)"'
     ;;
   get)
     id="${1:-}"; [ -n "$id" ] || { echo "ledger get: <id> required" >&2; exit 1; }
-    fold | jq -e --arg id "$id" '.[] | select(.id==$id)' || { echo "ledger get: unknown id '$id'" >&2; exit 1; }
+    recs="$(fold)" || exit 3
+    printf '%s\n' "$recs" | jq -e --arg id "$id" '.[] | select(.id==$id)' || { echo "ledger get: unknown id '$id'" >&2; exit 1; }
     ;;
   *) usage ;;
 esac
