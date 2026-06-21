@@ -55,6 +55,19 @@ fold() {
   }
 }
 
+# Writers' fail-closed guard: never allocate an id from, or append to, a corrupt
+# ledger. The max-id scan below tolerates jq parse errors (no pipefail), so a bad
+# line BEFORE the valid creates would truncate the scan and re-hand-out f1 onto a
+# file that fold() can no longer read. Validate up front and abort (exit 3, same
+# as the readers) so the file is repaired before more events pile on.
+ensure_parseable() {
+  [ -f "$F" ] || return 0
+  jq -s '.' "$F" >/dev/null 2>&1 || {
+    echo "ledger: $F is not valid JSONL (corrupt or partial write) — refusing to write; inspect/repair it first." >&2
+    exit 3
+  }
+}
+
 case "$SUB" in
   create)
     file=""; line=""; sev=""; label="issue"; title=""
@@ -78,6 +91,7 @@ case "$SUB" in
     # Keep .line a non-negative integer or null — reject non-numeric/negative/float.
     case "$line" in ''|*[!0-9]*) line="" ;; esac
     mkdir -p "$STATE_DIR"
+    ensure_parseable   # never allocate an id from / append to a corrupt ledger
     # next id = max existing fN + 1 (create events only)
     maxn=0
     if [ -f "$F" ]; then
@@ -103,6 +117,7 @@ case "$SUB" in
     shift 2 2>/dev/null || true
     [ "${1:-}" = "--note" ] && note="${2:-}"
     case "$newst" in open|resolved|false-positive|accepted|deferred) ;; *) echo "ledger status: status must be open|resolved|false-positive|accepted|deferred" >&2; exit 1 ;; esac
+    ensure_parseable   # clear "corrupt ledger" error instead of a misleading "unknown id"
     { [ -f "$F" ] && jq -e --arg id "$id" 'select(.event=="create" and .id==$id)' "$F" >/dev/null 2>&1; } \
       || { echo "ledger status: unknown id '$id' (no create event)" >&2; exit 1; }
     jq -cn --arg id "$id" --arg ts "$(ts)" --arg st "$newst" --arg note "$note" \
