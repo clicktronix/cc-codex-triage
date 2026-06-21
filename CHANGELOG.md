@@ -36,7 +36,14 @@ validated against the source with a Codex `/plan` stress-test.
   **`/review-dispute`**, **`/review-accept`**, **`/review-defer`** dispose of a
   finding by id. The sidecars (`.findings.jsonl`, `.scope`, `.approved`) are
   reset on `--new` / `/thread-new` and archived with orphans by `/cleanup`.
-  (Ledger features need `jq`; without it the core review still works.)
+  The ledger is **fail-closed**: a corrupt or partial JSONL is refused by both
+  the readers (`open`/`list`/`get`) and the writers (`create`/`status`) through
+  one shared validator — never rendered as silently-empty, never appended onto —
+  and id allocation ignores malformed ids, so a finding can't be lost,
+  re-numbered onto an existing one, or hidden by a bad line. `create` requires a
+  `file:line` citation; the pinned `.scope` records the integration-branch
+  merge-base (not the upstream one, which on a pushed branch is only the last
+  push). (Ledger features need `jq`; without it the core review still works.)
 
 ### Changed
 
