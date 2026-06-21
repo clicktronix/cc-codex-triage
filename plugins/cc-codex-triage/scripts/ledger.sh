@@ -55,15 +55,18 @@ fold() {
   }
 }
 
-# Writers' fail-closed guard: never allocate an id from, or append to, a corrupt
-# ledger. The max-id scan below tolerates jq parse errors (no pipefail), so a bad
-# line BEFORE the valid creates would truncate the scan and re-hand-out f1 onto a
-# file that fold() can no longer read. Validate up front and abort (exit 3, same
-# as the readers) so the file is repaired before more events pile on.
+# Writers' fail-closed guard: never allocate an id from, or append to, a ledger
+# the readers can't render. The max-id scan below tolerates jq errors (no
+# pipefail), so a bad line before the valid creates would truncate the scan and
+# re-hand-out f1 onto a file fold() then refuses. Reuse fold() itself as the
+# validator so the writer guard matches the reader contract EXACTLY — fold fails
+# not only on unparseable JSON but on parseable-but-invalid records too (a scalar
+# line like `42` parses, yet `.event` can't index it). Abort with exit 3 (same as
+# the readers) so the file is repaired before more events pile on.
 ensure_parseable() {
   [ -f "$F" ] || return 0
-  jq -s '.' "$F" >/dev/null 2>&1 || {
-    echo "ledger: $F is not valid JSONL (corrupt or partial write) — refusing to write; inspect/repair it first." >&2
+  fold >/dev/null 2>&1 || {
+    echo "ledger: $F is not a valid findings ledger (corrupt, partial, or non-event records) — refusing to write; inspect/repair it first." >&2
     exit 3
   }
 }
