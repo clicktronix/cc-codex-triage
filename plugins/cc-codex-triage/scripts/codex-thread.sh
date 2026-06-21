@@ -21,6 +21,9 @@
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
 #   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure.
+#   <thread>.findings.jsonl   /review's findings ledger (per-task; reset by --new).
+#   <thread>.scope            /review's pinned scope (per-task; reset by --new).
+#   <thread>.approved         /review's last-APPROVE baseline (per-task; reset by --new).
 #
 # Exit codes:
 #   0   success
@@ -98,6 +101,11 @@ STATE_DIR=".claude/codex-threads"
 ID_FILE="$STATE_DIR/${THREAD}.id"
 LOG_FILE="$STATE_DIR/${THREAD}.log"
 ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
+# Per-task sidecars written by /review (the model), not by this driver. Listed
+# here so --new can reset them with the rest of the thread's state.
+FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
+SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
+APPROVED_FILE="$STATE_DIR/${THREAD}.approved"
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -138,7 +146,9 @@ PROMPT="$(cat)"
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW; then
-  rm -f "$ID_FILE" "$ROUNDS_FILE"
+  # Reset the per-task sidecars too, so a reused thread name does not inherit
+  # the previous task's findings ledger / scope / approval baseline.
+  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE"
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is

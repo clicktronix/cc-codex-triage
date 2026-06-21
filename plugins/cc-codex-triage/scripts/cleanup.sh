@@ -62,8 +62,9 @@ for lg in "$STATE_DIR"/*.log; do
     echo "  ORPHAN  $n  (size $(wc -c < "$lg" 2>/dev/null | tr -d ' ') bytes)"
     orphans=$((orphans+1)); issues=$((issues+1))
     ARCHIVE+=("$lg")
-    [ -f "$STATE_DIR/$n.rounds" ] && ARCHIVE+=("$STATE_DIR/$n.rounds")
-    [ -f "$STATE_DIR/$n.last-error.jsonl" ] && ARCHIVE+=("$STATE_DIR/$n.last-error.jsonl")
+    for ext in rounds last-error.jsonl findings.jsonl scope approved; do
+      [ -f "$STATE_DIR/$n.$ext" ] && ARCHIVE+=("$STATE_DIR/$n.$ext")
+    done
   fi
 done
 [ "$orphans" = 0 ] && echo "  (none)"
