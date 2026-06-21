@@ -41,7 +41,7 @@ ts() { date -u +%FT%TZ; }
 fold() {
   [ -f "$F" ] || { echo '[]'; return; }
   jq -s '
-    (map(select(.event=="create")))                              as $creates
+    (map(select(.event=="create")) | group_by(.id) | map(.[-1])) as $creates
     | (map(select(.event=="status")) | group_by(.id)
        | map({key:.[0].id, value:(.[-1])}) | from_entries)        as $last
     | [ $creates[] | . + {status:($last[.id].status // .status),
@@ -52,16 +52,24 @@ fold() {
 case "$SUB" in
   create)
     file=""; line=""; sev=""; label="issue"; title=""
-    while [ $# -gt 0 ]; do case "$1" in
-      --file) file="${2:-}"; shift 2 ;;
-      --line) line="${2:-}"; shift 2 ;;
-      --severity) sev="${2:-}"; shift 2 ;;
-      --label) label="${2:-}"; shift 2 ;;
-      --title) title="${2:-}"; shift 2 ;;
-      *) echo "ledger create: unknown arg '$1'" >&2; exit 1 ;;
-    esac; done
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --file|--line|--severity|--label|--title)
+          # Require a value — otherwise `shift 2` on a trailing flag would not
+          # advance and the loop would spin forever.
+          [ $# -ge 2 ] || { echo "ledger create: $1 needs a value" >&2; exit 1; }
+          case "$1" in
+            --file) file="$2" ;; --line) line="$2" ;; --severity) sev="$2" ;;
+            --label) label="$2" ;; --title) title="$2" ;;
+          esac
+          shift 2 ;;
+        *) echo "ledger create: unknown arg '$1'" >&2; exit 1 ;;
+      esac
+    done
     [ -n "$title" ] || { echo "ledger create: --title is required" >&2; exit 1; }
     case "$sev" in blocking|non-blocking) ;; *) echo "ledger create: --severity must be blocking|non-blocking" >&2; exit 1 ;; esac
+    # Keep .line a non-negative integer or null — reject non-numeric/negative/float.
+    case "$line" in ''|*[!0-9]*) line="" ;; esac
     mkdir -p "$STATE_DIR"
     # next id = max existing fN + 1 (create events only)
     maxn=0

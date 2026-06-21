@@ -67,6 +67,16 @@ for lg in "$STATE_DIR"/*.log; do
     done
   fi
 done
+# Sidecar-only orphans: findings/scope/approved with NO .id and NO .log — e.g. a
+# failed initial dispatch the .log scan above can't see. Print once per thread.
+seen=""
+for sc in "$STATE_DIR"/*.findings.jsonl "$STATE_DIR"/*.scope "$STATE_DIR"/*.approved; do
+  [ -f "$sc" ] || continue
+  b="$(basename "$sc")"; n="${b%.findings.jsonl}"; n="${n%.scope}"; n="${n%.approved}"
+  { [ -f "$STATE_DIR/$n.id" ] || [ -f "$STATE_DIR/$n.log" ]; } && continue
+  case " $seen " in *" $n "*) ;; *) echo "  ORPHAN  $n  (sidecar, no .log/.id)"; orphans=$((orphans+1)); issues=$((issues+1)); seen="$seen $n" ;; esac
+  ARCHIVE+=("$sc")
+done
 [ "$orphans" = 0 ] && echo "  (none)"
 
 echo
