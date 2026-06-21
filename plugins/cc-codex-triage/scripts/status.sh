@@ -9,14 +9,14 @@
 
 set -u
 
+# Shared helpers (field / has_field / _mtime). Resolve the script's own dir
+# BEFORE the cd below so the source path stays valid regardless of caller cwd.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+. "$SELF_DIR/lib.sh"
+
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" 2>/dev/null || true
 STATE_DIR=".claude/codex-threads"
-REQUIRED_CODEX="0.137.0"
-
-# Portable mtime (BSD/macOS `stat -f`, GNU/Linux `stat -c`).
-_mtime() { stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$1" 2>/dev/null || { stat -c '%y' "$1" 2>/dev/null | cut -d. -f1; }; }
-field()     { sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1; }
-has_field() { grep -q "^${2}=" "$1" 2>/dev/null; }
+REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
 # Last standalone verdict from a thread log — REPLY sections only, whole log
 # (same marker/section rules as the Stop hook, minus the arming offset since
@@ -59,15 +59,20 @@ fi
 
 # Codex CLI presence + version vs the documented minimum.
 if command -v codex >/dev/null 2>&1; then
-  ver="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  if [ -z "$ver" ]; then
+  raw="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' | head -1)"
+  core="${raw%%-*}"   # numeric x.y.z, without any -prerelease suffix
+  if [ -z "$core" ]; then
     echo "  codex CLI   : present (version unknown)"
-  elif [ "$ver" = "$REQUIRED_CODEX" ]; then
-    echo "  codex CLI   : $ver  (>= $REQUIRED_CODEX OK)"
-  elif [ "$(printf '%s\n%s\n' "$ver" "$REQUIRED_CODEX" | sort -V | head -1)" = "$ver" ]; then
-    echo "  codex CLI   : $ver  WARNING below required >= $REQUIRED_CODEX"
   else
-    echo "  codex CLI   : $ver  (>= $REQUIRED_CODEX OK)"
+    lowest="$(printf '%s\n%s\n' "$core" "$REQUIRED_CODEX" | sort -V | head -1)"
+    # Below if the numeric core is lower, OR it is a prerelease OF the minimum
+    # (e.g. 0.137.0-rc.1 < the released 0.137.0).
+    if { [ "$lowest" = "$core" ] && [ "$core" != "$REQUIRED_CODEX" ]; } \
+       || { [ "$core" = "$REQUIRED_CODEX" ] && [ "$raw" != "$core" ]; }; then
+      echo "  codex CLI   : $raw  WARNING below required >= $REQUIRED_CODEX"
+    else
+      echo "  codex CLI   : $raw  (>= $REQUIRED_CODEX OK)"
+    fi
   fi
 else
   echo "  codex CLI   : NOT FOUND on PATH — install: npm install -g @openai/codex"

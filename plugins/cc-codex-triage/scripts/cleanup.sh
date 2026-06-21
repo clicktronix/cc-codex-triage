@@ -13,14 +13,16 @@
 
 set -u
 
+# Shared helpers (field / has_field). Resolve the script's own dir BEFORE the
+# cd below so the source path stays valid regardless of caller cwd.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+. "$SELF_DIR/lib.sh"
+
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" 2>/dev/null || true
 STATE_DIR=".claude/codex-threads"
 
 APPLY=false
 [ "${1:-}" = "--apply" ] && APPLY=true
-
-field()     { sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1; }
-has_field() { grep -q "^${2}=" "$1" 2>/dev/null; }
 
 [ -d "$STATE_DIR" ] || { echo "No state directory ($STATE_DIR) — nothing to clean."; exit 0; }
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
