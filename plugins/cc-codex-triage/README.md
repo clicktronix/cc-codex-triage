@@ -1,5 +1,7 @@
 # cc-codex-triage plugin
 
+**English** · [Español](README.es.md) · [Русский](README.ru.md)
+
 Persistent named Codex CLI threads for open-ended cross-agent triage in Claude Code.
 
 ## What it gives you
