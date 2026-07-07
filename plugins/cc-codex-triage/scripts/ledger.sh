@@ -73,16 +73,16 @@ ensure_parseable() {
 
 case "$SUB" in
   create)
-    file=""; line=""; sev=""; label="issue"; title=""
+    file=""; line=""; sev=""; label="issue"; title=""; conf=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --file|--line|--severity|--label|--title)
+        --file|--line|--severity|--label|--title|--confidence)
           # Require a value — otherwise `shift 2` on a trailing flag would not
           # advance and the loop would spin forever.
           [ $# -ge 2 ] || { echo "ledger create: $1 needs a value" >&2; exit 1; }
           case "$1" in
             --file) file="$2" ;; --line) line="$2" ;; --severity) sev="$2" ;;
-            --label) label="$2" ;; --title) title="$2" ;;
+            --label) label="$2" ;; --title) title="$2" ;; --confidence) conf="$2" ;;
           esac
           shift 2 ;;
         *) echo "ledger create: unknown arg '$1'" >&2; exit 1 ;;
@@ -93,6 +93,10 @@ case "$SUB" in
     case "$sev" in blocking|non-blocking) ;; *) echo "ledger create: --severity must be blocking|non-blocking" >&2; exit 1 ;; esac
     # Keep .line a non-negative integer or null — reject non-numeric/negative/float.
     case "$line" in ''|*[!0-9]*) line="" ;; esac
+    # Keep .confidence a number in 0..1 or null — reject non-numeric/garbage and
+    # out-of-range values (the schema promises 0..1) rather than writing them.
+    case "$conf" in ''|*[!0-9.]*) conf="" ;; esac
+    if [ -n "$conf" ] && ! awk -v c="$conf" 'BEGIN{exit !(c>=0 && c<=1)}'; then conf=""; fi
     mkdir -p "$STATE_DIR"
     ensure_parseable   # never allocate an id from / append to a corrupt ledger
     # next id = max existing fN + 1 (create events only)
@@ -108,10 +112,12 @@ case "$SUB" in
     fi
     id="f$((maxn + 1))"
     jq -cn --arg id "$id" --arg ts "$(ts)" --arg file "$file" --arg line "$line" \
-           --arg sev "$sev" --arg label "$label" --arg title "$title" \
+           --arg sev "$sev" --arg label "$label" --arg title "$title" --arg conf "$conf" \
        '{event:"create",id:$id,ts:$ts,file:$file,
          line:($line|if .=="" then null else (tonumber? // .) end),
-         severity:$sev,label:$label,title:$title,status:"open"}' >> "$F"
+         severity:$sev,label:$label,title:$title,
+         confidence:($conf|if .=="" then null else (tonumber? // null) end),
+         status:"open"}' >> "$F"
     echo "$id"
     ;;
   status)
