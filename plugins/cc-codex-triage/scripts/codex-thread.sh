@@ -41,11 +41,17 @@ FORCE_NEW=false
 ONESHOT=false
 REQUIRE_EXISTING=false
 THREAD=""
+MODEL=""
+EFFORT=""
+SCHEMA=""
 while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
     --oneshot) ONESHOT=true; shift ;;
     --require-existing) REQUIRE_EXISTING=true; shift ;;
+    --model)  [[ $# -ge 2 ]] || { echo "--model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
+    --effort) [[ $# -ge 2 ]] || { echo "--effort needs a value" >&2; exit 1; }; EFFORT="$2"; shift 2 ;;
+    --schema) [[ $# -ge 2 ]] || { echo "--schema needs a value" >&2; exit 1; }; SCHEMA="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -77,6 +83,12 @@ if $FORCE_NEW && $REQUIRE_EXISTING; then
   echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
   exit 1
 fi
+if [[ -n "$EFFORT" ]]; then
+  case "$EFFORT" in none|minimal|low|medium|high|xhigh) ;; *)
+    echo "--effort must be none|minimal|low|medium|high|xhigh" >&2; exit 1 ;;
+  esac
+fi
+[[ -z "$SCHEMA" || -f "$SCHEMA" ]] || { echo "--schema file not found: $SCHEMA" >&2; exit 1; }
 
 command -v codex >/dev/null 2>&1 || {
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
@@ -140,6 +152,15 @@ fail_with_diag() {
 # where expanding an empty array directly is an "unbound variable" error.
 read -r -a EXTRA_FLAGS <<< "${CC_CODEX_FLAGS:-}"
 
+# model/effort: initial/oneshot ONLY (kept stable across the thread; WARN if passed
+# on resume). schema: a per-MESSAGE output shape — `codex exec resume` accepts
+# --output-schema, so it applies on EVERY path (initial, oneshot, AND resume).
+OVERRIDES=()
+[[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
+[[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
+SCHEMA_ARGS=()
+[[ -n "$SCHEMA" ]] && SCHEMA_ARGS+=( --output-schema "$SCHEMA" )
+
 # ── read prompt from stdin ────────────────────────────────────────────────
 PROMPT="$(cat)"
 [[ -z "$PROMPT" ]] && { echo "empty prompt on stdin" >&2; exit 1; }
@@ -198,15 +219,21 @@ if $ONESHOT; then
   # codex exec resume cannot continue an --ephemeral session — that is the point.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
   if ! codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
-  # No overrides on resume: -s (sandbox) and -C (cwd) are fixed at session
-  # creation and resume does not take them; -m/-c are accepted by newer codex
-  # CLIs but we deliberately omit them to keep the thread's model/config stable.
+  # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
+  # session creation and resume does not take them; -m/-c are accepted by newer
+  # codex CLIs but we deliberately omit them to keep the thread's model/config
+  # stable. --output-schema DOES apply here — it shapes this single message.
+  if [[ -n "$MODEL$EFFORT" ]]; then
+    echo "WARN: --model/--effort are ignored on resume (kept stable across the thread). Use --new to change them." >&2
+  fi
   if ! codex exec resume --json "$SID" \
+        ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
       "codex exec resume FAILED for thread '$THREAD' (session=$SID)." \
@@ -218,6 +245,7 @@ else
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
   if ! codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
   fi

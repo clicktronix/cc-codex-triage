@@ -23,6 +23,8 @@ for a in "$@"; do
   [[ "$prev" == "-o" ]] && out="$a"
   prev="$a"
 done
+# record argv so tests can assert the driver forwarded flags to codex
+printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
 cat >/dev/null
 if [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
   echo '{"type":"thread.started", "thread_id": "0a1b2c3d-1111-4222-8333-444455556666"}'
@@ -116,6 +118,38 @@ rm -rf "$SD"
 FAKE_CODEX_EXIT=7 run t6
 [[ "$RC" -eq 3 ]] && ok "exit 3 on codex failure" || bad "codex failure rc=$RC"
 [[ -f "$SD/t6.last-error.jsonl" ]] && ok "diagnostics saved" || bad "no diagnostics file"
+
+echo "== --model / --effort forwarded on initial dispatch =="
+rm -rf "$SD"; export FAKE_CODEX_ARGV="$T/argv"
+run t7 --model gpt-5.5 --effort high
+argv="$(tr '\0' '\n' < "$T/argv")"
+grep -qx -- '-m' <<<"$argv" && grep -qx 'gpt-5.5' <<<"$argv" && ok "--model -> -m gpt-5.5" || bad "--model not forwarded"
+grep -qx 'model_reasoning_effort=high' <<<"$argv" && ok "--effort -> -c model_reasoning_effort=high" || bad "--effort not forwarded"
+
+echo "== invalid --effort rejected (exit 1) =="
+run t7 --effort turbo; [[ "$RC" -eq 1 ]] && ok "bad effort -> exit 1" || bad "bad effort rc=$RC"
+
+echo "== --schema missing file rejected (exit 1) =="
+run t8 --schema "$T/nope.json"; [[ "$RC" -eq 1 ]] && ok "missing schema -> exit 1" || bad "missing schema rc=$RC"
+
+echo "== --schema forwarded as --output-schema =="
+echo '{}' > "$T/s.json"; rm -rf "$SD"
+run t9 --schema "$T/s.json"
+argv="$(tr '\0' '\n' < "$T/argv")"
+grep -qx -- '--output-schema' <<<"$argv" && ok "--schema -> --output-schema" || bad "--schema not forwarded"
+
+echo "== model/effort IGNORED + WARN on resume; schema IS forwarded on resume =="
+rm -rf "$SD"; run t10                       # initial creates .id
+FAKE_CODEX_ARGV="$T/argv2" run t10 --model gpt-5.5
+argv2="$(tr '\0' '\n' < "$T/argv2")"
+grep -qx 'gpt-5.5' <<<"$argv2" && bad "model leaked into resume" || ok "model not forwarded on resume"
+grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for model" || bad "no resume WARN"
+echo '{}' > "$T/s.json"
+FAKE_CODEX_ARGV="$T/argv3" run t10 --schema "$T/s.json"
+argv3="$(tr '\0' '\n' < "$T/argv3")"
+grep -qx -- '--output-schema' <<<"$argv3" && ok "--schema forwarded on resume" || bad "schema dropped on resume"
+grep -qi 'ignored on resume' "$T/err" && bad "schema wrongly warned as ignored" || ok "no false resume WARN for schema"
+unset FAKE_CODEX_ARGV
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

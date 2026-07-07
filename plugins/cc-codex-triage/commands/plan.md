@@ -1,6 +1,6 @@
 ---
 description: Send a plan, design doc, or architecture question to a persistent Codex plan thread to stress-test it. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
-argument-hint: "[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] <plan or architecture question>"
+argument-hint: "[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] <plan or architecture question>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -17,6 +17,7 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
    - `--once` → a single stress-test pass, no iterate-loop.
    - `--oneshot` → throwaway ephemeral run. Implies `--once`.
    - `--cap N` → max rounds in the loop (default 5).
+   - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
    The remainder is the plan text or a pointer to it (e.g. a `docs/plans/*.md` path Codex should read).
    - **Reuse guard (#8):** if the chosen thread already holds a clearly different plan/artifact, warn the user and suggest a fresh `--thread plan-<topic>` — one task = one thread (a thread reused across artifacts pays to re-feed the old context every round and muddies round semantics).
 
@@ -29,7 +30,7 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
 4. Run via Bash (timeout 600000):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] <<< "$PROMPT_BODY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] [--model <m>] [--effort <e>] <<< "$PROMPT_BODY"
    ```
 
 5. Show Codex's reply verbatim. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
