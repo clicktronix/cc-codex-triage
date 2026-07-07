@@ -137,6 +137,13 @@ arm_review main review-main 3 0 "$OFF"
 printf '[t] mode=resume thread=review-main round=2\nPROMPT:\n  p\nREPLY:\n  all addressed\n  APPROVE\n---\n' >> "$SD/review-main.log"
 expect_allow "post-arming APPROVE releases"
 
+echo "== post-arming --json reply with verdict EMBEDDED IN JSON (not standalone) does NOT release =="
+printf '[t] mode=initial thread=review-main round=1\nPROMPT:\n  p\nREPLY:\n  looks wrong\n  REQUEST_CHANGES\n---\n' > "$SD/review-main.log"
+OFF=$(logsize "$SD/review-main.log")
+arm_review main review-main 3 0 "$OFF"
+printf '[t] mode=resume thread=review-main round=2\nPROMPT:\n  p\nREPLY:\n  {"verdict":"APPROVE","findings":[]}\n---\n' >> "$SD/review-main.log"
+expect_block "JSON-embedded verdict (not a standalone line) does not release the gate"
+
 echo "== STALE APPROVE before the arming offset does NOT release =="
 printf '[t] mode=initial thread=review-main round=1\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' > "$SD/review-main.log"
 OFF=$(logsize "$SD/review-main.log")

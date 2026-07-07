@@ -88,6 +88,11 @@ if [[ -n "$EFFORT" ]]; then
     echo "--effort must be none|minimal|low|medium|high|xhigh" >&2; exit 1 ;;
   esac
 fi
+# Resolve a relative --schema against the caller's cwd NOW — the anchoring
+# `cd "$ANCHOR"` below changes cwd, and this same $SCHEMA string is forwarded
+# to `codex exec --output-schema` after that cd, so a relative path must be
+# made absolute before either the existence check or the forward.
+[[ -n "$SCHEMA" && "$SCHEMA" != /* ]] && SCHEMA="$PWD/$SCHEMA"
 [[ -z "$SCHEMA" || -f "$SCHEMA" ]] || { echo "--schema file not found: $SCHEMA" >&2; exit 1; }
 
 command -v codex >/dev/null 2>&1 || {

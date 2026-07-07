@@ -33,7 +33,9 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - State the SCOPE if implied ("this branch", "uncommitted", "last commit"); else default to uncommitted + current branch vs its merge base. When scope is uncommitted, **explicitly include untracked new files** — they are NOT in `git diff HEAD`; tell Codex to also read `git status --porcelain -uall` and `cat` the new files.
    - **Resume only:** prepend the follow-up header (no hand-written round number): `This is a follow-up review round. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
 
-5. **If `--background`:** launch the driver detached and return this turn without waiting — run the SAME command below via `Bash(..., run_in_background: true)` instead of a synchronous call. Then tell the user: "Codex review started in the background — I'll surface the result when it lands." Do NOT enter the iterate loop (step 9) and do NOT poll this turn.
+5. **If `--json`: PREFLIGHT before dispatch** — run BOTH checks: (a) `command -v jq >/dev/null 2>&1` (step 6 needs `jq` to parse the reply); (b) `codex exec --help 2>/dev/null | grep -q -- '--output-schema'` (the driver needs codex ≥ 0.142 for structured output — an older CLI rejects `--output-schema` and the dispatch fails generically). If **either** check fails, tell the user what `--json` requires — `jq`, and/or Codex ≥ 0.142 (`codex --version`; upgrade via `npm install -g @openai/codex`) — and STOP, do not dispatch (a paid call whose reply can't be parsed, or that a stale Codex rejects, is worse than not sending it).
+
+   **If `--background`:** launch the driver detached and return this turn without waiting — run the SAME command below via `Bash(..., run_in_background: true)` instead of a synchronous call. Then tell the user: "Codex review started in the background — I'll surface the result when it lands." Do NOT enter the iterate loop (step 9) and do NOT poll this turn.
 
    Otherwise, run via Bash (timeout 600000 — reviews take minutes):
 

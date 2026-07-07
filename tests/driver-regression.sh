@@ -52,6 +52,10 @@ SD=.claude/codex-threads
 UUID='0a1b2c3d-1111-4222-8333-444455556666'
 
 run() { OUT="$(bash "$DRIVER" "$@" 2>"$T/err" <<< "ping")"; RC=$?; }
+# Line immediately following the first exact match of $2 in newline-joined
+# argv $1 — used to assert a flag's value is ADJACENT to it, not just present
+# somewhere in argv.
+next_after() { awk -v flag="$2" 'f{print; exit} $0==flag{f=1}' <<<"$1"; }
 
 echo "== usage errors =="
 run "" ; [[ "$RC" -eq 1 ]] && ok "empty thread name -> exit 1" || bad "empty thread name (rc=$RC)"
@@ -137,6 +141,7 @@ echo '{}' > "$T/s.json"; rm -rf "$SD"
 run t9 --schema "$T/s.json"
 argv="$(tr '\0' '\n' < "$T/argv")"
 grep -qx -- '--output-schema' <<<"$argv" && ok "--schema -> --output-schema" || bad "--schema not forwarded"
+[[ "$(next_after "$argv" '--output-schema')" == "$T/s.json" ]] && ok "schema path immediately follows --output-schema (initial)" || bad "schema path not adjacent to --output-schema (initial)"
 
 echo "== model/effort IGNORED + WARN on resume; schema IS forwarded on resume =="
 rm -rf "$SD"; run t10                       # initial creates .id
@@ -144,10 +149,15 @@ FAKE_CODEX_ARGV="$T/argv2" run t10 --model gpt-5.5
 argv2="$(tr '\0' '\n' < "$T/argv2")"
 grep -qx 'gpt-5.5' <<<"$argv2" && bad "model leaked into resume" || ok "model not forwarded on resume"
 grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for model" || bad "no resume WARN"
+FAKE_CODEX_ARGV="$T/argv2b" run t10 --effort high
+argv2b="$(tr '\0' '\n' < "$T/argv2b")"
+grep -qx 'model_reasoning_effort=high' <<<"$argv2b" && bad "effort leaked into resume" || ok "effort not forwarded on resume"
+grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for effort" || bad "no resume WARN for effort"
 echo '{}' > "$T/s.json"
 FAKE_CODEX_ARGV="$T/argv3" run t10 --schema "$T/s.json"
 argv3="$(tr '\0' '\n' < "$T/argv3")"
 grep -qx -- '--output-schema' <<<"$argv3" && ok "--schema forwarded on resume" || bad "schema dropped on resume"
+[[ "$(next_after "$argv3" '--output-schema')" == "$T/s.json" ]] && ok "schema path immediately follows --output-schema (resume)" || bad "schema path not adjacent to --output-schema (resume)"
 grep -qi 'ignored on resume' "$T/err" && bad "schema wrongly warned as ignored" || ok "no false resume WARN for schema"
 unset FAKE_CODEX_ARGV
 

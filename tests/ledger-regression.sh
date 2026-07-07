@@ -22,4 +22,15 @@ id4="$(bash "$LEDGER" create th --file d.py --line 4 --severity blocking --title
 got4="$(bash "$LEDGER" get th "$id4" | jq -r '.confidence')"
 [[ "$got4" == "null" ]] && ok "garbage confidence -> null" || bad "garbage confidence not null: $got4"
 
+mkdir -p .claude/codex-threads
+printf '{"event":"create","id":"f1","ts":"2024-01-01T00:00:00Z","file":"legacy.py","line":10,"severity":"blocking","label":"issue","title":"pre-0.7 record","status":"open"}\n' > .claude/codex-threads/legacy.findings.jsonl
+getout="$(bash "$LEDGER" get legacy f1)"; getrc=$?
+[[ "$getrc" -eq 0 ]] && ok "get reads pre-0.7 record (no confidence field) without error" || bad "get failed on pre-0.7 record (rc=$getrc)"
+gotconf="$(jq -r '.confidence' <<<"$getout")"
+[[ "$gotconf" == "null" ]] && ok "pre-0.7 record confidence -> null" || bad "pre-0.7 record confidence: $gotconf"
+bash "$LEDGER" list legacy >/dev/null; listrc=$?
+[[ "$listrc" -eq 0 ]] && ok "list reads pre-0.7 record without error" || bad "list failed on pre-0.7 record (rc=$listrc)"
+bash "$LEDGER" open legacy >/dev/null; openrc=$?
+[[ "$openrc" -eq 0 ]] && ok "open reads pre-0.7 record without error" || bad "open failed on pre-0.7 record (rc=$openrc)"
+
 echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
