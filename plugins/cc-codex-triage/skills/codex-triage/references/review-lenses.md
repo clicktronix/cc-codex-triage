@@ -15,7 +15,7 @@ reusable `<...>` prompt blocks. To build the INSTRUCTION: take the lens's
 
 ## Contents
 
-- Reusable prompt blocks (output contract, JSON output contract, grounding, exhaustiveness, ...)
+- Reusable prompt blocks: output_contract, json_output_contract, grounding_rules, exhaustive_per_class, dig_deeper_nudge, verification_loop, plan_verdict
 - Review lenses: correctness (default), security, performance, architecture, ux, quick
 - Plan lenses: stress-test (default), pre-mortem, devils-advocate, alternatives, adr
 
@@ -62,6 +62,19 @@ Before finalizing, verify each finding is material and actionable, and that the 
 <exhaustive_per_class>
 When you find an instance of a problem class, search for ALL other sites of the same class and list every one in THIS round — do not dole out one per round.
 </exhaustive_per_class>
+
+<!-- plan_verdict: shared by ALL plan lenses. Exhaustiveness rule plus the machine verdict, so /status and tooling can read the plan's verdict instead of guessing from prose. -->
+<plan_verdict>
+When you find a gap of some class (e.g. an uncovered ingress path, a missing
+rollback step), enumerate ALL instances of that class in this round — do not
+surface one per round.
+
+End with a standalone verdict line: APPROVE | REQUEST_CHANGES | COMMENT.
+APPROVE = the plan is sound to execute as written; REQUEST_CHANGES = at least
+one blocking gap remains; COMMENT = only minor or optional concerns. Use
+REQUEST_CHANGES only for a genuinely blocking gap — do not hold APPROVE on
+nice-to-haves.
+</plan_verdict>
 ```
 
 ---
@@ -161,24 +174,11 @@ Include blocks: <output_contract>
 Plan lenses do NOT use the Conventional Comments findings format (that is for
 code). Each is a standalone INSTRUCTION for `/plan`, built the same way as a
 review lens: `<task>` plus its included blocks. All five share `<plan_verdict>`
-(defined below) — the exhaustiveness rule plus the same machine verdict reviews
-use, so `/status` and tooling can read the plan's verdict instead of guessing
-from prose. (Note: the `/autoplan` gate itself still releases on log-growth, not
-the verdict; verdict-gating the plan gate is a future change.)
-
-```xml
-<plan_verdict>
-When you find a gap of some class (e.g. an uncovered ingress path, a missing
-rollback step), enumerate ALL instances of that class in this round — do not
-surface one per round.
-
-End with a standalone verdict line: APPROVE | REQUEST_CHANGES | COMMENT.
-APPROVE = the plan is sound to execute as written; REQUEST_CHANGES = at least
-one blocking gap remains; COMMENT = only minor or optional concerns. Use
-REQUEST_CHANGES only for a genuinely blocking gap — do not hold APPROVE on
-nice-to-haves.
-</plan_verdict>
-```
+(defined above in the reusable prompt blocks library) — the exhaustiveness rule
+plus the same machine verdict reviews use, so `/status` and tooling can read the
+plan's verdict instead of guessing from prose. (Note: the `/autoplan` gate
+itself still releases on log-growth, not the verdict; verdict-gating the plan
+gate is a future change.)
 
 ### stress-test (default)
 
