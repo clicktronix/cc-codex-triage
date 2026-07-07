@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-07
+
+### Added
+
+- **XML-block prompt contracts.** `review-lenses.md` is restructured into a
+  reusable block library plus per-lens `<task>` blocks; commands assemble the
+  lens from named blocks instead of one flat template. No user-facing flag —
+  internal to how the prompt is built.
+- **`--model <m>` / `--effort <e>`** on `/review` and `/plan` — forwarded to
+  the driver, which applies them on the initial or `--oneshot` dispatch only;
+  a resume keeps the thread's model/effort stable and WARNs if you pass them
+  again (use `--new` to change them).
+- **`--background`** on `/review` and `/plan` — launches the driver detached
+  and returns the turn without waiting; implies a single pass, same as
+  `--once`.
+- **`--json`** on `/review` — opt-in structured output: Codex returns JSON per
+  `schemas/review-output.schema.json` instead of Conventional Comments prose,
+  rendered to a human view and auto-recorded in the findings ledger with a new
+  **`confidence`** (0..1) field per finding. Works on an initial dispatch or on
+  an existing thread (resume). Needs `codex` ≥ 0.142 (for `--output-schema`)
+  and `jq`. The `/autoreview` gate stays text-mode — a `--json` reply cannot
+  release it.
+
 ## [0.6.0] - 2026-06-21
 
 Backlog from a usage audit of ~23 real review/plan threads across two repos,
