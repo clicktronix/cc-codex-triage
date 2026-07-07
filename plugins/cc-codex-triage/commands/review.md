@@ -1,6 +1,6 @@
 ---
 description: Send code, a diff, a PR, or another agent's findings to a persistent Codex review thread for critique. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
-argument-hint: '[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] <paste or "review my branch">'
+argument-hint: '[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <paste or "review my branch">'
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -19,6 +19,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - `--cap N` → max review rounds in the loop (default 5).
    - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
    - `--continue` → resume from the last APPROVE: rebuild the prompt from the findings ledger (still-open findings) + the diff since the approved baseline, instead of re-authoring it. See **Findings ledger** below.
+   - `--background` → launch the driver detached (via `Bash(..., run_in_background: true)`) and return this turn without waiting; implies a single pass — no iterate loop (step 8), same as `--once`. Incompatible with `--continue`: if both are present, tell the user they conflict and pick `--continue` (foreground) — background is single-pass.
    The remainder is the user's paste/focus.
    - **Reuse guard (#8):** if the chosen thread already has a `.log` from a clearly different task (different feature/area than the current request), warn the user and suggest a fresh `--thread review-<topic>` — Codex would otherwise re-feed the old task's history every round.
 
@@ -31,7 +32,9 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - State the SCOPE if implied ("this branch", "uncommitted", "last commit"); else default to uncommitted + current branch vs its merge base. When scope is uncommitted, **explicitly include untracked new files** — they are NOT in `git diff HEAD`; tell Codex to also read `git status --porcelain -uall` and `cat` the new files.
    - **Resume only:** prepend the follow-up header (no hand-written round number): `This is a follow-up review round. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
 
-5. Run via Bash (timeout 600000 — reviews take minutes):
+5. **If `--background`:** launch the driver detached and return this turn without waiting — run the SAME command below via `Bash(..., run_in_background: true)` instead of a synchronous call. Then tell the user: "Codex review started in the background — I'll surface the result when it lands." Do NOT enter the iterate loop (step 8) and do NOT poll this turn.
+
+   Otherwise, run via Bash (timeout 600000 — reviews take minutes):
 
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] [--model <m>] [--effort <e>] <<< "$PROMPT_BODY"

@@ -1,6 +1,6 @@
 ---
 description: Send a plan, design doc, or architecture question to a persistent Codex plan thread to stress-test it. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
-argument-hint: "[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] <plan or architecture question>"
+argument-hint: "[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or architecture question>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -18,6 +18,7 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
    - `--oneshot` → throwaway ephemeral run. Implies `--once`.
    - `--cap N` → max rounds in the loop (default 5).
    - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
+   - `--background` → launch the driver detached (via `Bash(..., run_in_background: true)`) and return this turn without waiting; implies a single pass — no iterate loop (step 6), same as `--once`.
    The remainder is the plan text or a pointer to it (e.g. a `docs/plans/*.md` path Codex should read).
    - **Reuse guard (#8):** if the chosen thread already holds a clearly different plan/artifact, warn the user and suggest a fresh `--thread plan-<topic>` — one task = one thread (a thread reused across artifacts pays to re-feed the old context every round and muddies round semantics).
 
@@ -27,7 +28,9 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
    - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, and assemble the INSTRUCTION from the chosen plan lens's `<task>` block PLUS every block named on its `Include blocks:` line (each defined once in the file's `## Reusable prompt blocks` library — includes `<plan_verdict>`, the exhaustive-instances + machine-verdict contract), then include the plan text (or tell Codex which file to read). **On a resume the thread already holds the lens instruction — do NOT re-paste it;** point Codex at the revised plan (which file to re-read / what changed) and send only the follow-up header.
    - **Resume only:** prepend (no hand-written round number): `This is a follow-up round. Re-evaluate against your OWN prior objections first (resolved / partial / not addressed), then new ones. State explicitly how close the plan is to APPROVE.`
 
-4. Run via Bash (timeout 600000):
+4. **If `--background`:** launch the driver detached and return this turn without waiting — run the SAME command below via `Bash(..., run_in_background: true)` instead of a synchronous call. Then tell the user: "Codex plan review started in the background — I'll surface the result when it lands." Do NOT enter the iterate loop (step 6) and do NOT poll this turn.
+
+   Otherwise, run via Bash (timeout 600000):
 
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] [--model <m>] [--effort <e>] <<< "$PROMPT_BODY"
