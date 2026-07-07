@@ -14,4 +14,12 @@ id2="$(bash "$LEDGER" create th --file b.py --line 1 --severity non-blocking --t
 got2="$(bash "$LEDGER" get th "$id2" | jq -r '.confidence')"
 [[ "$got2" == "null" ]] && ok "confidence optional -> null" || bad "confidence not null: $got2"
 
+id3="$(bash "$LEDGER" create th --file c.py --line 2 --severity blocking --title t3 --confidence 5)"
+got3="$(bash "$LEDGER" get th "$id3" | jq -r '.confidence')"
+[[ "$got3" == "null" ]] && ok "out-of-range confidence -> null" || bad "out-of-range confidence not null: $got3"
+
+id4="$(bash "$LEDGER" create th --file d.py --line 4 --severity blocking --title t4 --confidence abc)"
+got4="$(bash "$LEDGER" get th "$id4" | jq -r '.confidence')"
+[[ "$got4" == "null" ]] && ok "garbage confidence -> null" || bad "garbage confidence not null: $got4"
+
 echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

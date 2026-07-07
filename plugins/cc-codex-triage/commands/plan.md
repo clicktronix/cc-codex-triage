@@ -38,7 +38,7 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
 
 5. Show Codex's reply verbatim. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
 
-6. **Iterate to APPROVE (default — skipped for `--once`, `--oneshot`):** if the verdict is `REQUEST_CHANGES`, revise the plan to address the blocking objections (validate them first — a plan objection can be wrong too), then go back to step 3 (resume) and re-stress, saying what you changed. Repeat until one of:
+6. **Iterate to APPROVE (default — skipped for `--once`, `--oneshot`, `--background`):** if the verdict is `REQUEST_CHANGES`, revise the plan to address the blocking objections (validate them first — a plan objection can be wrong too), then go back to step 3 (resume) and re-stress, saying what you changed. Repeat until one of:
    - **APPROVE** → the plan is sound to execute; done.
    - **only minor/optional concerns remain** (`COMMENT`) → done; report them.
    - **`--cap` rounds reached** → stop and surface the open objections — do not keep looping.

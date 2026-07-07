@@ -15,7 +15,7 @@
 # Requires jq. If jq is absent the ledger is disabled; the core review still works.
 #
 # Subcommands:
-#   create <thread> --file F --line L --severity blocking|non-blocking --label L --title "T"   -> prints the new id
+#   create <thread> --file F --line L --severity blocking|non-blocking --label L --title "T" [--confidence 0..1]   -> prints the new id
 #   status <thread> <id> <open|resolved|false-positive|accepted|deferred> [--note "T"]
 #   open   <thread>     -> open findings, one per line
 #   list   <thread>     -> all findings (folded), one per line
