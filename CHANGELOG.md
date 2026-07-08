@@ -27,6 +27,14 @@ All notable changes to this project are documented in this file.
   and `jq`. The `/autoreview` gate stays text-mode — a `--json` reply cannot
   release it.
 
+### Changed
+
+- **RED-baseline provenance moved out of the skill body** into
+  `skills/codex-triage/references/test-provenance.md`; SKILL.md keeps a
+  one-line rule-strength label per rule. Behavioural rule text is unchanged —
+  this removes dated maintainer records from always-loaded guidance (per
+  Anthropic's skill-authoring best practices) and trims the body.
+
 ## [0.6.0] - 2026-06-21
 
 Backlog from a usage audit of ~23 real review/plan threads across two repos,
