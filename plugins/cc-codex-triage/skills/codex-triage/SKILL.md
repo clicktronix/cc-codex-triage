@@ -65,7 +65,7 @@ Codex CLI runs with `-C <repo>` and a sandbox. It reads files, runs `git diff`/`
 
 ## Judge-mode framing — load-bearing rule
 
-> **Status:** RED baseline reproduced 2026-05-31 (see `tests/scenarios/codex-triage/judge-mode-paste.json` — scenario paths here and below live in the plugin's source repo, not in the installed plugin). Verdict: **INCONSISTENT**. Both Sonnet and Haiku already construct side-by-side framing on their own. The actual failure that survives without this skill is narrower: Sonnet under neutral framing tacks on *"provide a corrected implementation that addresses the valid issues"* — turning Codex into a fix-applier instead of a judge. **That** is what this rule prevents.
+*Rule strength: load-bearing — the tested failure is the "and fix it" addendum, not the framing. Baselines: [references/test-provenance.md](references/test-provenance.md).*
 
 When the user's input to `/review` (or `/thread`) contains **another agent's review or critique**, Codex's job is to **classify** the findings — not to apply fixes per them. The fix decision is the user's, after they see the classification.
 
@@ -103,13 +103,13 @@ When the input is the user's own direct question with no third-party review, pas
 
 ## Answering Codex back
 
-> **Status:** RED baseline run 2026-06-01 (`tests/scenarios/codex-triage/reply-tool-request.json`) — **did NOT reproduce** on the happy path. With a working tool call, both Sonnet and Haiku ran the command and pasted real output unprompted, and neither re-affirmed Codex's self-retracted claim. Kept as a brief reminder, not a strong rule. A narrow failure may remain when the tool call itself **fails** (lazy path = guess the output instead of debugging) — untested.
+*Rule strength: weak reminder — happy path did not reproduce; kept for the tool-failure case. Baselines: [references/test-provenance.md](references/test-provenance.md).*
 
 When replying via `/reply`: do the tool work Codex asks for and paste the **verbatim** output (don't predict it); represent the user's position, not Codex's; reject a finding only with a concrete file:line; and don't re-affirm a claim Codex already walked back mid-message. Capable models do this anyway — it is spelled out for weak-model and tool-failure cases. Keep replies short (≤500 words).
 
 ## Debating Codex — anti-capitulation rules
 
-> **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/debate-capitulation.json`) — **INCONSISTENT, narrow but real**. Sonnet+neutral holds a correct position unaided; Haiku under "wrap it up" pressure concedes the opponent's false premise ("you're right that RFC allows retry") and slides into common-ground-seeking, while still holding the core behaviour. These rules target that premise-level capitulation onset (the first stage of the 23.5–80.3% collapse measured in arXiv 2509.16533).
+*Rule strength: narrow but real — targets premise-level capitulation onset under wrap-it-up pressure. Baselines: [references/test-provenance.md](references/test-provenance.md).*
 
 When running `/debate`, you are a party with a position, not a moderator:
 
@@ -117,12 +117,12 @@ When running `/debate`, you are a party with a position, not a moderator:
 - **Concede only on evidence.** You may change your stance on a point ONLY by naming the specific evidence (file:line, doc, measurement, counter-example) that changed your assessment. "That's a fair point" without named evidence is forbidden.
 - **Advance or sharpen.** Each round must add new evidence or sharpen the disagreement. Repeating the prior round's argument means the debate is done — move to synthesis.
 - **No unearned middle ground.** Do not split the difference to end the discussion. A compromise needs its own justification.
-- **Argue, don't narrate the rules.** These rules govern your *reasoning*, not your *wording*. Never transcribe them into the message — no "уступаю с называнием доказательства", "на этом не уступаю", "вопрос на спор", "residual-решение, на котором не уступаю". Just make the argument: cite the evidence, add the new point, name the disagreement. Rule-compliance must show in the *substance*, not in labels announcing which rule you are obeying. Write in the conversation's language and avoid untranslated jargon ("wedge", "moat", "residual", "sequencing", "плацдарм") in your own turns; Codex's verbatim reply is exempt. (Observed leaking into a real debate — marqa `debate-product-functional-additions`, 2026-06-14: "Но из твоего же доказательства следует residual-решение, на котором не уступаю — SEQUENCING плацдарма".)
+- **Argue, don't narrate the rules.** These rules govern your *reasoning*, not your *wording*. Never transcribe them into the message — no "уступаю с называнием доказательства", "на этом не уступаю", "вопрос на спор", "residual-решение, на котором не уступаю". Just make the argument: cite the evidence, add the new point, name the disagreement. Rule-compliance must show in the *substance*, not in labels announcing which rule you are obeying. Write in the conversation's language and avoid untranslated jargon ("wedge", "moat", "residual", "sequencing", "плацдарм") in your own turns; Codex's verbatim reply is exempt. (Observed leaking in a real production debate — see [references/test-provenance.md](references/test-provenance.md).)
 - **Honest synthesis.** The final round lists: points of agreement, residual disagreements (stated plainly, not papered over), what changed whose mind and why, and a recommendation that admits uncertainty where it exists.
 
 ## Validating inbound Codex findings — verify before you apply
 
-> **Status:** RED run 2026-06-11 (`tests/scenarios/codex-triage/inbound-finding-validation.json`) — **did NOT reproduce** on strong models when the refuting evidence is in-context: both cells (neutral, and under APPROVE-gate + "тороплюсь" pressure) traced a wrong-in-context CRITICAL to the code, refused to merge the regression Codex's fix would introduce, and pushed back with file:line. Kept as a brief reminder for two reasons: (1) both agents justified verifying by citing `superpowers:receiving-code-review` **by name** — a skill most plugin users don't have installed, so the right behaviour was depending on a dependency the plugin doesn't ship; this section encodes the principle inline. (2) The test handed over the refuting code; the untested real failure is laziness about *going to read the files* when a finding looks plausible and the gate/user push for speed.
+*Rule strength: reminder — strong models verify unaided, but were relying on a skill this plugin doesn't ship; the principle is encoded inline. The untested failure is not going to read the files under speed pressure. Baselines: [references/test-provenance.md](references/test-provenance.md).*
 
 A Codex `/review` reply is a set of **claims to evaluate**, not orders to execute. Codex ran with `-C <repo>` but it saw the scope you sent and reasoned from the diff — it does **not** have the intent, the surrounding render/call path, or the reasons behind the current code. Treat every finding as "defensible until checked against the code."
 
@@ -142,7 +142,7 @@ This is the inbound mirror of Judge-mode: there you tell Codex not to take a thi
 
 ## Addressing findings — fix the neighborhood, not the cited line
 
-> **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/fix-neighborhood.json`) — **SPLIT**. On a small single-file fixture both models fix sibling sites unprompted (synthetic baseline unreproducible). The rule's regime is **cross-file / cross-call-chain neighborhoods at production scale**, where the failure is directly documented: a real 8-round review loop spent 3 rounds on ONE invariant because each fix patched exactly the cited site (first element → all elements → correct ordering).
+*Rule strength: real at production scale — small fixtures pass unaided; the documented failure is cross-file neighborhoods (a real loop spent 3 of 8 rounds on one invariant). Baselines: [references/test-provenance.md](references/test-provenance.md).*
 
 When fixing a review finding, treat it as an instance of a **problem class**, not a line defect:
 
