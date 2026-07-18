@@ -17,6 +17,9 @@ cat > "$T/bin/codex" <<'STUB'
 # Fake codex CLI for driver tests. Consumes stdin, writes the -o file, emits a
 # thread.started JSONL line. FAKE_CODEX_SPACED=1 emits "key": "value" with a
 # space after the colon (the formatting the old awk offsets silently broke on).
+# FAKE_CODEX_SLEEP=<s>  sleep before replying (lease-lifecycle tests).
+# FAKE_CODEX_BIGERR=1   emit >64KB of stderr noise (diag-cap test).
+# FAKE_CODEX_NOUUID=1   exit 0 but emit no recognizable session UUID.
 out=""
 prev=""
 for a in "$@"; do
@@ -26,7 +29,13 @@ done
 # record argv so tests can assert the driver forwarded flags to codex
 printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
 cat >/dev/null
-if [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
+[[ "${FAKE_CODEX_SLEEP:-0}" != "0" ]] && sleep "$FAKE_CODEX_SLEEP"
+if [[ "${FAKE_CODEX_BIGERR:-0}" == "1" ]]; then
+  awk 'BEGIN{for(i=0;i<2000;i++)print "ERRPAD "i" 0123456789012345678901234567890123456789012345678901234567890123456789"}' >&2
+fi
+if [[ "${FAKE_CODEX_NOUUID:-0}" == "1" ]]; then
+  echo '{"type":"thread.started","no_id_here":"nope"}'
+elif [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
   echo '{"type":"thread.started", "thread_id": "0a1b2c3d-1111-4222-8333-444455556666"}'
 else
   echo '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}'
@@ -160,6 +169,90 @@ grep -qx -- '--output-schema' <<<"$argv3" && ok "--schema forwarded on resume" |
 [[ "$(next_after "$argv3" '--output-schema')" == "$T/s.json" ]] && ok "schema path immediately follows --output-schema (resume)" || bad "schema path not adjacent to --output-schema (resume)"
 grep -qi 'ignored on resume' "$T/err" && bad "schema wrongly warned as ignored" || ok "no false resume WARN for schema"
 unset FAKE_CODEX_ARGV
+
+echo "== exit 7: persistent dispatch from a non-repo cwd, no env =="
+mkdir -p "$T/norepo"
+NOREPO="$(cd "$T/norepo" && pwd)"   # canonicalized: the driver reports bash's normalized $PWD
+cd "$NOREPO"
+run a1
+[[ "$RC" -eq 7 ]] && ok "non-repo cwd -> exit 7" || bad "non-repo cwd rc=$RC"
+grep -q "not inside a git repository" "$T/err" && grep -qF "$NOREPO" "$T/err" && ok "message names the candidate dir" || bad "exit-7 message wrong: $(cat "$T/err")"
+[[ ! -e "$NOREPO/.claude" ]] && ok "no .claude created in non-repo dir" || bad ".claude created in non-repo dir"
+cd "$REPO"
+
+echo "== exit 7: CLAUDE_PROJECT_DIR -> existing NON-repo dir =="
+export CLAUDE_PROJECT_DIR="$NOREPO"
+run a2
+unset CLAUDE_PROJECT_DIR
+[[ "$RC" -eq 7 ]] && ok "env candidate non-repo -> exit 7" || bad "env non-repo rc=$RC"
+[[ -z "$(ls -A "$NOREPO")" ]] && ok "nothing written to the candidate dir" || bad "candidate dir not empty: $(ls -A "$NOREPO")"
+
+echo "== exit 7: CLAUDE_PROJECT_DIR -> nonexistent path =="
+export CLAUDE_PROJECT_DIR="$T/does-not-exist"
+run a3
+unset CLAUDE_PROJECT_DIR
+[[ "$RC" -eq 7 ]] && ok "env candidate nonexistent -> exit 7" || bad "env nonexistent rc=$RC"
+
+echo "== CLAUDE_PROJECT_DIR -> repo SUBDIR resolves state to the repo root =="
+rm -rf "$SD"; mkdir -p "$REPO/sub/deeper"
+cd "$T"
+export CLAUDE_PROJECT_DIR="$REPO/sub/deeper"
+run a4
+unset CLAUDE_PROJECT_DIR
+cd "$REPO"
+[[ "$RC" -eq 0 && -f "$SD/a4.id" ]] && ok "state anchored at repo root from subdir candidate" || bad "subdir candidate (rc=$RC)"
+[[ ! -e "$REPO/sub/deeper/.claude" ]] && ok "no split state under the subdir" || bad "state split into subdir"
+
+echo "== --oneshot from a non-repo dir still dispatches, keeps no state =="
+cd "$NOREPO"
+run a5 --oneshot
+cd "$REPO"
+[[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "oneshot works outside a repo" || bad "oneshot non-repo (rc=$RC out=$OUT)"
+[[ ! -e "$NOREPO/.claude" ]] && ok "no state dir created by oneshot" || bad "state dir created by oneshot"
+
+echo "== failure diag is capped to the last 64KB =="
+rm -rf "$SD"
+FAKE_CODEX_EXIT=7 FAKE_CODEX_BIGERR=1 run a6
+[[ "$RC" -eq 3 ]] && ok "oversized-stderr failure -> exit 3" || bad "bigerr rc=$RC"
+SZ="$(wc -c < "$SD/a6.last-error.jsonl" 2>/dev/null | tr -d ' ')"
+[[ -n "$SZ" && "$SZ" -gt 0 && "$SZ" -le 65536 ]] && ok "diag capped ($SZ bytes <= 65536)" || bad "diag size: ${SZ:-missing}"
+
+echo "== success removes the previous last-error diag =="
+FAKE_CODEX_EXIT=7 run a7
+[[ -f "$SD/a7.last-error.jsonl" ]] && ok "failure stored a diag" || bad "no diag after failure"
+run a7
+[[ "$RC" -eq 0 && ! -e "$SD/a7.last-error.jsonl" ]] && ok "diag removed on next success" || bad "stale diag survived success (rc=$RC)"
+
+echo "== exit 0 without a UUID writes a FRESH diag (deletion precedes extraction) =="
+rm -rf "$SD"; mkdir -p "$SD"
+printf 'STALE_DIAG\n' > "$SD/a8.last-error.jsonl"
+FAKE_CODEX_NOUUID=1 run a8
+[[ "$RC" -eq 0 ]] && ok "no-UUID dispatch still exits 0" || bad "no-uuid rc=$RC"
+[[ -f "$SD/a8.last-error.jsonl" ]] && ok "fresh diag exists after the dispatch" || bad "diag missing — deletion ran after extraction"
+grep -q 'no_id_here' "$SD/a8.last-error.jsonl" 2>/dev/null && ok "diag holds the fresh stream, not the stale one" || bad "diag content stale"
+[[ ! -e "$SD/a8.id" ]] && ok "no .id persisted without a UUID" || bad ".id persisted without UUID"
+
+echo "== lease: .active holds the dispatching PID during dispatch, gone after =="
+rm -rf "$SD"
+FAKE_CODEX_SLEEP=2 bash "$DRIVER" a9 <<< "ping" > "$T/a9.out" 2>&1 &
+DRV=$!
+i=0; while [[ ! -f "$SD/a9.active" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -f "$SD/a9.active" ]] && ok "lease appeared during dispatch" || bad "lease never appeared"
+[[ "$(cat "$SD/a9.active" 2>/dev/null)" == "$DRV" ]] && ok "lease holds the dispatching PID" || bad "lease pid: '$(cat "$SD/a9.active" 2>/dev/null)' expected $DRV"
+wait "$DRV"; RC=$?
+[[ "$RC" -eq 0 && ! -e "$SD/a9.active" ]] && ok "lease removed after successful exit" || bad "lease left after success (rc=$RC)"
+FAKE_CODEX_EXIT=7 run a9b
+[[ "$RC" -eq 3 && ! -e "$SD/a9b.active" ]] && ok "lease removed after failed exit" || bad "lease left after failure (rc=$RC)"
+
+echo "== lease removal is ownership-checked: a foreign lease survives =="
+rm -rf "$SD"
+FAKE_CODEX_SLEEP=2 bash "$DRIVER" a10 <<< "ping" > "$T/a10.out" 2>&1 &
+DRV=$!
+i=0; while [[ ! -f "$SD/a10.active" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
+printf '%s' "99999999" > "$SD/a10.active"   # a second writer takes over the lease
+wait "$DRV"
+[[ -f "$SD/a10.active" && "$(cat "$SD/a10.active")" == "99999999" ]] && ok "foreign lease NOT removed by the earlier owner" || bad "foreign lease removed or altered"
+rm -f "$SD/a10.active"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

@@ -20,10 +20,15 @@
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
-#   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure.
+#   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure
+#                             (removed on the next successful dispatch; every
+#                             write is capped to the LAST 64 KB of the stream).
 #   <thread>.findings.jsonl   /review's findings ledger (per-task; reset by --new).
 #   <thread>.scope            /review's pinned scope (per-task; reset by --new).
 #   <thread>.approved         /review's last-APPROVE baseline (per-task; reset by --new).
+#   <thread>.active           PID lease held while a dispatch is in flight —
+#                             written atomically just before codex runs, removed
+#                             on exit only by the PID that wrote it.
 #
 # Exit codes:
 #   0   success
@@ -33,6 +38,8 @@
 #   4   codex exec resume failed (saved UUID preserved — re-run with --new)
 #   5   tracked-file mutation detected (only with CC_CODEX_TRIAGE_STRICT=1)
 #   6   --require-existing set but no existing thread
+#   7   persistent mode outside a git repository (state anchors to the repo
+#       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
 
 set -euo pipefail
 
@@ -89,7 +96,7 @@ if [[ -n "$EFFORT" ]]; then
   esac
 fi
 # Resolve a relative --schema against the caller's cwd NOW — the anchoring
-# `cd "$ANCHOR"` below changes cwd, and this same $SCHEMA string is forwarded
+# `cd "$ROOT"` below changes cwd, and this same $SCHEMA string is forwarded
 # to `codex exec --output-schema` after that cd, so a relative path must be
 # made absolute before either the existence check or the forward.
 [[ -n "$SCHEMA" && "$SCHEMA" != /* ]] && SCHEMA="$PWD/$SCHEMA"
@@ -102,12 +109,25 @@ command -v codex >/dev/null 2>&1 || {
 
 # ── anchor cwd ────────────────────────────────────────────────────────────
 # State paths are repo-relative, but the Bash tool's cwd persists across calls
-# and can drift into subdirectories. Anchor to the project root so the same
-# thread name always resolves to the same state files — and so the Stop hook
-# (which anchors the same way) reads the directory the driver wrote.
-ANCHOR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
-if [[ -n "$ANCHOR" && -d "$ANCHOR" ]]; then
-  cd "$ANCHOR"
+# and can drift into subdirectories. Persistent modes anchor to the RESOLVED
+# repo root — the candidate (CLAUDE_PROJECT_DIR or PWD) is passed through
+# `git rev-parse --show-toplevel`, so a candidate inside a subdirectory
+# resolves UP to the root and driver/hook state can never split. A candidate
+# that is not inside a repo (or does not exist) is a hard error: writing state
+# to an arbitrary directory is exactly the incident this guards against.
+# --oneshot skips resolution entirely — it keeps no repo state.
+if ! $ONESHOT; then
+  # set -e-safe form: a bare ROOT=$(git ...) failure would exit 128 here,
+  # before any check could produce the diagnostic below.
+  if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
+    echo "not inside a git repository (candidate: ${CLAUDE_PROJECT_DIR:-$PWD})." >&2
+    echo "Persistent threads anchor their state to the repo root. Fix one of:" >&2
+    echo "  - cd into the target repository," >&2
+    echo "  - point CLAUDE_PROJECT_DIR at (or inside) a git repository," >&2
+    echo "  - or use --oneshot for a state-less dispatch." >&2
+    exit 7
+  fi
+  cd "$ROOT"
 fi
 
 # ── paths ─────────────────────────────────────────────────────────────────
@@ -123,6 +143,7 @@ ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
 FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
 SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
 APPROVED_FILE="$STATE_DIR/${THREAD}.approved"
+LEASE_FILE="$STATE_DIR/${THREAD}.active"
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -139,14 +160,31 @@ else
 fi
 OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
-trap 'rm -f "$OUT_FILE" "$JSONL_FILE"' EXIT
+# Combined EXIT cleanup — installed exactly ONCE. Never add a second
+# `trap ... EXIT`: it would silently replace this one.
+cleanup() {
+  rm -f "$OUT_FILE" "$JSONL_FILE"
+  # Lease removal is ownership-checked: only the PID that wrote the lease may
+  # remove it — a later overlapping dispatch's lease must never be deleted by
+  # an earlier owner's exit.
+  if [[ -f "$LEASE_FILE" && "$(cat "$LEASE_FILE" 2>/dev/null)" == "$$" ]]; then
+    rm -f "$LEASE_FILE"
+  fi
+  # Detach hook: when a launcher exported a persisted-prompt tmpfile, this
+  # (child) invocation owns it. NEVER remove a READY file — the parent owns it.
+  if [[ -n "${CC_CODEX_PROMPT_TMPFILE:-}" ]]; then
+    rm -f "$CC_CODEX_PROMPT_TMPFILE"
+  fi
+}
+trap cleanup EXIT
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 # Preserve the raw Codex stream to a stable path before dying, so the path we
 # point the user at still exists after the EXIT trap removes the temp file.
+# Capped to the LAST 64 KB — the tail is where codex prints its actual error.
 fail_with_diag() {
   local code="$1"; shift
-  cp -f "$JSONL_FILE" "$DIAG_FILE" 2>/dev/null || true
+  tail -c 65536 "$JSONL_FILE" > "$DIAG_FILE" 2>/dev/null || true
   printf '%s\n' "$@" >&2
   echo "Diagnostics saved to: $DIAG_FILE" >&2
   exit "$code"
@@ -217,6 +255,19 @@ if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
   exit 6
 fi
 
+# ── active lease ──────────────────────────────────────────────────────────
+# In-flight marker for /cleanup: while this file names a live PID, the thread
+# is mid-dispatch and must not be archived (a resume waiting inside
+# `codex exec` writes nothing else until it returns). Acquired AFTER every
+# preflight — an invocation that exits earlier never creates it — and written
+# atomically so a reader never sees a partial PID. cleanup() removes it on
+# exit only while this PID still owns it.
+if ! $ONESHOT; then
+  LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
+  printf '%s' "$$" > "$LEASE_TMP"
+  mv -f "$LEASE_TMP" "$LEASE_FILE"
+fi
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
   MODE="oneshot"
@@ -228,6 +279,8 @@ if $ONESHOT; then
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
+  # last-error means the LAST error: a successful dispatch clears the diag.
+  rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
   # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
@@ -245,6 +298,8 @@ elif [[ -n "$SID" ]]; then
       "Possible causes: session expired/deleted, codex CLI upgrade broke wire format, or model unavailable." \
       "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
   fi
+  # last-error means the LAST error: a successful dispatch clears the diag.
+  rm -f "$DIAG_FILE"
 else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
@@ -254,6 +309,11 @@ else
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
   fi
+  # last-error means the LAST error: codex exited 0, so the previous failure's
+  # diag is stale — remove it NOW, BEFORE UUID extraction, so the deliberate
+  # diag write on a UUID-extraction failure below lands in a clean slot and is
+  # never erased by its own dispatch.
+  rm -f "$DIAG_FILE"
   # Extract the session UUID from the JSONL stream. First event carrying a
   # thread_id / session_id / conversation_id wins. Two-step: match the whole
   # key:value pair (whitespace-tolerant), then strip down to the value — no
@@ -274,7 +334,7 @@ else
   else
     echo "WARN: could not extract a valid UUID from codex --json output for thread '$THREAD' (got: '$SID')." >&2
     echo "The thread will NOT persist — next invocation will start fresh." >&2
-    cp -f "$JSONL_FILE" "$DIAG_FILE" 2>/dev/null || true
+    tail -c 65536 "$JSONL_FILE" > "$DIAG_FILE" 2>/dev/null || true
     echo "Raw stream saved to: $DIAG_FILE (file an issue if your codex CLI uses a non-standard event schema)." >&2
   fi
 fi
