@@ -74,7 +74,10 @@ a container root, stokli frontend/backend). Plan:
   acquires its PID lease FIRST and only then reports ready, so a printed
   `DETACHED pid=<pid> output=<thread>.detach-output` guarantees `/cleanup`
   already sees the thread as in-use. New exit codes: 8 — no isolator on PATH,
-  refused with zero state written; 9 — handshake timeout, spawn killed. Raw
+  refused with zero state written; 9 — handshake timeout, spawn killed; 10 —
+  thread busy: the dispatch lease could not be acquired (another dispatch
+  holds `<thread>.active` with a live PID, a concurrent claim holds the
+  acquisition mutex, or the lease is not a regular file). Raw
   child stdout/stderr goes to the `<thread>.detach-output` sidecar; the thread
   `.log` marker contract is untouched. `/review`/`/plan` `--background` now
   recommends `--detach` + polling the thread log for the next `round=` header;

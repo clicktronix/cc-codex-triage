@@ -52,7 +52,7 @@ The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI
 All commands shell out to the bundled driver. When you need to dispatch without a command body in context (e.g. the autoreview gate pointed you here, or the user asked in prose), call it directly:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing] <<< "$PROMPT"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing|--detach] <<< "$PROMPT"
 ```
 
 The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread, 7 = not a git repo — persistent state refused (cd into a repo, fix `CLAUDE_PROJECT_DIR`, or use `--oneshot`), 8 = `--detach` with no isolator available (neither `setsid` nor `python3` on PATH), 9 = `--detach` readiness handshake timed out (spawn killed; check `<thread>.detach-output`), 10 = thread busy — another dispatch holds the lease (`<thread>.active` names a live PID; wait for it or use a different `--thread`). The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.

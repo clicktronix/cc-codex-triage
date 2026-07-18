@@ -275,6 +275,59 @@ grep -q 'SKIP (armed since detection): thread ar2' <<<"$OUT" && ok "armed-since-
 [[ -f "$SD/ar2.last-error.jsonl" ]] && ok "newly-armed target's diag not moved" || bad "newly-armed diag was archived"
 rm -f "$SD/autoreview.armed"
 
+echo "== per-thread apply unit: overlapping flat target + dormant set moves as ONE unit =="
+reset_state
+printf 'scope-pin\n' > "$SD/ov1.scope"       # sidecar-only orphan -> ALSO a flat target
+echo 1 > "$SD/ov1.rounds"                    # dormant-only member
+old "$SD/ov1.rounds"
+touch -t 202001020000 "$SD/ov1.scope"        # strictly newest member of the set
+run --older-than 30 --apply
+grep -q 'changed since detection' <<<"$OUT" && bad "self-triggered changed-since-detection: $OUT" || ok "no self-trigger from the flat member"
+[[ ! -e "$SD/ov1.scope" && ! -e "$SD/ov1.rounds" ]] && ok "whole set archived, nothing left behind" || bad "half-done set: $(ls "$SD" 2>/dev/null)"
+a="$(last_archive)"
+[[ -f "$a/ov1.scope" && -f "$a/ov1.rounds" ]] && ok "both members landed in the archive" || bad "archive incomplete: $(ls "$a" 2>/dev/null)"
+grep -q 'Archived 2/2' <<<"$OUT" && ok "each file moved exactly once (2/2)" || bad "count wrong: $(grep Archived <<<"$OUT")"
+
+echo "== per-thread apply unit: lease created between detection and apply -> unit skipped =="
+reset_state
+echo u > "$SD/lv1.id"; echo l > "$SD/lv1.log"; old "$SD/lv1.id" "$SD/lv1.log"
+sleep 30 & LIVE4=$!
+REAL_MKTEMP="${REAL_MKTEMP:-$(command -v mktemp)}"
+mkdir -p "$T/stub5"
+cat > "$T/stub5/mktemp" <<STUB
+#!/usr/bin/env bash
+printf '%s' "$LIVE4" > "$REPO/$SD/lv1.active"
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$T/stub5/mktemp"
+OUT="$(PATH="$T/stub5:$PATH" bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+grep -q 'SKIP (in use since detection): thread lv1' <<<"$OUT" && ok "lease-since-detection skip noted" || bad "no in-use skip note: $OUT"
+[[ -f "$SD/lv1.id" && -f "$SD/lv1.log" ]] && ok "unit left untouched under the fresh lease" || bad "unit was archived"
+kill "$LIVE4" 2>/dev/null; wait "$LIVE4" 2>/dev/null
+rm -f "$SD/lv1.active"
+
+echo "== per-thread apply unit: gate armed while an EARLIER unit moved -> later unit skipped =="
+reset_state
+printf 'boom\n' > "$SD/aa1.last-error.jsonl"; old "$SD/aa1.last-error.jsonl"   # earlier unit (sorts first)
+echo u > "$SD/ov3.id"; echo l > "$SD/ov3.log"; old "$SD/ov3.id" "$SD/ov3.log"  # later dormant unit
+REAL_MV="$(command -v mv)"
+mkdir -p "$T/stub6"
+# The FIRST move of the apply arms a gate targeting ov3 — with no cross-unit
+# rail caching, ov3's unit (checked later, adjacent to its own move) must see it.
+cat > "$T/stub6/mv" <<STUB
+#!/usr/bin/env bash
+if [ ! -f "$REPO/$SD/autoreview.armed" ]; then
+  printf 'branch=main\nthread=ov3\nlens=correctness\ncap=3\nblocks=0\nlog_bytes_at_arming=0\n' > "$REPO/$SD/autoreview.armed"
+fi
+exec "$REAL_MV" "\$@"
+STUB
+chmod +x "$T/stub6/mv"
+OUT="$(PATH="$T/stub6:$PATH" bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+grep -q 'SKIP (armed since detection): thread ov3' <<<"$OUT" && ok "gate armed mid-apply blocks the later unit" || bad "no armed-since-detection note: $OUT"
+[[ -f "$SD/ov3.id" && -f "$SD/ov3.log" ]] && ok "later unit untouched despite passing detection" || bad "later unit archived under a fresh gate"
+[[ ! -e "$SD/aa1.last-error.jsonl" ]] && ok "earlier unit still archived normally" || bad "earlier unit not archived: $OUT"
+rm -f "$SD/autoreview.armed"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

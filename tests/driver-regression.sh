@@ -28,6 +28,8 @@ for a in "$@"; do
 done
 # record argv so tests can assert the driver forwarded flags to codex
 printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
+# append one line per invocation so tests can COUNT dispatches (race tests)
+[[ -n "${FAKE_CODEX_CALLS:-}" ]] && echo "$$" >> "$FAKE_CODEX_CALLS"
 cat >/dev/null
 [[ "${FAKE_CODEX_SLEEP:-0}" != "0" ]] && sleep "$FAKE_CODEX_SLEEP"
 if [[ "${FAKE_CODEX_BIGERR:-0}" == "1" ]]; then
@@ -370,7 +372,7 @@ rm -rf "$SD"
 mkdir -p "$T/nosetsid"
 # Full PATH farm for a complete dispatch, minus setsid (exercises the python
 # isolator even on Linux CI where setsid exists).
-for tool in bash git python3 cat mktemp sed awk date wc tr mv rm mkdir touch tail grep diff sleep ls env dirname xcrun; do
+for tool in bash git python3 cat mktemp sed awk date wc tr mv rm mkdir rmdir stat touch tail grep diff sleep ls env dirname xcrun; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/nosetsid/$tool"
 done
 PATH="$T/bin:$T/nosetsid" run d4 --detach
@@ -433,6 +435,135 @@ kill -TERM "$LPID" 2>/dev/null
 wait "$LPID" 2>/dev/null
 i=0; while [[ -n "$(ls -A "$T/dtmp8" 2>/dev/null)" && $i -lt 20 ]]; do sleep 0.1; i=$((i+1)); done
 [[ -z "$(ls -A "$T/dtmp8" 2>/dev/null)" ]] && ok "TERM mid-handshake left no tmpfiles" || bad "leftover tmpfiles: $(ls -A "$T/dtmp8")"
+
+echo "== atomic lease: barrier-controlled two-driver race -> exactly one dispatch =="
+cd "$REPO"
+rm -rf "$SD"
+mkdir -p "$T/racebin"
+REAL_MKDIR="$(command -v mkdir)"
+# A PATH mkdir stub that BARRIERS on the .active.lock claim: both drivers
+# block until both have reached the mutex mkdir, then race it — the exact
+# check-then-overwrite window the mutex must close.
+cat > "$T/racebin/mkdir" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in *.active.lock)
+    echo x >> "$T/race.barrier"
+    i=0
+    while [ "\$(wc -l < "$T/race.barrier" | tr -d ' ')" -lt 2 ] && [ "\$i" -lt 100 ]; do sleep 0.05; i=\$((i+1)); done
+  ;; esac
+done
+exec "$REAL_MKDIR" "\$@"
+STUB
+chmod +x "$T/racebin/mkdir"
+rm -f "$T/race.barrier" "$T/race.calls"
+PATH="$T/racebin:$PATH" FAKE_CODEX_SLEEP=2 FAKE_CODEX_CALLS="$T/race.calls" bash "$DRIVER" r1 <<< "ping" > "$T/r1a.out" 2>"$T/r1a.err" &
+P1=$!
+PATH="$T/racebin:$PATH" FAKE_CODEX_SLEEP=2 FAKE_CODEX_CALLS="$T/race.calls" bash "$DRIVER" r1 <<< "ping" > "$T/r1b.out" 2>"$T/r1b.err" &
+P2=$!
+wait "$P1"; RC1=$?
+wait "$P2"; RC2=$?
+CALLS="$(wc -l < "$T/race.calls" 2>/dev/null | tr -d ' ')"
+[[ "$CALLS" == "1" ]] && ok "stub codex reached EXACTLY once" || bad "stub invocations: ${CALLS:-0}"
+if [[ ( "$RC1" -eq 0 && "$RC2" -eq 10 ) || ( "$RC1" -eq 10 && "$RC2" -eq 0 ) ]]; then
+  ok "one dispatch succeeded, the other refused with exit 10 (rc1=$RC1 rc2=$RC2)"
+else
+  bad "race exit codes: rc1=$RC1 rc2=$RC2 (err1: $(cat "$T/r1a.err"); err2: $(cat "$T/r1b.err"))"
+fi
+grep -q 'busy' "$T/r1a.err" "$T/r1b.err" && ok "loser explained the refusal" || bad "no busy message: $(cat "$T/r1a.err" "$T/r1b.err")"
+[[ ! -e "$SD/r1.active" && ! -e "$SD/r1.active.lock" ]] && ok "lease + mutex both released after the race" || bad "leftover lease/lock: $(ls "$SD" 2>/dev/null)"
+
+echo "== busy --new: refused BEFORE any state reset (sidecars byte-for-byte intact) =="
+rm -rf "$SD"; mkdir -p "$SD"
+printf '%s' "$UUID" > "$SD/n1.id"
+echo "3" > "$SD/n1.rounds"
+printf '{"finding":1}\n' > "$SD/n1.findings.jsonl"
+printf 'scope-pin\n' > "$SD/n1.scope"
+printf 'approved-sha\n' > "$SD/n1.approved"
+mkdir -p "$T/n1snap"; cp "$SD"/n1.* "$T/n1snap/"
+sleep 30 & NL=$!
+printf '%s' "$NL" > "$SD/n1.active"
+run n1 --new
+[[ "$RC" -eq 10 ]] && ok "busy --new -> exit 10" || bad "busy --new rc=$RC err=$(cat "$T/err")"
+same=true
+for f in n1.id n1.rounds n1.findings.jsonl n1.scope n1.approved; do
+  cmp -s "$SD/$f" "$T/n1snap/$f" || { same=false; bad "sidecar changed by the refused --new: $f"; }
+done
+$same && ok "every sidecar byte-for-byte unchanged"
+
+echo "== busy + invalid saved ID: refused BEFORE the invalid-ID discard =="
+printf 'not-a-uuid' > "$SD/n2.id"
+printf '%s' "$NL" > "$SD/n2.active"
+run n2
+[[ "$RC" -eq 10 ]] && ok "busy thread with invalid .id -> exit 10" || bad "busy invalid-id rc=$RC err=$(cat "$T/err")"
+[[ "$(cat "$SD/n2.id" 2>/dev/null)" == "not-a-uuid" ]] && ok "invalid .id NOT discarded while busy" || bad ".id touched: '$(cat "$SD/n2.id" 2>/dev/null)'"
+run n2 --new
+[[ "$RC" -eq 10 && "$(cat "$SD/n2.id" 2>/dev/null)" == "not-a-uuid" ]] && ok "busy --new + invalid .id: refused, .id intact" || bad "busy --new invalid-id rc=$RC id='$(cat "$SD/n2.id" 2>/dev/null)'"
+kill "$NL" 2>/dev/null; wait "$NL" 2>/dev/null
+
+echo "== stale acquisition mutex (crashed acquirer) is stolen, dispatch proceeds =="
+rm -rf "$SD"; mkdir -p "$SD/s1.active.lock"
+touch -t 202001010000 "$SD/s1.active.lock"
+run s1
+[[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "stale lock stolen, dispatch went through" || bad "stale-lock rc=$RC err=$(cat "$T/err")"
+[[ ! -e "$SD/s1.active.lock" ]] && ok "stolen lock released after the dispatch" || bad "lock left behind"
+
+echo "== FRESH foreign acquisition mutex refuses the dispatch (exit 10) =="
+mkdir -p "$SD/s2.active.lock"
+export FAKE_CODEX_ARGV="$T/s2argv"; rm -f "$T/s2argv"
+run s2
+[[ "$RC" -eq 10 ]] && ok "fresh foreign lock -> exit 10" || bad "fresh-lock rc=$RC err=$(cat "$T/err")"
+grep -q 'concurrent lease acquisition' "$T/err" && ok "refusal names the lock contention" || bad "lock message: $(cat "$T/err")"
+[[ ! -e "$T/s2argv" ]] && ok "stub codex never ran under the foreign lock" || bad "dispatch ran despite the lock"
+[[ -d "$SD/s2.active.lock" ]] && ok "foreign lock left in place (not ours to release)" || bad "foreign lock removed"
+unset FAKE_CODEX_ARGV
+rm -rf "$SD/s2.active.lock"
+
+echo "== detach: aborted handshake reaps a delayed READY-writing child =="
+rm -rf "$SD"
+mkdir -p "$T/dtmp9" "$T/delayisol"
+# A fake isolator that IGNORES the real child and becomes a delayed sleeper:
+# it records its PID, waits, then would recreate READY and keep living —
+# unless the launcher's abort path actually terminates it.
+cat > "$T/delayisol/setsid" <<S
+#!/usr/bin/env bash
+echo \$\$ > "$T/sleeper.pid"
+sleep 2
+printf '%s' "\$\$" > "\$CC_CODEX_READY_FILE"
+sleep 30
+S
+chmod +x "$T/delayisol/setsid"
+rm -f "$T/sleeper.pid"
+TMPDIR="$T/dtmp9" PATH="$T/delayisol:$PATH" bash "$DRIVER" d9 --detach <<< "ping" > "$T/d9.out" 2>&1 &
+LPID9=$!
+i=0; while [[ ! -s "$T/sleeper.pid" && $i -lt 50 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -s "$T/sleeper.pid" ]] && ok "delayed child spawned and reported its PID" || bad "child never spawned"
+kill -TERM "$LPID9" 2>/dev/null
+wait "$LPID9" 2>/dev/null
+SLEEPER="$(cat "$T/sleeper.pid" 2>/dev/null)"
+i=0; while kill -0 "$SLEEPER" 2>/dev/null && [[ $i -lt 30 ]]; do sleep 0.1; i=$((i+1)); done
+kill -0 "$SLEEPER" 2>/dev/null && bad "delayed child still alive after the launcher TERM" || ok "delayed child terminated by the abort path"
+sleep 2.5   # ride past the child's READY-write moment — nothing may recreate it
+[[ -z "$(ls -A "$T/dtmp9" 2>/dev/null)" ]] && ok "no READY resurrection, no leftover tmpfiles" || bad "leftovers: $(ls -A "$T/dtmp9")"
+
+echo "== detach: handshake-timeout path also reaps a never-ready child =="
+rm -rf "$SD"
+mkdir -p "$T/dtmp10" "$T/noreadyisol"
+# Never writes READY at all: the launcher must hit the 5s timeout, TERM the
+# spawn, and CONFIRM it is gone before removing its tmpfiles.
+cat > "$T/noreadyisol/setsid" <<S
+#!/usr/bin/env bash
+echo \$\$ > "$T/noready.pid"
+sleep 60
+S
+chmod +x "$T/noreadyisol/setsid"
+rm -f "$T/noready.pid"
+TMPDIR="$T/dtmp10" PATH="$T/noreadyisol:$PATH" run d10 --detach
+[[ "$RC" -eq 9 ]] && ok "never-ready child -> exit 9" || bad "timeout rc=$RC err=$(cat "$T/err")"
+NRPID="$(cat "$T/noready.pid" 2>/dev/null)"
+i=0; while kill -0 "$NRPID" 2>/dev/null && [[ $i -lt 30 ]]; do sleep 0.1; i=$((i+1)); done
+kill -0 "$NRPID" 2>/dev/null && bad "never-ready child survived the timeout reap" || ok "never-ready child confirmed terminated"
+[[ -z "$(ls -A "$T/dtmp10" 2>/dev/null)" ]] && ok "timeout path left no tmpfiles" || bad "leftovers: $(ls -A "$T/dtmp10")"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

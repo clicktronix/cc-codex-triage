@@ -33,11 +33,19 @@
 #   <thread>.scope            /review's pinned scope (per-task; reset by --new).
 #   <thread>.approved         /review's last-APPROVE baseline (per-task; reset by --new).
 #   <thread>.active           PID lease held while a dispatch is in flight —
-#                             written atomically just before codex runs, removed
-#                             on exit only by the PID that wrote it. Acquisition
-#                             is EXCLUSIVE: a lease naming a live foreign PID
-#                             refuses the new dispatch (exit 10); a dead or
-#                             malformed lease is stale state and is overwritten.
+#                             acquired BEFORE any existing-thread mutation
+#                             (--new's sidecar reset, the invalid-ID discard),
+#                             removed on exit only by the PID that wrote it.
+#                             Acquisition is EXCLUSIVE and ATOMIC: the whole
+#                             claim runs inside the <thread>.active.lock mutex,
+#                             a lease naming a live foreign PID refuses the new
+#                             dispatch (exit 10); a dead or malformed lease is
+#                             stale state and is overwritten.
+#   <thread>.active.lock      mkdir mutex serializing lease acquisition (mkdir
+#                             is atomic on POSIX). Held only for the few file
+#                             ops of the claim; a lock older than 60s can only
+#                             be a crashed acquirer and is stolen. Released by
+#                             cleanup() on every exit path.
 #   <thread>.detach-output    raw stdout/stderr of a --detach child. The .log
 #                             marker contract above is unchanged — the child
 #                             appends rounds/replies exactly like a foreground
@@ -57,10 +65,12 @@
 #       PATH) — refused with ZERO state written
 #   9   --detach: ready-handshake timed out (spawn killed, launcher-owned
 #       tmpfiles removed; check <thread>.detach-output)
-#   10  dispatch refused: could not acquire the thread's lease — either
-#       another dispatch is mid-flight (<thread>.active names a live PID:
-#       wait for it or use a different --thread), or <thread>.active is not
-#       a regular file (inspect and remove it manually)
+#   10  dispatch refused: could not acquire the thread's lease — another
+#       dispatch is mid-flight (<thread>.active names a live PID: wait for
+#       it or use a different --thread), a concurrent claim holds the
+#       acquisition mutex (<thread>.active.lock — retry shortly), or
+#       <thread>.active is not a regular file (inspect and remove it
+#       manually)
 
 set -euo pipefail
 
@@ -100,7 +110,11 @@ while (( $# )); do
   esac
 done
 
-[[ -z "$THREAD" ]] && { echo "usage: codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing]" >&2; exit 1; }
+[[ -z "$THREAD" ]] && {
+  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing] [--detach]" >&2
+  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease held) — see --help" >&2
+  exit 1
+}
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
 if $FORCE_NEW && $ONESHOT; then
   echo "--new and --oneshot are mutually exclusive (--new resets a persistent thread; --oneshot keeps none)." >&2
@@ -197,6 +211,10 @@ LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
 LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
+# mkdir mutex serializing lease acquisition; HAVE_LEASE_LOCK tracks whether
+# THIS process currently holds it so cleanup() can release it on every path.
+LEASE_LOCK="$STATE_DIR/${THREAD}.active.lock"
+HAVE_LEASE_LOCK=false
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -258,9 +276,45 @@ if $DETACH; then
   # just before the normal-success exit — at that point READY is already gone
   # and the child owns the prompt tmpfile.
   DETACH_DONE=false
-  PROMPT_TMPFILE=""; READY_FILE=""
+  PROMPT_TMPFILE=""; READY_FILE=""; SPAWN_PID=""
+  # Settle an ABORTED handshake's spawn: TERM its whole session/process group,
+  # then CONFIRM termination (bounded ~2s poll, escalating to KILL) — a
+  # delayed child left unsignaled (or TERMed but unconfirmed) could recreate
+  # READY after this launcher is gone and keep dispatching ownerless. After a
+  # confirmed DETACHED success the child owns itself — that is the feature —
+  # so this kill applies only to ABORTED handshakes (DETACH_DONE
+  # short-circuits detach_cleanup before it can run).
+  reap_spawn() {
+    [[ -n "$SPAWN_PID" ]] || return 0
+    # The spawn is its own session leader (pgid == pid) — kill the whole
+    # group; fall back to the bare PID if the group is already gone.
+    kill -TERM -"$SPAWN_PID" 2>/dev/null || kill -TERM "$SPAWN_PID" 2>/dev/null || true
+    local i=0 st
+    while [[ $i -lt 20 ]]; do
+      kill -0 "$SPAWN_PID" 2>/dev/null || break
+      # kill -0 also succeeds on a zombie (dead, not yet reaped child) — read
+      # the real state; empty or Z* means it is already gone. The `|| true`
+      # is load-bearing: BSD ps exits non-zero for a zombie it cannot list,
+      # and under set -e/pipefail a bare failing assignment would kill the
+      # launcher mid-reap.
+      st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+      case "$st" in ''|Z*) break ;; esac
+      sleep 0.1
+      i=$((i+1))
+    done
+    if kill -0 "$SPAWN_PID" 2>/dev/null; then
+      st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+      case "$st" in ''|Z*) ;; *) kill -KILL -"$SPAWN_PID" 2>/dev/null || kill -KILL "$SPAWN_PID" 2>/dev/null || true ;; esac
+    fi
+    wait "$SPAWN_PID" 2>/dev/null || true   # reap the zombie
+    return 0
+  }
   detach_cleanup() {
     "$DETACH_DONE" && return 0
+    # Settle the spawn FIRST, only then remove the launcher-owned tmpfiles —
+    # the reverse order would leave a window where a still-alive child
+    # recreates READY after it was unlinked.
+    reap_spawn
     [[ -n "$PROMPT_TMPFILE" ]] && rm -f "$PROMPT_TMPFILE"
     [[ -n "$READY_FILE" ]] && rm -f "$READY_FILE"
     return 0
@@ -298,9 +352,10 @@ if $DETACH; then
     i=$((i+1))
   done
   if [[ -z "$CHILD_PID" ]]; then
-    # The spawn is its own session leader, so its pgid == its pid — kill the
-    # whole group, then the launcher-owned files.
-    kill -TERM -"$SPAWN_PID" 2>/dev/null || kill -TERM "$SPAWN_PID" 2>/dev/null || true
+    # ABORTED handshake: TERM the spawn's session group and CONFIRM it is
+    # dead (bounded wait, KILL escalation) BEFORE removing the launcher-owned
+    # files — an unconfirmed TERM would let a slow child recreate READY.
+    reap_spawn
     rm -f "$READY_FILE" "$PROMPT_TMPFILE"
     echo "--detach handshake timed out after 5s: the child never reported ready (spawn killed)." >&2
     echo "Raw child output (if any): $DETACH_OUT" >&2
@@ -320,6 +375,13 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 # reaching this line, so the two can never collide.)
 cleanup() {
   rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP"
+  # Release a still-held acquisition mutex (exit paths inside the claim's
+  # critical section — busy refusal, non-regular lease, failed verify). A
+  # normal acquisition releases it inline and clears the flag first.
+  if [[ "$HAVE_LEASE_LOCK" == true ]]; then
+    rmdir "$LEASE_LOCK" 2>/dev/null || true
+    HAVE_LEASE_LOCK=false
+  fi
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
   # an earlier owner's exit.
@@ -364,10 +426,72 @@ SCHEMA_ARGS=()
 PROMPT="$(cat)"
 [[ -z "$PROMPT" ]] && { echo "empty prompt on stdin" >&2; exit 1; }
 
+# ── active lease ──────────────────────────────────────────────────────────
+# In-flight marker for /cleanup: while this file names a live PID, the thread
+# is mid-dispatch and must not be archived (a resume waiting inside
+# `codex exec` writes nothing else until it returns). Acquired BEFORE any
+# existing-thread mutation below (--new's sidecar reset, the invalid-ID
+# discard): a busy thread must be refused with its state byte-for-byte
+# intact. cleanup() removes the lease on exit only while this PID owns it.
+#
+# Acquisition is ATOMIC: an mkdir mutex (<thread>.active.lock — mkdir is
+# atomic on POSIX) serializes the whole claim, so two near-simultaneous
+# dispatches can never both pass the busy check and both write the lease
+# (and a directory can no longer race into place between the check and the
+# mv). Inside the mutex: the live-owner check, the non-regular-file refusal,
+# and the tmp write + mv + verification. The mutex is held only for those
+# few file ops — a lock older than 60s can only be a crashed acquirer and is
+# stolen (rmdir + one retry). cleanup() releases a still-held mutex on every
+# exit path.
+if ! $ONESHOT; then
+  if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
+    LOCK_MTIME="$(stat -f '%m' "$LEASE_LOCK" 2>/dev/null || stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || true)"
+    NOW_EPOCH="$(date +%s)"
+    if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
+      rmdir "$LEASE_LOCK" 2>/dev/null || true   # stale: its acquirer crashed mid-claim
+    fi
+    if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
+      echo "thread $THREAD is busy (concurrent lease acquisition holds $LEASE_LOCK) — retry shortly, or use a different --thread" >&2
+      exit 10
+    fi
+  fi
+  HAVE_LEASE_LOCK=true
+  # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
+  # faster of two overlapping dispatches remove the lease on exit (ownership
+  # check passes for the overwriter) while the slower one still runs —
+  # /cleanup would then see an idle thread mid-dispatch. It would also resume
+  # the same codex session from two processes at once. Refuse instead; a
+  # dead/malformed lease is stale state and is overwritten as before.
+  if BUSY_PID="$(lease_busy_pid)"; then
+    echo "thread $THREAD is busy (active dispatch pid=$BUSY_PID) — wait for it or use a different --thread" >&2
+    exit 10   # cleanup() releases the mutex
+  fi
+  # A non-regular <thread>.active (e.g. a directory) can never hold a lease:
+  # `mv` below would move the tmp file INSIDE it, and READY/dispatch would
+  # proceed with no lease on disk. Refuse before writing anything.
+  if [[ -e "$LEASE_FILE" && ! -f "$LEASE_FILE" ]]; then
+    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE exists but is not a regular file — inspect and remove it manually." >&2
+    exit 10
+  fi
+  printf '%s' "$$" > "$LEASE_TMP"
+  mv -f "$LEASE_TMP" "$LEASE_FILE"
+  # Verify the acquisition before releasing the mutex: races are excluded by
+  # the lock, but the verification still catches filesystem-level surprises
+  # (and any future caller that skips the mutex).
+  if [[ ! -f "$LEASE_FILE" || "$(cat "$LEASE_FILE" 2>/dev/null)" != "$$" ]]; then
+    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE is not a regular file holding this PID after acquisition — inspect the state dir." >&2
+    exit 10
+  fi
+  rmdir "$LEASE_LOCK" 2>/dev/null || true
+  HAVE_LEASE_LOCK=false
+fi
+
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW; then
   # Reset the per-task sidecars too, so a reused thread name does not inherit
-  # the previous task's findings ledger / scope / approval baseline.
+  # the previous task's findings ledger / scope / approval baseline. Runs
+  # while HOLDING the lease — a busy thread was refused above with every
+  # sidecar intact.
   rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE"
 fi
 
@@ -411,48 +535,14 @@ if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
   exit 6
 fi
 
-# ── active lease ──────────────────────────────────────────────────────────
-# In-flight marker for /cleanup: while this file names a live PID, the thread
-# is mid-dispatch and must not be archived (a resume waiting inside
-# `codex exec` writes nothing else until it returns). Acquired AFTER every
-# preflight — an invocation that exits earlier never creates it — and written
-# atomically so a reader never sees a partial PID. cleanup() removes it on
-# exit only while this PID still owns it.
-if ! $ONESHOT; then
-  # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
-  # faster of two overlapping dispatches remove the lease on exit (ownership
-  # check passes for the overwriter) while the slower one still runs —
-  # /cleanup would then see an idle thread mid-dispatch. It would also resume
-  # the same codex session from two processes at once. Refuse instead; a
-  # dead/malformed lease is stale state and is overwritten as before.
-  if BUSY_PID="$(lease_busy_pid)"; then
-    echo "thread $THREAD is busy (active dispatch pid=$BUSY_PID) — wait for it or use a different --thread" >&2
-    exit 10
-  fi
-  # A non-regular <thread>.active (e.g. a directory) can never hold a lease:
-  # `mv` below would move the tmp file INSIDE it, and READY/dispatch would
-  # proceed with no lease on disk. Refuse before writing anything.
-  if [[ -e "$LEASE_FILE" && ! -f "$LEASE_FILE" ]]; then
-    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE exists but is not a regular file — inspect and remove it manually." >&2
-    exit 10
-  fi
-  printf '%s' "$$" > "$LEASE_TMP"
-  mv -f "$LEASE_TMP" "$LEASE_FILE"
-  # Verify the acquisition before any READY report or dispatch: a directory
-  # racing into place between the check above and the mv would swallow the
-  # tmp file and leave no lease at the expected path.
-  if [[ ! -f "$LEASE_FILE" || "$(cat "$LEASE_FILE" 2>/dev/null)" != "$$" ]]; then
-    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE is not a regular file holding this PID after acquisition — inspect the state dir." >&2
-    exit 10
-  fi
-  # Detach handshake (child side): a --detach launcher exported
-  # CC_CODEX_READY_FILE and is polling it for our PID. Written only AFTER the
-  # lease is held, so a DETACHED report proves /cleanup already sees this
-  # thread as in-use. The parent owns the READY file and removes it — NEVER
-  # delete it here.
-  if [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
-    printf '%s' "$$" > "$CC_CODEX_READY_FILE"
-  fi
+# ── detach handshake (child side) ─────────────────────────────────────────
+# A --detach launcher exported CC_CODEX_READY_FILE and is polling it for our
+# PID. Written only AFTER the lease is held (acquired above, before any
+# thread-state mutation) and every preflight passed, so a DETACHED report
+# proves /cleanup already sees this thread as in-use. The parent owns the
+# READY file and removes it — NEVER delete it here.
+if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+  printf '%s' "$$" > "$CC_CODEX_READY_FILE"
 fi
 
 # ── dispatch ──────────────────────────────────────────────────────────────

@@ -32,10 +32,13 @@
 #      lease is stale state like any other and joins the archivable set in
 #      every class.
 #   2. a thread named by an armed gate's `thread=` line is never archived.
-#   3. on --apply, EVERY target is revalidated immediately before the move:
-#      the rail check re-runs per thread (a gate re-armed or a dispatch
-#      started since detection -> skip), and each flat target / dormant set
-#      is re-stat'ed (mtime changed since detection -> skip).
+#   3. on --apply, targets are grouped into per-thread UNITS and EVERY unit
+#      is revalidated immediately before its moves: the rail check re-runs
+#      adjacent to each unit — never cached across units (a gate re-armed or
+#      a dispatch started while earlier units moved -> skip), and each flat
+#      target / dormant set is re-stat'ed (mtime changed since detection ->
+#      skip). Dormant membership supersedes flat targets: a file queued both
+#      ways moves exactly once, with its whole set.
 #   4. generic `review`/`plan` threads are listed but never auto-archived.
 
 set -u
@@ -362,44 +365,73 @@ if [ "$APPLY" = true ]; then
     if [ -e "$dest/$b" ]; then echo "  SKIP (name clash, not overwritten): $b"; return 0; fi
     if mv "$1" "$dest/"; then moved=$((moved+1)); echo "  archived: $b"; else echo "  FAILED to move: $b"; fi
   }
-  # Apply-time revalidation (rail 3) for EVERY target, flat or dormant:
-  # detection ran earlier in this same process, but the world may have moved —
-  # a gate re-armed, a dispatch started, a diag refreshed. The rail check
-  # re-runs once per thread (cached); freshness is re-stat'ed per flat target
-  # and per dormant set.
-  RAIL_OK=" "; RAIL_BLOCKED=" "
-  revalidate_thread() { # $1=thread; 0 = still archivable (note printed once on skip)
-    case "$RAIL_OK" in *" $1 "*) return 0 ;; esac
-    case "$RAIL_BLOCKED" in *" $1 "*) return 1 ;; esac
-    rail_check "$1"; _rc=$?
-    if [ "$_rc" -eq 0 ]; then RAIL_OK="$RAIL_OK$1 "; return 0; fi
-    case "$_rc" in
+  # Apply-time revalidation (rail 3), organized as per-thread UNITS: every
+  # target belonging to a thread — flat or dormant — is applied as ONE unit,
+  # with the rail check and the freshness re-stat run immediately adjacent to
+  # its moves. NO cross-unit caching: a lease or armed gate appearing while
+  # earlier units were moving is seen by every later unit. Dormant membership
+  # SUPERSEDES flat targets: a file queued both ways moves exactly once, WITH
+  # its set — moving it early as a flat target would change the set's newest
+  # mtime and self-trigger the changed-since-detection skip, leaving the
+  # promised whole-set archive half-done.
+  apply_rail_note() { # $1=thread $2=rail code
+    case "$2" in
       1) echo "  SKIP (in use since detection): thread $1" ;;
       2) echo "  SKIP (armed since detection): thread $1" ;;
       *) echo "  SKIP (generic thread): $1" ;;
     esac
-    RAIL_BLOCKED="$RAIL_BLOCKED$1 "
+  }
+  is_dormant() { # $1=thread
+    local j=0
+    while [ "$j" -lt "${#DORMANT_NAMES[@]}" ]; do
+      [ "${DORMANT_NAMES[$j]}" = "$1" ] && return 0
+      j=$((j+1))
+    done
     return 1
   }
+  DONE_THREADS=" "
   i=0
   while [ "$i" -lt "${#ARCHIVE[@]}" ]; do
     p="${ARCHIVE[$i]}"; det="${ARCHIVE_MTIMES[$i]}"; i=$((i+1))
     n="$(thread_of "$p")"
-    if [ -n "$n" ] && ! revalidate_thread "$n"; then continue; fi
-    cur="$(_mtime_epoch "$p")"
-    if [ "$cur" != "$det" ]; then
-      echo "  SKIP (changed since detection): ${p#"$STATE_DIR"/}"
+    if [ -z "$n" ]; then
+      # Not thread-owned (armed gate files): a unit of one — re-stat
+      # immediately before the move.
+      cur="$(_mtime_epoch "$p")"
+      if [ "$cur" != "$det" ]; then
+        echo "  SKIP (changed since detection): ${p#"$STATE_DIR"/}"
+        continue
+      fi
+      move_one "$p"
       continue
     fi
-    move_one "$p"
+    is_dormant "$n" && continue      # superseded: moves with its whole set below
+    case "$DONE_THREADS" in *" $n "*) continue ;; esac
+    DONE_THREADS="$DONE_THREADS$n "
+    # One unit: the rail check runs HERE, immediately before this thread's
+    # flat targets move back-to-back.
+    rail_check "$n"; rc=$?
+    if [ "$rc" -ne 0 ]; then apply_rail_note "$n" "$rc"; continue; fi
+    j=0
+    while [ "$j" -lt "${#ARCHIVE[@]}" ]; do
+      q="${ARCHIVE[$j]}"; qdet="${ARCHIVE_MTIMES[$j]}"; j=$((j+1))
+      [ "$(thread_of "$q")" = "$n" ] || continue
+      cur="$(_mtime_epoch "$q")"
+      if [ "$cur" != "$qdet" ]; then
+        echo "  SKIP (changed since detection): ${q#"$STATE_DIR"/}"
+        continue
+      fi
+      move_one "$q"
+    done
   done
-  # Dormant sets move wholesale — same revalidation: rails re-run per thread,
-  # and anything touched since detection means the thread woke up; leave it
-  # alone this run.
+  # Dormant sets move wholesale — one unit per thread: the rail check and the
+  # whole-set freshness re-stat run immediately before its members move
+  # (including any member that was also queued as a flat target above).
   i=0
   while [ "$i" -lt "${#DORMANT_NAMES[@]}" ]; do
     n="${DORMANT_NAMES[$i]}"; det="${DORMANT_MTIMES[$i]}"; i=$((i+1))
-    revalidate_thread "$n" || continue
+    rail_check "$n"; rc=$?
+    if [ "$rc" -ne 0 ]; then apply_rail_note "$n" "$rc"; continue; fi
     cur="$(newest_mtime "$n")"
     if [ "$cur" != "$det" ]; then
       echo "  SKIP (changed since detection): thread $n"
@@ -407,7 +439,6 @@ if [ "$APPLY" = true ]; then
     fi
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      in_archive "$p" && continue   # already moved with the flat targets
       move_one "$p"
     done <<EOF
 $(thread_files "$n")
