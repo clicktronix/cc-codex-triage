@@ -13,3 +13,5 @@ has_field() { grep -q "^${2}=" "$1" 2>/dev/null; }   # $1=file $2=key
 
 # Portable file mtime (BSD/macOS `stat -f`, GNU/Linux `stat -c`).
 _mtime() { stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$1" 2>/dev/null || { stat -c '%y' "$1" 2>/dev/null | cut -d. -f1; }; }
+# Same, but as epoch seconds — for age comparisons (BSD find has no -newermt).
+_mtime_epoch() { stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null; }

@@ -1,5 +1,5 @@
 ---
-description: Find and (optionally) archive stale cc-codex-triage state in this repo — stale/pre-0.5 armed gates, orphan thread logs, and contaminated generic threads. Dry-run by default; --apply archives (never deletes).
+description: Find and (optionally) archive stale cc-codex-triage state in this repo — stale/pre-0.5 armed gates, orphan thread logs, stale last-error diags, dormant threads (--older-than), and contaminated generic threads. Dry-run by default; --apply archives (never deletes).
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -9,20 +9,64 @@ disable-model-invocation: true
 Surfaces stale state and, on confirmation, archives it. Never deletes — `--apply`
 moves items into a `.archive-<timestamp>-*/` subdir, so it is reversible.
 
+Detection classes:
+
+- **Stale armed gates** — armed for a branch other than the current one.
+- **Pre-0.5 armed gates** — missing `log_bytes_at_arming` (the hook fails open on them).
+- **Orphan logs** — a `<thread>.log` with no `<thread>.id` (the thread never persisted).
+- **Stale last-error diags** — a `<thread>.last-error.jsonl` whose thread has no
+  `.id` (orphan diagnostics) or whose `.log` is newer than the diag (the thread
+  recovered after the failure). A diag newer than the log on a persisted thread
+  is the thread's live last error and is NOT flagged.
+- **Dormant threads** — only with `--older-than <days>` (integer **≥ 1**;
+  `0`, negatives, and non-numbers are rejected): a thread's whole file-set
+  (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
+  detach-output, active`) qualifies when its NEWEST member is older than N
+  days. Listed on dry run, moved wholesale on `--apply`.
+- **Generic threads** — `review`/`plan` default threads. Listed only, never
+  auto-archived.
+
+Safety rails (in precedence order):
+
+1. **Live lease** — while `<thread>.active` names a live PID, a dispatch is in
+   flight (a resume waiting inside `codex exec` may write nothing until it
+   returns): the thread is skipped unconditionally. A dead-PID or malformed
+   lease is itself stale state and joins the archivable set.
+2. **Armed targets** — a thread named by `autoreview.armed`/`autoplan.armed`
+   `thread=` lines is never archived, even when dormant.
+3. **Re-stat before move** — on `--apply`, each dormant set's newest mtime is
+   re-checked immediately before moving; if anything changed since detection,
+   the thread is skipped with a note.
+4. Generic `review`/`plan` threads stay list-only (rule above).
+
 ## Steps
 
-1. **Dry run first** — run via Bash and show the output verbatim:
+1. **Dry run first** — run via Bash and show the output verbatim (add
+   `--older-than <days>` only when the user asked to sweep dormant threads —
+   30 is a sensible default to suggest):
 
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.sh"
+   # or, including dormant threads:
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.sh" --older-than 30
    ```
 
-2. If it found stale/orphan items, summarize them for the user and ask whether to archive. Note that **generic threads (`review`/`plan`) are listed but never auto-archived** — they may be active; the user decides via `/thread-new` or a per-task `--thread`.
+2. If it found stale/orphan/dormant items, summarize them for the user and ask
+   whether to archive. Note that **generic threads (`review`/`plan`) are listed
+   but never auto-archived** — they may be active; the user decides via
+   `/thread-new` or a per-task `--thread`. Threads reported `IN USE` (live
+   dispatch) or `SKIP` (armed-gate target) are excluded automatically.
 
-3. **Only after the user agrees**, archive (non-destructive — moves to `.archive-<timestamp>-*/`):
+3. **Only after the user agrees**, archive (non-destructive — moves to
+   `.archive-<timestamp>-*/`; repeat the same `--older-than` value used in the
+   dry run):
 
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.sh" --apply
+   # or, including dormant threads:
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/cleanup.sh" --older-than 30 --apply
    ```
 
-4. Tell the user where things were archived and that restoring is just moving them back. Stale armed gates that were archived can be re-created with `/autoreview on` / `/autoplan on` on the right branch.
+4. Tell the user where things were archived and that restoring is just moving
+   them back. Stale armed gates that were archived can be re-created with
+   `/autoreview on` / `/autoplan on` on the right branch.

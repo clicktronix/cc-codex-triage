@@ -337,11 +337,20 @@ grep -qi 'timed out' "$T/err" && bad "false timeout reported for a fast child" |
 i=0; while ! grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
 grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && ok "fast child: reply landed" || bad "fast child: no reply"
 
-# detach + concurrent cleanup (plan Task 4 t6) is deferred: cleanup.sh has no
-# --older-than yet. TODO(Task 5): add the in-flight-race regression here — a
-# detached child sleeps holding its lease on an old-mtime thread while
-# `cleanup --older-than 1 --apply` runs concurrently; the thread must be
-# skipped and the dispatch must complete intact.
+echo "== detach + concurrent cleanup: live lease shields an old-mtime thread =="
+CLEANUP="$(dirname "$DRIVER")/cleanup.sh"
+rm -rf "$SD"
+FAKE_CODEX_SLEEP=3 run d6 --detach
+[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "detach parent returned for the race test" || bad "race-test detach rc=$RC out=$OUT err=$(cat "$T/err")"
+# The child sleeps inside the stub having written NOTHING but its lease and the
+# sidecar. Age every member so only lease liveness — not mtime — protects it.
+touch -t 202001010000 "$SD"/d6.* 2>/dev/null
+CLEANOUT="$(bash "$CLEANUP" --older-than 1 --apply 2>&1)"; CRC=$?
+[[ "$CRC" -eq 0 ]] && grep -q 'IN USE  d6' <<<"$CLEANOUT" && ok "concurrent cleanup skipped the in-flight thread" || bad "cleanup race (rc=$CRC out=$CLEANOUT)"
+[[ -f "$SD/d6.active" ]] && ok "lease untouched by concurrent cleanup" || bad "cleanup removed the live lease"
+i=0; while ! grep -q FAKE_REPLY "$SD/d6.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d6.log" 2>/dev/null && ok "dispatch completed intact after concurrent cleanup" || bad "dispatch broken by concurrent cleanup ($(cat "$SD/d6.detach-output" 2>/dev/null))"
+[[ "$(cat "$SD/d6.rounds" 2>/dev/null)" == "1" ]] && ok "rounds bumped exactly once despite the race" || bad "rounds after race: $(cat "$SD/d6.rounds" 2>/dev/null)"
 
 echo "== detach: first-ever detach in a fresh repo (no state dir at all) =="
 REPO2="$T/repo2"
