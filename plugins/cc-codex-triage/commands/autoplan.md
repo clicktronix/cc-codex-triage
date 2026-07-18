@@ -31,8 +31,9 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # (normally your /plan round). The log, unlike .rounds, is not reset by
    # /thread-new — a bare reset cannot fake a dispatch.
    LOG_BYTES=$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' '); LOG_BYTES=${LOG_BYTES:-0}
-   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" > "$STATE_DIR/autoplan.armed"
+   # armed_at: the hook auto-expires a gate armed more than 14 days ago.
+   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\n' \
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" > "$STATE_DIR/autoplan.armed"
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Already-changed plan docs to stress-test now? Locations honor
    # CC_CODEX_PLAN_PATHS (space-separated pathspecs; default = the two dirs).
@@ -53,5 +54,6 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoplan.armed`. Branch-scoped.
+- Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Plan-doc detection covers `docs/plans/` and `docs/PLANS/` by default. For other layouts, set `CC_CODEX_PLAN_PATHS` (space-separated pathspecs, e.g. `CC_CODEX_PLAN_PATHS="docs/rfcs planning"`) in your environment — the hook and the arming check both honor it. Or use `/plan` manually.
 - Pairs with `/autoreview` (same hook, code gate).

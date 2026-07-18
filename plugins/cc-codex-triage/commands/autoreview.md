@@ -33,8 +33,9 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
    # previous arming can never release the gate. (The log, unlike .rounds, is
    # not reset by /thread-new, so the snapshot cannot be faked or collided.)
    LOG_BYTES=$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' '); LOG_BYTES=${LOG_BYTES:-0}
-   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" > "$STATE_DIR/autoreview.armed"
+   # armed_at: the hook auto-expires a gate armed more than 14 days ago.
+   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\n' \
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" > "$STATE_DIR/autoreview.armed"
    echo "autoreview armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Is there already work to review on this branch?
    git status --porcelain -uall | grep -vF '.claude/codex-threads/' | grep -q . \
@@ -53,5 +54,6 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoreview.armed`. Branch-scoped — switching branches disengages it until you re-arm (or switch back).
+- Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Each blocked round is a full Codex dispatch when you run `/review` — cap defaults to 3 to bound cost.
 - Pairs with `/autoplan` (same hook, plan-document gate).

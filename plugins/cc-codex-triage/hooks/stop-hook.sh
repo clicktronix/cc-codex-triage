@@ -14,6 +14,10 @@
 #      the thread log changed size since arming (a dispatch always appends).
 #   3. Scoping: armed branch must match the current branch and the tree must
 #      actually be dirty for that gate's file class.
+#   4. TTL: an armed file whose armed_at epoch is older than 14 days is
+#      removed by a pre-pass over BOTH files before either gate runs.
+#      Missing/malformed/future armed_at skips TTL for that file (fail-open —
+#      ≤0.7 armed files have no armed_at and keep working).
 #
 # stop_hook_active is deliberately NOT an unconditional allow: honoring it
 # would cap the gate at one block per user turn and silently break the
@@ -23,7 +27,8 @@
 # Armed state (written by /autoreview, /autoplan commands):
 #   .claude/codex-threads/autoreview.armed
 #   .claude/codex-threads/autoplan.armed
-#   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming.
+#   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming,
+#   armed_at (0.8+, drives the TTL).
 #   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open):
 #   autoreview parses verdicts only from log content appended after it;
 #   autoplan releases when the log size differs from it.
@@ -162,9 +167,44 @@ last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.
   ' | grep -oE 'APPROVE|REQUEST_CHANGES|COMMENT' | tail -1
 }
 
+# ── Gate TTL pre-pass ───────────────────────────────────────────────────────
+# An armed gate older than 14 days is stale — a month-old gate re-firing on a
+# reused branch name is the audited hazard. This runs over BOTH armed files
+# BEFORE either gate evaluates branch/dirt: the gates run sequentially and
+# allow/emit_block exit the whole hook, so inline expiry inside a gate would
+# suppress or orphan the other gate. The pre-pass itself never exits — gate
+# evaluation proceeds on whatever survived.
+# Fail-open: missing/malformed/future armed_at (including every ≤0.7 armed
+# file, which has no armed_at) skips TTL for that file. An expired file that
+# cannot be removed is treated as absent for the remainder of THIS run only —
+# never block on an unremovable stale gate.
+GATE_TTL=1209600   # 14 days, in seconds
+epoch_date() { # $1=epoch → ISO day. BSD `date -r <epoch>`, GNU `date -d @<epoch>`.
+  date -r "$1" '+%Y-%m-%d' 2>/dev/null || date -d "@$1" '+%Y-%m-%d' 2>/dev/null || printf 'epoch %s' "$1"
+}
+AR_TTL_DEAD=0; AP_TTL_DEAD=0
+NOW="$(date +%s 2>/dev/null || true)"
+if is_num "${NOW:-}"; then
+  for kind in autoreview autoplan; do
+    f="$STATE_DIR/$kind.armed"
+    [[ -f "$f" ]] || continue
+    armed_at="$(raw_field "$f" armed_at)"
+    is_num "$armed_at" || continue            # missing/malformed → TTL skipped
+    [[ "${#armed_at}" -le 12 ]] || continue   # absurd length would overflow bash arithmetic
+    [[ "$armed_at" -le "$NOW" ]] || continue  # future timestamp → TTL skipped
+    [[ $(( NOW - armed_at )) -gt "$GATE_TTL" ]] || continue
+    if rm -f "$f" 2>/dev/null && [[ ! -e "$f" ]]; then
+      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) — removed; re-arm with /$kind on." >&2
+    else
+      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) but could not be removed (state dir not writable?) — ignoring it for this turn; re-arm with /$kind on." >&2
+      case "$kind" in autoreview) AR_TTL_DEAD=1 ;; autoplan) AP_TTL_DEAD=1 ;; esac
+    fi
+  done
+fi
+
 # ── /autoreview ─────────────────────────────────────────────────────────────
 AR="$STATE_DIR/autoreview.armed"
-if [[ -f "$AR" ]]; then
+if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
   ar_branch="$(read_field "$AR" branch "")"
   if [[ "$ar_branch" == "$BRANCH" ]] && dirty_code; then
     thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
@@ -203,7 +243,7 @@ fi
 
 # ── /autoplan ───────────────────────────────────────────────────────────────
 AP="$STATE_DIR/autoplan.armed"
-if [[ -f "$AP" ]]; then
+if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
   ap_branch="$(read_field "$AP" branch "")"
   if [[ "$ap_branch" == "$BRANCH" ]] && dirty_plans; then
     thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"

@@ -108,6 +108,27 @@ for kind in autoreview autoplan; do
     echo "      WARNING armed for '$ab' but you are on '$BRANCH' — gate is dormant until you switch back (it is NOT auto-cleared)."
   has_field "$f" log_bytes_at_arming || \
     echo "      WARNING pre-0.5 armed file (no log_bytes_at_arming) — the hook fails open. Re-arm with /$kind on."
+  # armed_at age (0.8+): the hook auto-expires gates armed more than 14 days
+  # ago. A file without armed_at (≤0.7) is TTL-exempt — nothing to show.
+  if has_field "$f" armed_at; then
+    aa="$(field "$f" armed_at)"
+    now="$(date +%s 2>/dev/null)"
+    case "$aa" in
+      ''|*[!0-9]*) echo "      WARNING armed_at is not a numeric epoch ('$aa') — the hook skips TTL for this gate." ;;
+      *)
+        if [ -n "$now" ] && [ "$aa" -le "$now" ]; then
+          age_days=$(( (now - aa) / 86400 ))
+          if [ $(( now - aa )) -gt 1209600 ]; then
+            echo "      WARNING armed ${age_days}d ago — past the 14-day TTL; will auto-expire on the next gated turn."
+          else
+            echo "      armed ${age_days}d ago (auto-expires 14d after arming)"
+          fi
+        else
+          echo "      WARNING armed_at is in the future — the hook skips TTL for this gate."
+        fi
+        ;;
+    esac
+  fi
   if [ -n "$at" ] && [ ! -f "$STATE_DIR/$at.log" ] && [ ! -f "$STATE_DIR/$at.id" ]; then
     echo "      WARNING target thread '$at' has no log/id on disk — the gate cannot find it. Did you run /$base with a different --thread name?"
   fi

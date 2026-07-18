@@ -236,6 +236,80 @@ expect_allow "autoplan cap reached allows"
 grep -q "round cap (2) reached" "$ERR" && ok "autoplan cap note on stderr" || bad "missing autoplan cap note"
 rm -rf docs "$SD/autoplan.armed" "$SD/plan-main.log"
 
+# ── Gate TTL pre-pass (14-day auto-expiry, armed_at epoch) ──────────────────
+NOW_S="$(date +%s)"
+OLD_AT=$(( NOW_S - 1209600 - 3600 ))   # 14 days + 1 hour ago -> expired
+# docs/plans dirt serves both gates below: it is plan dirt AND code dirt.
+mkdir -p docs/plans && echo p > docs/plans/ttl.md
+
+echo "== TTL t1: expired autoreview + fresh dirty autoplan -> autoreview removed, autoplan still blocks =="
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoreview.armed"
+arm_plan main plan-main 2 0
+printf 'armed_at=%s\n' "$NOW_S" >> "$SD/autoplan.armed"
+expect_block "expired autoreview does not suppress the fresh autoplan gate"
+printf '%s' "$OUT" | grep -q 'commands/plan.md' && ok "block came from autoplan" || bad "expected the autoplan block (got: $OUT)"
+[[ ! -f "$SD/autoreview.armed" ]] && ok "expired autoreview.armed removed" || bad "expired autoreview.armed still present"
+grep -q "autoreview gate expired after 14 days" "$ERR" && ok "autoreview expiry note on stderr" || bad "missing autoreview expiry note"
+rm -f "$SD/autoplan.armed"
+
+echo "== TTL t2: fresh autoreview + expired autoplan -> autoreview blocks, autoplan removed =="
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$NOW_S" >> "$SD/autoreview.armed"
+arm_plan main plan-main 2 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoplan.armed"
+expect_block "fresh autoreview still blocks"
+printf '%s' "$OUT" | grep -q 'commands/review.md' && ok "block came from autoreview" || bad "expected the autoreview block (got: $OUT)"
+[[ ! -f "$SD/autoplan.armed" ]] && ok "expired autoplan.armed removed BEFORE the autoreview block exited the hook" || bad "expired autoplan.armed still present"
+grep -q "autoplan gate expired after 14 days" "$ERR" && ok "autoplan expiry note on stderr" || bad "missing autoplan expiry note"
+
+echo "== TTL t3: both expired -> both removed, hook allows =="
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoreview.armed"
+arm_plan main plan-main 2 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoplan.armed"
+expect_allow "both gates expired -> allow despite dirt"
+[[ ! -f "$SD/autoreview.armed" && ! -f "$SD/autoplan.armed" ]] && ok "both armed files removed" || bad "an expired armed file survived"
+grep -q "autoreview gate expired" "$ERR" && grep -q "autoplan gate expired" "$ERR" && ok "both expiry notes on stderr" || bad "missing an expiry note"
+
+echo "== TTL t4: both fresh -> exact 0.7 behavior (autoreview fires first, counter bumps, files kept) =="
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$NOW_S" >> "$SD/autoreview.armed"
+arm_plan main plan-main 2 0
+printf 'armed_at=%s\n' "$NOW_S" >> "$SD/autoplan.armed"
+expect_block "fresh gates block exactly as before"
+printf '%s' "$OUT" | grep -q 'commands/review.md' && ok "autoreview gate fires first" || bad "wrong gate fired (got: $OUT)"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "1" ]] && ok "blocks counter increments (armed_at survives the bump)" || bad "blocks counter not incremented"
+[[ -f "$SD/autoplan.armed" ]] && ok "fresh autoplan.armed untouched" || bad "fresh autoplan.armed removed"
+rm -f "$SD/autoplan.armed"
+
+echo "== TTL t5: malformed / future armed_at -> TTL skipped, gate behavior unchanged =="
+arm_review main review-main 3 0
+printf 'armed_at=banana\n' >> "$SD/autoreview.armed"
+expect_block "malformed armed_at still blocks"
+[[ -f "$SD/autoreview.armed" ]] && ok "malformed armed_at file not removed" || bad "malformed armed_at file removed"
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' $(( NOW_S + 864000 )) >> "$SD/autoreview.armed"
+expect_block "future armed_at still blocks"
+[[ -f "$SD/autoreview.armed" ]] && ok "future armed_at file not removed" || bad "future armed_at file removed"
+
+echo "== TTL t6: 0.7-format armed file (no armed_at) with ancient mtime is TTL-exempt =="
+arm_review main review-main 3 0
+touch -t 202001010000 "$SD/autoreview.armed"
+expect_block "0.7 armed file still blocks (TTL keys on armed_at, never mtime)"
+[[ -f "$SD/autoreview.armed" ]] && ok "0.7 armed file not removed" || bad "0.7 armed file removed by TTL"
+
+echo "== TTL t7: unremovable expired file -> treated absent this run, loud warning =="
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoreview.armed"
+chmod 555 "$SD"
+expect_allow "unremovable expired gate does not block this run"
+grep -q "could not be removed" "$ERR" && ok "loud unremovable warning on stderr" || bad "missing unremovable warning"
+chmod 755 "$SD"
+[[ -f "$SD/autoreview.armed" ]] && ok "file survived the failed rm (as expected)" || bad "file unexpectedly gone despite read-only dir"
+rm -f "$SD/autoreview.armed"
+rm -rf docs
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
