@@ -58,6 +58,8 @@ tests/
   scenarios/codex-triage/             # RED→GREEN eval scenarios
   hook-regression.sh                  # Stop-hook suite (bash tests/hook-regression.sh)
   driver-regression.sh                # driver suite with a stubbed codex CLI
+  ledger-regression.sh                # findings-ledger suite (jq required)
+  cleanup-regression.sh               # /cleanup suite — detection classes + safety rails
 CHANGELOG.md
 LICENSE                               # MIT
 ```

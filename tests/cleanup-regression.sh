@@ -41,6 +41,14 @@ run --older-than
 run --older-than 1
 [[ "$RC" -eq 0 ]] && ok "--older-than 1 accepted" || bad "--older-than 1 (rc=$RC out=$OUT)"
 
+echo "== --older-than: leading zero read base-10, overflow-length rejected =="
+run --older-than 08
+[[ "$RC" -eq 0 ]] && grep -q 'older than 8 day' <<<"$OUT" && ok "--older-than 08 handled as 8 (documented base-10 normalization)" || bad "--older-than 08 (rc=$RC out=$OUT)"
+run --older-than 999999999999999
+[[ "$RC" -ne 0 ]] && grep -q 'capped at 5 digits' <<<"$OUT" && ok "--older-than 999999999999999 rejected" || bad "huge --older-than (rc=$RC out=$OUT)"
+run --older-than 30
+[[ "$RC" -eq 0 ]] && ok "--older-than 30 accepted" || bad "--older-than 30 (rc=$RC out=$OUT)"
+
 echo "== orphan diag (no .id) flagged and archivable =="
 reset_state
 printf 'boom\n' > "$SD/x1.last-error.jsonl"
@@ -181,6 +189,91 @@ run --apply
 grep -q 'IN USE  oi1' <<<"$OUT" && ok "in-flight orphan-looking thread reported IN USE" || bad "no IN USE for orphan scan: $OUT"
 [[ -f "$SD/oi1.log" && -f "$SD/oi1.active" ]] && ok "in-flight orphan-looking thread untouched" || bad "orphan scan archived an in-flight thread"
 kill "$LIVE2" 2>/dev/null; wait "$LIVE2" 2>/dev/null
+
+echo "== rails matrix: armed target shields EVERY class =="
+BR="$(git rev-parse --abbrev-ref HEAD)"
+arm() { printf 'branch=%s\nthread=%s\nlens=correctness\ncap=3\nblocks=0\nlog_bytes_at_arming=0\narmed_at=%s\n' "$BR" "$1" "$(date +%s)" > "$SD/autoreview.armed"; }
+reset_state; arm ao1; echo l > "$SD/ao1.log"                        # orphan-log class
+run --apply
+grep -q 'SKIP    ao1' <<<"$OUT" && [[ -f "$SD/ao1.log" ]] && ok "orphan-log class skips an armed target" || bad "orphan-log armed rail: $OUT"
+reset_state; arm as1; echo s > "$SD/as1.scope"                      # sidecar-only class
+run --apply
+grep -q 'SKIP    as1' <<<"$OUT" && [[ -f "$SD/as1.scope" ]] && ok "sidecar class skips an armed target" || bad "sidecar armed rail: $OUT"
+reset_state; arm ad1; printf 'boom\n' > "$SD/ad1.last-error.jsonl"  # stale-diag class
+run --apply
+grep -q 'SKIP    ad1' <<<"$OUT" && [[ -f "$SD/ad1.last-error.jsonl" ]] && ok "stale-diag class skips an armed target" || bad "stale-diag armed rail: $OUT"
+# dormant class: covered by the at1 case above
+
+echo "== rails matrix: generic review/plan are list-only in EVERY class =="
+reset_state; echo l > "$SD/review.log"                              # orphan-log class
+run --apply
+grep -q 'GENERIC review' <<<"$OUT" && [[ -f "$SD/review.log" ]] && ok "orphan-log class lists a generic thread only" || bad "orphan-log generic rail: $OUT"
+reset_state; echo s > "$SD/plan.scope"                              # sidecar-only class
+run --apply
+grep -q 'GENERIC plan' <<<"$OUT" && [[ -f "$SD/plan.scope" ]] && ok "sidecar class lists a generic thread only" || bad "sidecar generic rail: $OUT"
+reset_state; printf 'boom\n' > "$SD/review.last-error.jsonl"        # stale-diag class
+run --apply
+grep -q 'GENERIC review' <<<"$OUT" && [[ -f "$SD/review.last-error.jsonl" ]] && ok "stale-diag class lists a generic thread only" || bad "stale-diag generic rail: $OUT"
+# dormant class: covered by the generic list-only case above
+
+echo "== rails matrix: dead lease joins the archivable set in EVERY class =="
+sleep 0 & DEAD2=$!; wait "$DEAD2" 2>/dev/null
+reset_state; echo l > "$SD/og1.log"; printf '%s' "$DEAD2" > "$SD/og1.active"                        # orphan-log class
+run --apply
+[[ ! -e "$SD/og1.log" && ! -e "$SD/og1.active" ]] && ok "orphan-log class archives the dead lease too" || bad "orphan-log dead lease: $OUT"
+reset_state; echo s > "$SD/os1.scope"; printf '%s' "$DEAD2" > "$SD/os1.active"                      # sidecar-only class
+run --apply
+[[ ! -e "$SD/os1.scope" && ! -e "$SD/os1.active" ]] && ok "sidecar class archives the dead lease too" || bad "sidecar dead lease: $OUT"
+reset_state; printf 'boom\n' > "$SD/ds1.last-error.jsonl"; printf '%s' "$DEAD2" > "$SD/ds1.active"  # stale-diag class
+run --apply
+[[ ! -e "$SD/ds1.last-error.jsonl" && ! -e "$SD/ds1.active" ]] && ok "stale-diag class archives the dead lease too" || bad "stale-diag dead lease: $OUT"
+# dormant class: covered by the dl1 case above
+
+echo "== apply-time revalidation: gate re-armed between detect and apply -> not moved =="
+reset_state
+printf 'branch=some-other-branch\nthread=x\nlens=correctness\ncap=3\nblocks=0\nlog_bytes_at_arming=0\n' > "$SD/autoreview.armed"
+old "$SD/autoreview.armed"
+REAL_MKTEMP="${REAL_MKTEMP:-$(command -v mktemp)}"
+mkdir -p "$T/stub2"
+cat > "$T/stub2/mktemp" <<STUB
+#!/usr/bin/env bash
+touch "$REPO/$SD/autoreview.armed"
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$T/stub2/mktemp"
+OUT="$(PATH="$T/stub2:$PATH" bash "$CLEANUP" --apply 2>&1)"; RC=$?
+grep -q 'changed since detection' <<<"$OUT" && ok "re-armed gate skip noted" || bad "no re-armed skip note: $OUT"
+[[ -f "$SD/autoreview.armed" ]] && ok "re-armed gate not moved" || bad "re-armed gate was archived"
+rm -f "$SD/autoreview.armed"
+
+echo "== apply-time revalidation: diag refreshed between detect and apply -> not moved =="
+reset_state
+printf 'boom\n' > "$SD/dr1.last-error.jsonl"; old "$SD/dr1.last-error.jsonl"
+mkdir -p "$T/stub3"
+cat > "$T/stub3/mktemp" <<STUB
+#!/usr/bin/env bash
+touch "$REPO/$SD/dr1.last-error.jsonl"
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$T/stub3/mktemp"
+OUT="$(PATH="$T/stub3:$PATH" bash "$CLEANUP" --apply 2>&1)"; RC=$?
+grep -q 'changed since detection' <<<"$OUT" && ok "refreshed diag skip noted" || bad "no refreshed-diag skip note: $OUT"
+[[ -f "$SD/dr1.last-error.jsonl" ]] && ok "refreshed diag not moved" || bad "refreshed diag was archived"
+
+echo "== apply-time revalidation: thread armed between detect and apply -> not moved =="
+reset_state
+printf 'boom\n' > "$SD/ar2.last-error.jsonl"; old "$SD/ar2.last-error.jsonl"
+mkdir -p "$T/stub4"
+cat > "$T/stub4/mktemp" <<STUB
+#!/usr/bin/env bash
+printf 'branch=main\nthread=ar2\nlens=correctness\ncap=3\nblocks=0\nlog_bytes_at_arming=0\n' > "$REPO/$SD/autoreview.armed"
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$T/stub4/mktemp"
+OUT="$(PATH="$T/stub4:$PATH" bash "$CLEANUP" --apply 2>&1)"; RC=$?
+grep -q 'SKIP (armed since detection): thread ar2' <<<"$OUT" && ok "armed-since-detection rail re-check noted" || bad "no armed-since-detection note: $OUT"
+[[ -f "$SD/ar2.last-error.jsonl" ]] && ok "newly-armed target's diag not moved" || bad "newly-armed diag was archived"
+rm -f "$SD/autoreview.armed"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

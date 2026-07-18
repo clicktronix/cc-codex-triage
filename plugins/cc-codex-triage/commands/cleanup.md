@@ -18,26 +18,30 @@ Detection classes:
   `.id` (orphan diagnostics) or whose `.log` is newer than the diag (the thread
   recovered after the failure). A diag newer than the log on a persisted thread
   is the thread's live last error and is NOT flagged.
-- **Dormant threads** — only with `--older-than <days>` (integer **≥ 1**;
-  `0`, negatives, and non-numbers are rejected): a thread's whole file-set
+- **Dormant threads** — only with `--older-than <days>` (integer **≥ 1**, max
+  5 digits; `0`, negatives, non-numbers, and longer values are rejected — a
+  leading-zero value like `08` is read base-10 as 8): a thread's whole file-set
   (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
   detach-output, active`) qualifies when its NEWEST member is older than N
   days. Listed on dry run, moved wholesale on `--apply`.
 - **Generic threads** — `review`/`plan` default threads. Listed only, never
   auto-archived.
 
-Safety rails (in precedence order):
+Safety rails (in precedence order), enforced uniformly by **every** detection
+class through one shared rail check:
 
 1. **Live lease** — while `<thread>.active` names a live PID, a dispatch is in
    flight (a resume waiting inside `codex exec` may write nothing until it
    returns): the thread is skipped unconditionally. A dead-PID or malformed
-   lease is itself stale state and joins the archivable set.
+   lease is itself stale state and joins the archivable set in every class.
 2. **Armed targets** — a thread named by `autoreview.armed`/`autoplan.armed`
-   `thread=` lines is never archived, even when dormant.
-3. **Re-stat before move** — on `--apply`, each dormant set's newest mtime is
-   re-checked immediately before moving; if anything changed since detection,
-   the thread is skipped with a note.
-4. Generic `review`/`plan` threads stay list-only (rule above).
+   `thread=` lines is never archived, whichever class flagged it.
+3. **Revalidate before move** — on `--apply`, EVERY target (flat file or
+   dormant set) is re-checked immediately before moving: the lease/armed rails
+   re-run per thread, and mtimes are re-stat'ed; anything that changed since
+   detection (a re-armed gate, a refreshed diag, a woken thread) is skipped
+   with a note.
+4. Generic `review`/`plan` threads stay list-only (rule above), in every class.
 
 ## Steps
 

@@ -24,14 +24,18 @@
 #                           wholesale on --apply.
 #   - generic threads     : `review`/`plan` default threads (contamination risk).
 #
-# Safety rails (in precedence order):
+# Safety rails (in precedence order), applied uniformly by EVERY detection
+# class via one shared rail check:
 #   1. live lease  — <thread>.active naming a live PID means a dispatch is in
 #      flight (a resume waiting inside `codex exec` may write nothing until it
 #      returns): the thread is skipped unconditionally. A dead-PID or malformed
-#      lease is stale state like any other and joins the archivable set.
+#      lease is stale state like any other and joins the archivable set in
+#      every class.
 #   2. a thread named by an armed gate's `thread=` line is never archived.
-#   3. on --apply, each dormant set's newest mtime is re-checked immediately
-#      before the move — changed since detection -> the thread is skipped.
+#   3. on --apply, EVERY target is revalidated immediately before the move:
+#      the rail check re-runs per thread (a gate re-armed or a dispatch
+#      started since detection -> skip), and each flat target / dormant set
+#      is re-stat'ed (mtime changed since detection -> skip).
 #   4. generic `review`/`plan` threads are listed but never auto-archived.
 
 set -u
@@ -53,16 +57,26 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--older-than needs a value (days)" >&2; usage; }
       # Integer >= 1 only: 0 would mean "archive everything", negatives and
       # non-numerics are user error — refuse loudly instead of guessing.
+      # Length is capped at 5 digits (100000 days ≈ 274 years) so the
+      # days*86400 arithmetic below can never overflow, and the value is
+      # normalized base-10 ($((10#...))) so a leading-zero "08" is handled as
+      # 8 instead of tripping bash's invalid-octal parsing.
       case "$2" in
         ''|*[!0-9]*) echo "--older-than must be an integer >= 1 (got '$2')" >&2; usage ;;
       esac
-      [ "$2" -ge 1 ] || { echo "--older-than must be an integer >= 1 (got '$2')" >&2; usage; }
-      OLDER_DAYS="$2"; shift 2 ;;
+      [ "${#2}" -le 5 ] || { echo "--older-than is capped at 5 digits (got '$2')" >&2; usage; }
+      OLDER_DAYS=$((10#$2))
+      [ "$OLDER_DAYS" -ge 1 ] || { echo "--older-than must be an integer >= 1 (got '$2')" >&2; usage; }
+      shift 2 ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
-cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" 2>/dev/null || true
+# Anchor to the RESOLVED repo root (mirrors the driver's rule): a
+# CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
+# the repo ROOT. Outside a repo, stay where we are (fail-soft: nothing found).
+ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$ROOT" ]; then cd "$ROOT" 2>/dev/null || true; fi
 STATE_DIR=".claude/codex-threads"
 
 [ -d "$STATE_DIR" ] || { echo "No state directory ($STATE_DIR) — nothing to clean."; exit 0; }
@@ -118,15 +132,71 @@ armed_target() {
   return 1
 }
 
+# Central per-thread rail check — called by EVERY detection class (and re-run
+# at apply time), so no class can drift out of the rails again.
+# Returns: 0 = archivable; 1 = live lease (IN USE); 2 = armed-gate target
+# (SKIP); 3 = generic review/plan name (list-only). Precedence mirrors the
+# documented rail order: live lease > armed target > generic name.
+rail_check() {
+  lease_live "$1" && return 1
+  armed_target "$1" && return 2
+  case "$1" in review|plan) return 3 ;; esac
+  return 0
+}
+# Standard skip note for a non-zero rail_check result. $1=thread $2=rail code
+rail_note() {
+  case "$2" in
+    1) echo "  IN USE  $1  (dispatch in flight, pid=$(lease_pid "$1")) — skipped" ;;
+    2) echo "  SKIP    $1  (targeted by an armed gate) — not archived" ;;
+    3) echo "  GENERIC $1  (generic thread — listed only, never auto-archived)" ;;
+  esac
+}
+# A dead/malformed lease is stale state in EVERY class: whenever a thread has
+# passed the rails (so the lease is NOT live) and files of it are being
+# archived, its .active joins them. $1=thread
+add_dead_lease() {
+  [ -f "$STATE_DIR/$1.active" ] && add_archive "$STATE_DIR/$1.active"
+  return 0
+}
+
+# Thread name owning a state-file path; empty for gate files and unknown
+# names. Shared by the dormant grouping scan and apply-time revalidation.
+thread_of() {
+  local b n=""
+  b="$(basename "$1")"
+  case "$b" in
+    autoreview.armed|autoplan.armed) ;;
+    *.last-error.jsonl) n="${b%.last-error.jsonl}" ;;
+    *.findings.jsonl)   n="${b%.findings.jsonl}" ;;
+    *.detach-output)    n="${b%.detach-output}" ;;
+    *.log.1)            n="${b%.log.1}" ;;
+    *.log)              n="${b%.log}" ;;
+    *.id)               n="${b%.id}" ;;
+    *.rounds)           n="${b%.rounds}" ;;
+    *.scope)            n="${b%.scope}" ;;
+    *.approved)         n="${b%.approved}" ;;
+    *.active)           n="${b%.active}" ;;
+  esac
+  printf '%s' "$n"
+}
+
 # Collect targets to archive. add_archive dedups — a stale diag can be flagged
 # both by its own class and as part of an orphan/dormant set; it must be
-# queued (and counted) exactly once.
+# queued (and counted) exactly once. The detection-time mtime is recorded per
+# target so --apply can re-stat every one of them before moving (rail 3).
 declare -a ARCHIVE=()
+declare -a ARCHIVE_MTIMES=()
 declare -a DORMANT_NAMES=()
 declare -a DORMANT_MTIMES=()
 ARCHIVED_SET=" "
 in_archive()  { case "$ARCHIVED_SET" in *" $1 "*) return 0 ;; esac; return 1; }
-add_archive() { in_archive "$1" || { ARCHIVE+=("$1"); ARCHIVED_SET="$ARCHIVED_SET$1 "; }; }
+add_archive() {
+  in_archive "$1" || {
+    ARCHIVE+=("$1")
+    ARCHIVE_MTIMES+=("$(_mtime_epoch "$1")")
+    ARCHIVED_SET="$ARCHIVED_SET$1 "
+  }
+}
 DORMANT_FILE_COUNT=0
 issues=0
 
@@ -158,12 +228,10 @@ for lg in "$STATE_DIR"/*.log; do
   [ -f "$lg" ] || continue
   n="$(basename "$lg" .log)"
   if [ ! -f "$STATE_DIR/$n.id" ]; then
-    if lease_live "$n"; then
-      # Rail 1: an initial dispatch on a never-persisted thread is in flight —
-      # archiving its log/sidecars under it would split state.
-      echo "  IN USE  $n  (dispatch in flight, pid=$(lease_pid "$n")) — skipped"
-      continue
-    fi
+    # Rails (all of them): an initial dispatch on a never-persisted thread may
+    # be in flight, an armed gate may target it, or it may be a generic name.
+    rail_check "$n"; rc=$?
+    if [ "$rc" -ne 0 ]; then rail_note "$n" "$rc"; continue; fi
     echo "  ORPHAN  $n  (size $(wc -c < "$lg" 2>/dev/null | tr -d ' ') bytes)"
     orphans=$((orphans+1)); issues=$((issues+1))
     add_archive "$lg"
@@ -176,15 +244,22 @@ done
 # Sidecar-only orphans: findings/scope/approved with NO .id and NO .log — e.g. a
 # failed initial dispatch the .log scan above can't see. Print once per thread.
 seen=""
+skipped=""
 for sc in "$STATE_DIR"/*.findings.jsonl "$STATE_DIR"/*.scope "$STATE_DIR"/*.approved; do
   [ -f "$sc" ] || continue
   b="$(basename "$sc")"; n="${b%.findings.jsonl}"; n="${n%.scope}"; n="${n%.approved}"
   { [ -f "$STATE_DIR/$n.id" ] || [ -f "$STATE_DIR/$n.log" ]; } && continue
-  # Rail 1: /review pins .scope BEFORE the first dispatch — a live lease means
-  # that first dispatch is running right now, not that the sidecar is orphaned.
-  lease_live "$n" && continue
+  # Rails (all of them): /review pins .scope BEFORE the first dispatch — a
+  # live lease means that first dispatch is running right now, not that the
+  # sidecar is orphaned. Armed-target and generic names are shielded too.
+  rail_check "$n"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case " $skipped " in *" $n "*) ;; *) rail_note "$n" "$rc"; skipped="$skipped $n" ;; esac
+    continue
+  fi
   case " $seen " in *" $n "*) ;; *) echo "  ORPHAN  $n  (sidecar, no .log/.id)"; orphans=$((orphans+1)); issues=$((issues+1)); seen="$seen $n" ;; esac
   add_archive "$sc"
+  add_dead_lease "$n"
 done
 [ "$orphans" = 0 ] && echo "  (none)"
 
@@ -206,17 +281,12 @@ for dg in "$STATE_DIR"/*.last-error.jsonl; do
   # A diag newer than the log on a persisted thread is the thread's LIVE last
   # error — leave it alone.
   [ -n "$reason" ] || continue
-  if lease_live "$n"; then
-    echo "  IN USE  $n  (dispatch in flight, pid=$(lease_pid "$n")) — skipped"
-    continue
-  fi
-  if armed_target "$n"; then
-    echo "  SKIP    $n  (targeted by an armed gate) — not archived"
-    continue
-  fi
+  rail_check "$n"; rc=$?
+  if [ "$rc" -ne 0 ]; then rail_note "$n" "$rc"; continue; fi
   echo "  STALE-DIAG  $n  ($reason)"
   stale_diags=$((stale_diags+1)); issues=$((issues+1))
   add_archive "$dg"
+  add_dead_lease "$n"
 done
 [ "$stale_diags" = 0 ] && echo "  (none)"
 
@@ -238,22 +308,7 @@ if [ -n "$OLDER_DAYS" ]; then
   names=""
   for f in "$STATE_DIR"/*; do
     [ -f "$f" ] || continue
-    b="$(basename "$f")"
-    n=""
-    case "$b" in
-      autoreview.armed|autoplan.armed) continue ;;
-      *.last-error.jsonl) n="${b%.last-error.jsonl}" ;;
-      *.findings.jsonl)   n="${b%.findings.jsonl}" ;;
-      *.detach-output)    n="${b%.detach-output}" ;;
-      *.log.1)            n="${b%.log.1}" ;;
-      *.log)              n="${b%.log}" ;;
-      *.id)               n="${b%.id}" ;;
-      *.rounds)           n="${b%.rounds}" ;;
-      *.scope)            n="${b%.scope}" ;;
-      *.approved)         n="${b%.approved}" ;;
-      *.active)           n="${b%.active}" ;;
-      *) continue ;;
-    esac
+    n="$(thread_of "$f")"
     [ -n "$n" ] || continue
     case " $names " in *" $n "*) ;; *) names="$names $n" ;; esac
   done
@@ -261,24 +316,18 @@ if [ -n "$OLDER_DAYS" ]; then
     newest="$(newest_mtime "$n")"
     [ -n "$newest" ] || continue
     [ "$newest" -lt "$CUTOFF" ] || continue
-    # Rail 1 first: a live lease wins over any mtime evidence — a resume
-    # waiting inside `codex exec` may not have written a byte yet.
-    if lease_live "$n"; then
-      echo "  IN USE  $n  (dispatch in flight, pid=$(lease_pid "$n")) — skipped"
-      continue
-    fi
-    if armed_target "$n"; then
-      echo "  SKIP    $n  (targeted by an armed gate) — not archived"
-      continue
-    fi
+    # Rails: a live lease wins over any mtime evidence — a resume waiting
+    # inside `codex exec` may not have written a byte yet — then armed
+    # targets; generic names fall through to the list-only note below.
+    rail_check "$n"; rc=$?
+    if [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]; then rail_note "$n" "$rc"; continue; fi
     age_days=$(( (NOW - newest) / 86400 ))
     members="$(thread_files "$n" | sed "s|^$STATE_DIR/||" | tr '\n' ' ')"
-    case "$n" in
-      review|plan)
-        echo "  DORMANT $n  (${age_days}d idle; generic thread — listed only, never auto-archived)"
-        dormant=$((dormant+1)); issues=$((issues+1))
-        continue ;;
-    esac
+    if [ "$rc" -eq 3 ]; then
+      echo "  DORMANT $n  (${age_days}d idle; generic thread — listed only, never auto-archived)"
+      dormant=$((dormant+1)); issues=$((issues+1))
+      continue
+    fi
     echo "  DORMANT $n  (${age_days}d idle: ${members})"
     dormant=$((dormant+1)); issues=$((issues+1))
     DORMANT_NAMES+=("$n"); DORMANT_MTIMES+=("$newest")
@@ -313,16 +362,44 @@ if [ "$APPLY" = true ]; then
     if [ -e "$dest/$b" ]; then echo "  SKIP (name clash, not overwritten): $b"; return 0; fi
     if mv "$1" "$dest/"; then moved=$((moved+1)); echo "  archived: $b"; else echo "  FAILED to move: $b"; fi
   }
+  # Apply-time revalidation (rail 3) for EVERY target, flat or dormant:
+  # detection ran earlier in this same process, but the world may have moved —
+  # a gate re-armed, a dispatch started, a diag refreshed. The rail check
+  # re-runs once per thread (cached); freshness is re-stat'ed per flat target
+  # and per dormant set.
+  RAIL_OK=" "; RAIL_BLOCKED=" "
+  revalidate_thread() { # $1=thread; 0 = still archivable (note printed once on skip)
+    case "$RAIL_OK" in *" $1 "*) return 0 ;; esac
+    case "$RAIL_BLOCKED" in *" $1 "*) return 1 ;; esac
+    rail_check "$1"; _rc=$?
+    if [ "$_rc" -eq 0 ]; then RAIL_OK="$RAIL_OK$1 "; return 0; fi
+    case "$_rc" in
+      1) echo "  SKIP (in use since detection): thread $1" ;;
+      2) echo "  SKIP (armed since detection): thread $1" ;;
+      *) echo "  SKIP (generic thread): $1" ;;
+    esac
+    RAIL_BLOCKED="$RAIL_BLOCKED$1 "
+    return 1
+  }
   i=0
   while [ "$i" -lt "${#ARCHIVE[@]}" ]; do
-    move_one "${ARCHIVE[$i]}"
-    i=$((i+1))
+    p="${ARCHIVE[$i]}"; det="${ARCHIVE_MTIMES[$i]}"; i=$((i+1))
+    n="$(thread_of "$p")"
+    if [ -n "$n" ] && ! revalidate_thread "$n"; then continue; fi
+    cur="$(_mtime_epoch "$p")"
+    if [ "$cur" != "$det" ]; then
+      echo "  SKIP (changed since detection): ${p#"$STATE_DIR"/}"
+      continue
+    fi
+    move_one "$p"
   done
-  # Dormant sets move wholesale — but re-stat first (rail 3): anything touched
-  # since detection means the thread woke up; leave it alone this run.
+  # Dormant sets move wholesale — same revalidation: rails re-run per thread,
+  # and anything touched since detection means the thread woke up; leave it
+  # alone this run.
   i=0
   while [ "$i" -lt "${#DORMANT_NAMES[@]}" ]; do
     n="${DORMANT_NAMES[$i]}"; det="${DORMANT_MTIMES[$i]}"; i=$((i+1))
+    revalidate_thread "$n" || continue
     cur="$(newest_mtime "$n")"
     if [ "$cur" != "$det" ]; then
       echo "  SKIP (changed since detection): thread $n"

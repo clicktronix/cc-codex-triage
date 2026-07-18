@@ -14,7 +14,11 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 . "$SELF_DIR/lib.sh"
 
-cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" 2>/dev/null || true
+# Anchor to the RESOLVED repo root (mirrors the driver's rule): a
+# CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
+# the repo ROOT. Outside a repo, stay where we are (fail-soft: nothing found).
+ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$ROOT" ]; then cd "$ROOT" 2>/dev/null || true; fi
 STATE_DIR=".claude/codex-threads"
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
@@ -113,10 +117,16 @@ for kind in autoreview autoplan; do
   if has_field "$f" armed_at; then
     aa="$(field "$f" armed_at)"
     now="$(date +%s 2>/dev/null)"
+    # Mirror the hook's canonical armed_at validation (stop-hook.sh: is_num +
+    # 12-digit length cap) BEFORE any arithmetic: a leading-zero value like
+    # "08" is bash's invalid-octal trap and an absurd length would overflow —
+    # both must warn, never crash this read-only view.
     case "$aa" in
-      ''|*[!0-9]*) echo "      WARNING armed_at is not a numeric epoch ('$aa') — the hook skips TTL for this gate." ;;
+      ''|*[!0-9]*|0?*) echo "      WARNING armed_at is not a numeric epoch ('$aa') — the hook skips TTL for this gate." ;;
       *)
-        if [ -n "$now" ] && [ "$aa" -le "$now" ]; then
+        if [ "${#aa}" -gt 12 ]; then
+          echo "      WARNING armed_at is implausibly long ('$aa') — the hook skips TTL for this gate."
+        elif [ -n "$now" ] && [ "$aa" -le "$now" ]; then
           age_days=$(( (now - aa) / 86400 ))
           if [ $(( now - aa )) -gt 1209600 ]; then
             echo "      WARNING armed ${age_days}d ago — past the 14-day TTL; will auto-expire on the next gated turn."

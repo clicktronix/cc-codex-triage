@@ -22,7 +22,7 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
    ```bash
    # Anchor to the repo root — the hook and driver read state there, and a
    # drifted cwd would arm a gate the hook never sees.
-   cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"   # resolves a subdir candidate UP to the repo root — state lives at the ROOT
    STATE_DIR=".claude/codex-threads"; mkdir -p "$STATE_DIR"
    BRANCH=$(git rev-parse --abbrev-ref HEAD)
    # Slug rule shared with the hook: every char outside the driver's
@@ -45,7 +45,7 @@ Runaway-safe: the per-arming round cap is the hard terminator (counters are nume
 
 3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps right now with `--once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost) — the file path matters: `/review` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. This is the part that removes the manual `/review` step. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
 
-4. `off` — `rm -f .claude/codex-threads/autoreview.armed` (from the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first) and confirm.
+4. `off` — `rm -f .claude/codex-threads/autoreview.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"` first) and confirm.
 
 5. `status` — cat the armed file (or "not armed"), plus the target thread's last verdict if its log exists. Same repo-root anchoring.
 

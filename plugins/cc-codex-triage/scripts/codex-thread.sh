@@ -34,7 +34,10 @@
 #   <thread>.approved         /review's last-APPROVE baseline (per-task; reset by --new).
 #   <thread>.active           PID lease held while a dispatch is in flight —
 #                             written atomically just before codex runs, removed
-#                             on exit only by the PID that wrote it.
+#                             on exit only by the PID that wrote it. Acquisition
+#                             is EXCLUSIVE: a lease naming a live foreign PID
+#                             refuses the new dispatch (exit 10); a dead or
+#                             malformed lease is stale state and is overwritten.
 #   <thread>.detach-output    raw stdout/stderr of a --detach child. The .log
 #                             marker contract above is unchanged — the child
 #                             appends rounds/replies exactly like a foreground
@@ -54,6 +57,10 @@
 #       PATH) — refused with ZERO state written
 #   9   --detach: ready-handshake timed out (spawn killed, launcher-owned
 #       tmpfiles removed; check <thread>.detach-output)
+#   10  dispatch refused: could not acquire the thread's lease — either
+#       another dispatch is mid-flight (<thread>.active names a live PID:
+#       wait for it or use a different --thread), or <thread>.active is not
+#       a regular file (inspect and remove it manually)
 
 set -euo pipefail
 
@@ -187,6 +194,9 @@ FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
 SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
 APPROVED_FILE="$STATE_DIR/${THREAD}.approved"
 LEASE_FILE="$STATE_DIR/${THREAD}.active"
+# Staging file for the atomic lease write below. Defined up front so the
+# combined cleanup() can always remove it — no exit path may leak it.
+LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -201,6 +211,22 @@ else
     touch "$STATE_DIR/.gitignore-warned"
   fi
 fi
+
+# Live foreign lease detector: prints the owning PID and returns 0 when
+# <thread>.active is a regular file naming a strictly-positive decimal PID
+# (≤12 digits, no leading zero — the octal trap) that is alive (`kill -0`)
+# and is not this process. Dead/malformed leases return 1 — they are stale
+# state and are overwritten by the acquisition below.
+lease_busy_pid() {
+  [[ -f "$LEASE_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$LEASE_FILE" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]{0,11}$ ]] || return 1
+  [[ "$pid" != "$$" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s' "$pid"
+}
+
 # ── detach launcher ───────────────────────────────────────────────────────
 # Re-execs this same script (same args minus --detach) in a NEW SESSION and
 # returns after a ready handshake. Lifecycle order is the contract:
@@ -217,6 +243,31 @@ fi
 # the child's cleanup owns the prompt tmpfile.
 if $DETACH; then
   DETACH_OUT="$STATE_DIR/${THREAD}.detach-output"
+  # A live foreign lease means another dispatch is already mid-flight on this
+  # thread. The re-exec'd child re-checks under the same exclusive-acquisition
+  # rule; checking here too just fails fast (exit 10) instead of burning the
+  # 5s handshake timeout on a child that will refuse anyway.
+  if BUSY_PID="$(lease_busy_pid)"; then
+    echo "thread $THREAD is busy (active dispatch pid=$BUSY_PID) — wait for it or use a different --thread" >&2
+    exit 10
+  fi
+  # Launcher-scoped trap BEFORE the first tmpfile allocation: a failed second
+  # mktemp (set -e exit) or a TERM/INT during the handshake must not leak the
+  # prompt/READY tmpfiles (the child never removes READY, and on an aborted
+  # handshake nobody else would remove the prompt). Disarmed via DETACH_DONE
+  # just before the normal-success exit — at that point READY is already gone
+  # and the child owns the prompt tmpfile.
+  DETACH_DONE=false
+  PROMPT_TMPFILE=""; READY_FILE=""
+  detach_cleanup() {
+    "$DETACH_DONE" && return 0
+    [[ -n "$PROMPT_TMPFILE" ]] && rm -f "$PROMPT_TMPFILE"
+    [[ -n "$READY_FILE" ]] && rm -f "$READY_FILE"
+    return 0
+  }
+  trap detach_cleanup EXIT
+  trap 'detach_cleanup; trap - EXIT; exit 130' INT
+  trap 'detach_cleanup; trap - EXIT; exit 143' TERM
   PROMPT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.prompt.XXXXXX")"
   cat > "$PROMPT_TMPFILE"      # persist stdin for the re-exec'd child
   READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
@@ -256,6 +307,7 @@ if $DETACH; then
     exit 9
   fi
   rm -f "$READY_FILE"
+  DETACH_DONE=true   # handshake complete — the EXIT trap must not touch the child's prompt tmpfile
   echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output — poll the thread log for the next 'round=' header"
   exit 0
 fi
@@ -263,9 +315,11 @@ fi
 OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
 # Combined EXIT cleanup — installed exactly ONCE. Never add a second
-# `trap ... EXIT`: it would silently replace this one.
+# `trap ... EXIT`: it would silently replace this one. (The --detach launcher
+# above installs its own EXIT trap, but that code path exits before ever
+# reaching this line, so the two can never collide.)
 cleanup() {
-  rm -f "$OUT_FILE" "$JSONL_FILE"
+  rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP"
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
   # an earlier owner's exit.
@@ -365,9 +419,32 @@ fi
 # atomically so a reader never sees a partial PID. cleanup() removes it on
 # exit only while this PID still owns it.
 if ! $ONESHOT; then
-  LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
+  # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
+  # faster of two overlapping dispatches remove the lease on exit (ownership
+  # check passes for the overwriter) while the slower one still runs —
+  # /cleanup would then see an idle thread mid-dispatch. It would also resume
+  # the same codex session from two processes at once. Refuse instead; a
+  # dead/malformed lease is stale state and is overwritten as before.
+  if BUSY_PID="$(lease_busy_pid)"; then
+    echo "thread $THREAD is busy (active dispatch pid=$BUSY_PID) — wait for it or use a different --thread" >&2
+    exit 10
+  fi
+  # A non-regular <thread>.active (e.g. a directory) can never hold a lease:
+  # `mv` below would move the tmp file INSIDE it, and READY/dispatch would
+  # proceed with no lease on disk. Refuse before writing anything.
+  if [[ -e "$LEASE_FILE" && ! -f "$LEASE_FILE" ]]; then
+    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE exists but is not a regular file — inspect and remove it manually." >&2
+    exit 10
+  fi
   printf '%s' "$$" > "$LEASE_TMP"
   mv -f "$LEASE_TMP" "$LEASE_FILE"
+  # Verify the acquisition before any READY report or dispatch: a directory
+  # racing into place between the check above and the mv would swallow the
+  # tmp file and leave no lease at the expected path.
+  if [[ ! -f "$LEASE_FILE" || "$(cat "$LEASE_FILE" 2>/dev/null)" != "$$" ]]; then
+    echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE is not a regular file holding this PID after acquisition — inspect the state dir." >&2
+    exit 10
+  fi
   # Detach handshake (child side): a --detach launcher exported
   # CC_CODEX_READY_FILE and is polling it for our PID. Written only AFTER the
   # lease is held, so a DETACHED report proves /cleanup already sees this

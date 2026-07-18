@@ -249,10 +249,59 @@ rm -rf "$SD"
 FAKE_CODEX_SLEEP=2 bash "$DRIVER" a10 <<< "ping" > "$T/a10.out" 2>&1 &
 DRV=$!
 i=0; while [[ ! -f "$SD/a10.active" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
-printf '%s' "99999999" > "$SD/a10.active"   # a second writer takes over the lease
+# Simulate a takeover after the owner is presumed dead (a LIVE second dispatch
+# is refused with exit 10 now, so an overwrite can only follow a dead owner).
+printf '%s' "99999999" > "$SD/a10.active"
 wait "$DRV"
 [[ -f "$SD/a10.active" && "$(cat "$SD/a10.active")" == "99999999" ]] && ok "foreign lease NOT removed by the earlier owner" || bad "foreign lease removed or altered"
 rm -f "$SD/a10.active"
+
+echo "== exclusive lease: live foreign lease refuses the dispatch (exit 10) =="
+rm -rf "$SD"; mkdir -p "$SD"
+sleep 30 & FL=$!
+printf '%s' "$FL" > "$SD/b1.active"
+export FAKE_CODEX_ARGV="$T/b1argv"; rm -f "$T/b1argv"
+run b1
+[[ "$RC" -eq 10 ]] && ok "busy thread -> exit 10" || bad "busy rc=$RC err=$(cat "$T/err")"
+grep -q "busy (active dispatch pid=$FL)" "$T/err" && ok "busy message names the owning pid" || bad "busy message: $(cat "$T/err")"
+[[ "$(cat "$SD/b1.active" 2>/dev/null)" == "$FL" ]] && ok "foreign lease untouched by the refusal" || bad "lease touched: '$(cat "$SD/b1.active" 2>/dev/null)'"
+[[ ! -e "$T/b1argv" ]] && ok "stub codex never ran for the refused dispatch" || bad "dispatch ran despite the live lease"
+[[ ! -f "$SD/b1.log" ]] && ok "no thread state written by the refused dispatch" || bad "refused dispatch wrote thread state"
+run b1 --detach
+[[ "$RC" -eq 10 ]] && ok "busy thread -> exit 10 on --detach too (launcher pre-check)" || bad "detach busy rc=$RC err=$(cat "$T/err")"
+kill "$FL" 2>/dev/null; wait "$FL" 2>/dev/null
+unset FAKE_CODEX_ARGV
+
+echo "== exclusive lease: dead-PID lease is overwritten, dispatch proceeds =="
+sleep 0 & DP=$!; wait "$DP" 2>/dev/null
+printf '%s' "$DP" > "$SD/b2.active"
+FAKE_CODEX_SLEEP=2 bash "$DRIVER" b2 <<< "ping" > "$T/b2.out" 2>&1 &
+DRV=$!
+i=0; while [[ "$(cat "$SD/b2.active" 2>/dev/null)" != "$DRV" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
+[[ "$(cat "$SD/b2.active" 2>/dev/null)" == "$DRV" ]] && ok "dead lease replaced by the new owner's PID" || bad "dead lease not replaced: '$(cat "$SD/b2.active" 2>/dev/null)'"
+wait "$DRV"; RC=$?
+[[ "$RC" -eq 0 && ! -e "$SD/b2.active" ]] && ok "dispatch proceeded over the dead lease and released it" || bad "dead-lease dispatch rc=$RC"
+
+echo "== lease acquisition refuses a directory <thread>.active =="
+mkdir -p "$SD/c1.active"
+export FAKE_CODEX_ARGV="$T/c1argv"; rm -f "$T/c1argv"
+run c1
+[[ "$RC" -eq 10 ]] && ok "directory lease -> exit 10" || bad "dir-lease rc=$RC err=$(cat "$T/err")"
+grep -q 'not a regular file' "$T/err" && ok "clear error names the non-regular lease" || bad "dir-lease message: $(cat "$T/err")"
+[[ ! -e "$T/c1argv" ]] && ok "no dispatch happened (stub never ran)" || bad "dispatch ran despite the directory lease"
+[[ -d "$SD/c1.active" && -z "$(ls -A "$SD/c1.active" 2>/dev/null)" ]] && ok "directory lease left in place, nothing moved inside it" || bad "directory lease altered: $(ls -A "$SD/c1.active" 2>/dev/null)"
+[[ -z "$(ls "$SD"/c1.active.tmp.* 2>/dev/null)" ]] && ok "no lease tmp left behind" || bad "lease tmp leaked: $(ls "$SD"/c1.active.tmp.* 2>/dev/null)"
+unset FAKE_CODEX_ARGV
+rm -rf "$SD/c1.active"
+
+echo "== lease tmp never left behind (success + injected failure) =="
+rm -rf "$SD"
+run c2
+[[ "$RC" -eq 0 ]] && ok "baseline success dispatch" || bad "c2 rc=$RC"
+[[ -z "$(ls "$SD"/c2.active.tmp.* 2>/dev/null)" ]] && ok "no lease tmp after success" || bad "lease tmp left after success"
+FAKE_CODEX_EXIT=7 run c3
+[[ "$RC" -eq 3 ]] && ok "injected failure dispatch" || bad "c3 rc=$RC"
+[[ -z "$(ls "$SD"/c3.active.tmp.* 2>/dev/null)" ]] && ok "no lease tmp after failure" || bad "lease tmp left after failure"
 
 echo "== --detach --oneshot mutually exclusive =="
 run d0 --detach --oneshot
@@ -364,6 +413,26 @@ i=0; while ! grep -q FAKE_REPLY "$SD/d7.log" 2>/dev/null && [[ $i -lt 100 ]]; do
 grep -q FAKE_REPLY "$SD/d7.log" 2>/dev/null && ok "thread log created + reply landed" || bad "no reply in the fresh repo"
 [[ -f "$SD/d7.detach-output" ]] && ok "sidecar created" || bad "no sidecar in the fresh repo"
 cd "$REPO"
+
+echo "== detach: launcher killed mid-handshake leaves no tmpfiles =="
+rm -rf "$SD"
+mkdir -p "$T/dtmp8" "$T/slowisol"
+# A setsid stub that never execs the child: READY is never written, so the
+# launcher sits in its poll loop — exactly the window where a TERM must not
+# leak the launcher-owned prompt/READY tmpfiles.
+cat > "$T/slowisol/setsid" <<'S'
+#!/usr/bin/env bash
+sleep 15
+S
+chmod +x "$T/slowisol/setsid"
+TMPDIR="$T/dtmp8" PATH="$T/slowisol:$PATH" bash "$DRIVER" d8 --detach <<< "ping" > "$T/d8.out" 2>&1 &
+LPID=$!
+i=0; while [[ -z "$(ls -A "$T/dtmp8" 2>/dev/null)" && $i -lt 50 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -n "$(ls -A "$T/dtmp8" 2>/dev/null)" ]] && ok "prompt/READY tmpfiles allocated during the handshake" || bad "no tmpfiles ever appeared"
+kill -TERM "$LPID" 2>/dev/null
+wait "$LPID" 2>/dev/null
+i=0; while [[ -n "$(ls -A "$T/dtmp8" 2>/dev/null)" && $i -lt 20 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -z "$(ls -A "$T/dtmp8" 2>/dev/null)" ]] && ok "TERM mid-handshake left no tmpfiles" || bad "leftover tmpfiles: $(ls -A "$T/dtmp8")"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

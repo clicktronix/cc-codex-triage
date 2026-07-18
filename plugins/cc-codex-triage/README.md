@@ -17,7 +17,7 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 - `/thread-list` — active threads + rounds, log size, last activity.
 - `/thread-new <name> [message]` — force-reset a thread (loses memory).
 - `/status` — one-screen, read-only view: branch, dirty tree, armed gates (with stale-branch / pre-0.5 / missing-target warnings), last verdict per thread, gitignore status, and the Codex CLI version vs the required minimum.
-- `/cleanup [--apply]` — find stale/pre-0.5 armed gates and orphan thread logs; dry-run by default, `--apply` **archives** them (never deletes, reversible).
+- `/cleanup [--apply] [--older-than <days>]` — find stale/pre-0.5 armed gates, orphan thread logs, stale last-error diagnostics, and — with `--older-than <days>` — whole dormant threads; dry-run by default, `--apply` **archives** them (never deletes, reversible). Safety rails apply to every class: threads with a live dispatch lease (`<thread>.active` naming a live PID) or targeted by an armed gate are never touched, and generic `review`/`plan` threads are listed but never auto-archived.
 - `/review-dispute <id> <why>` / `/review-accept <id> --reason` / `/review-defer <id> --issue` — dispose of a recorded review finding by id (false-positive / accepted trade-off / deferred to a tracked issue), so it leaves the open list with an audit trail instead of being silently dropped.
 - Skill `codex-triage` documents routing, Judge-mode framing, debate anti-capitulation rules, validating inbound Codex findings (verify before you apply — don't rubber-stamp to release the gate), the fix-the-neighborhood rule, and the `--oneshot` modifier.
 

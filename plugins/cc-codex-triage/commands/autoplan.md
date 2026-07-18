@@ -20,7 +20,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    ```bash
    # Anchor to the repo root — the hook and driver read state there, and a
    # drifted cwd would arm a gate the hook never sees.
-   cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"   # resolves a subdir candidate UP to the repo root — state lives at the ROOT
    STATE_DIR=".claude/codex-threads"; mkdir -p "$STATE_DIR"
    BRANCH=$(git rev-parse --abbrev-ref HEAD)
    # Slug rule shared with the hook: every char outside the driver's
@@ -45,7 +45,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 
 3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"` first) and confirm.
+4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"` first) and confirm.
 
 5. `status` — cat the armed file (or "not armed"). Same repo-root anchoring.
 
