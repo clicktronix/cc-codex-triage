@@ -254,6 +254,108 @@ wait "$DRV"
 [[ -f "$SD/a10.active" && "$(cat "$SD/a10.active")" == "99999999" ]] && ok "foreign lease NOT removed by the earlier owner" || bad "foreign lease removed or altered"
 rm -f "$SD/a10.active"
 
+echo "== --detach --oneshot mutually exclusive =="
+run d0 --detach --oneshot
+[[ "$RC" -eq 1 ]] && ok "detach+oneshot -> exit 1" || bad "detach+oneshot rc=$RC"
+
+echo "== detach: handshake, child-owned lease, reply lands, tmpfiles gone =="
+rm -rf "$SD"
+mkdir -p "$T/dtmp1"
+TMPDIR="$T/dtmp1" FAKE_CODEX_SLEEP=2 run d1 --detach
+[[ "$RC" -eq 0 ]] && ok "parent returns 0 after the handshake" || bad "detach parent rc=$RC err=$(cat "$T/err")"
+grep -q '^DETACHED pid=' <<<"$OUT" && grep -q 'output=d1.detach-output' <<<"$OUT" && ok "DETACHED line names pid + sidecar" || bad "DETACHED line wrong: $OUT"
+DCHILD="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+# The parent has exited but the child still sleeps inside the stub: the lease
+# must hold the CHILD's PID (the launcher acquired none).
+[[ -f "$SD/d1.active" && "$(cat "$SD/d1.active" 2>/dev/null)" == "$DCHILD" ]] && ok "lease holds the CHILD's PID while it dispatches" || bad "lease: '$(cat "$SD/d1.active" 2>/dev/null)' expected child $DCHILD"
+i=0; while ! grep -q FAKE_REPLY "$SD/d1.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d1.log" 2>/dev/null && ok "reply landed in the thread log" || bad "reply never landed"
+i=0; while [[ -e "$SD/d1.active" && $i -lt 50 ]]; do sleep 0.1; i=$((i+1)); done
+[[ ! -e "$SD/d1.active" ]] && ok "lease released after the child finished" || bad "lease still present after completion"
+[[ "$(cat "$SD/d1.rounds" 2>/dev/null)" == "1" ]] && ok "rounds bumped exactly once" || bad "rounds: $(cat "$SD/d1.rounds" 2>/dev/null)"
+[[ -f "$SD/d1.detach-output" ]] && ok "sidecar exists" || bad "no sidecar"
+i=0; while [[ -n "$(ls -A "$T/dtmp1" 2>/dev/null)" && $i -lt 50 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -z "$(ls -A "$T/dtmp1" 2>/dev/null)" ]] && ok "prompt + ready tmpfiles gone" || bad "orphan tmpfiles: $(ls -A "$T/dtmp1")"
+
+echo "== detach: dispatch survives a group-kill of the launcher's session =="
+rm -rf "$SD"
+cat > "$T/wrap.sh" <<WRAP
+#!/usr/bin/env bash
+export FAKE_CODEX_SLEEP=3
+bash "$DRIVER" d2 --detach <<< "ping" > "$T/d2.out" 2>&1
+echo \$? > "$T/d2.rc"
+sleep 30
+WRAP
+chmod +x "$T/wrap.sh"
+# The wrapper itself is session-isolated (same setsid/python trick) so this
+# harness is NOT in the process group we are about to kill.
+if command -v setsid >/dev/null 2>&1; then
+  setsid bash "$T/wrap.sh" >/dev/null 2>&1 &
+else
+  python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' bash "$T/wrap.sh" >/dev/null 2>&1 &
+fi
+WPID=$!
+disown   # drop the wrapper from the job table — its kill below is deliberate
+i=0; while [[ ! -s "$T/d2.rc" && $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+[[ "$(cat "$T/d2.rc" 2>/dev/null)" == "0" ]] && ok "detach parent exited 0 inside the wrapper" || bad "wrapper parent rc: '$(cat "$T/d2.rc" 2>/dev/null)' out: $(cat "$T/d2.out" 2>/dev/null)"
+kill -TERM -"$WPID" 2>/dev/null || true
+i=0; while ! grep -q FAKE_REPLY "$SD/d2.log" 2>/dev/null && [[ $i -lt 150 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d2.log" 2>/dev/null && ok "reply landed despite the wrapper-pgid kill" || bad "reply lost after group kill"
+
+echo "== detach: no setsid AND no python3 -> exit 8, ZERO state =="
+rm -rf "$SD"
+mkdir -p "$T/isolbin" "$T/dtmp3"
+# Minimal PATH farm: everything the driver touches BEFORE the isolator
+# preflight, but neither setsid nor python3.
+for tool in bash git cat rm ls mkdir sed grep sleep env xcrun; do
+  p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/isolbin/$tool"
+done
+TMPDIR="$T/dtmp3" PATH="$T/bin:$T/isolbin" run d3 --detach
+[[ "$RC" -eq 8 ]] && ok "no isolator -> exit 8" || bad "no-isolator rc=$RC err=$(cat "$T/err")"
+grep -q 'setsid' "$T/err" && grep -q 'python3' "$T/err" && ok "message names both isolators" || bad "exit-8 message wrong: $(cat "$T/err")"
+[[ ! -e "$SD" ]] && ok "zero state: no state dir" || bad "state dir created: $(ls -A "$SD" 2>/dev/null)"
+[[ -z "$(ls -A "$T/dtmp3" 2>/dev/null)" ]] && ok "zero state: no lease, no orphan tmpfiles" || bad "tmpfiles left: $(ls -A "$T/dtmp3")"
+
+echo "== detach: setsid hidden, python3 present -> python isolator end-to-end =="
+rm -rf "$SD"
+mkdir -p "$T/nosetsid"
+# Full PATH farm for a complete dispatch, minus setsid (exercises the python
+# isolator even on Linux CI where setsid exists).
+for tool in bash git python3 cat mktemp sed awk date wc tr mv rm mkdir touch tail grep diff sleep ls env dirname xcrun; do
+  p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/nosetsid/$tool"
+done
+PATH="$T/bin:$T/nosetsid" run d4 --detach
+[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "python-isolator handshake completed" || bad "python isolator rc=$RC out=$OUT err=$(cat "$T/err")"
+i=0; while ! grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && ok "reply landed via the python isolator" || bad "no reply via python isolator ($(cat "$SD/d4.detach-output" 2>/dev/null))"
+
+echo "== detach: instant child -> READY still observed, no false timeout =="
+rm -rf "$SD"
+run d5 --detach
+[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "fast child: DETACHED printed with exit 0" || bad "fast child rc=$RC out=$OUT err=$(cat "$T/err")"
+grep -qi 'timed out' "$T/err" && bad "false timeout reported for a fast child" || ok "no false timeout (child never deletes READY)"
+i=0; while ! grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && ok "fast child: reply landed" || bad "fast child: no reply"
+
+# detach + concurrent cleanup (plan Task 4 t6) is deferred: cleanup.sh has no
+# --older-than yet. TODO(Task 5): add the in-flight-race regression here — a
+# detached child sleeps holding its lease on an old-mtime thread while
+# `cleanup --older-than 1 --apply` runs concurrently; the thread must be
+# skipped and the dispatch must complete intact.
+
+echo "== detach: first-ever detach in a fresh repo (no state dir at all) =="
+REPO2="$T/repo2"
+mkdir -p "$REPO2" && cd "$REPO2"
+git init -q -b main . && git config user.email t@t.t && git config user.name t
+echo '.claude/codex-threads/' > .gitignore
+echo y > g.txt && git add -A && git commit -qm init
+run d7 --detach
+[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "first detach succeeds with no pre-existing state dir" || bad "fresh-repo detach rc=$RC out=$OUT err=$(cat "$T/err")"
+i=0; while ! grep -q FAKE_REPLY "$SD/d7.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/d7.log" 2>/dev/null && ok "thread log created + reply landed" || bad "no reply in the fresh repo"
+[[ -f "$SD/d7.detach-output" ]] && ok "sidecar created" || bad "no sidecar in the fresh repo"
+cd "$REPO"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

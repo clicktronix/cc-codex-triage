@@ -7,7 +7,7 @@
 # memory across turns.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing]
+#   codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing] [--detach]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
 #       --new               fresh persistent thread, discarding the existing one.
 #       --oneshot           throwaway: ignores thread state, runs an ephemeral
@@ -15,6 +15,12 @@
 #                           exclusive with --new.
 #       --require-existing  fail (exit 6) instead of creating a new thread when
 #                           none exists. Used by /reply.
+#       --detach            re-exec this dispatch in its OWN SESSION so it
+#                           survives group-targeted kills (harness process
+#                           reaping); prints `DETACHED pid=<pid>
+#                           output=<thread>.detach-output` and returns
+#                           immediately. Needs `setsid` or `python3` on PATH.
+#                           Mutually exclusive with --oneshot.
 #
 # Storage (under .claude/codex-threads/ — git-ignore this directory):
 #   <thread>.id               UUID of the active session.
@@ -29,6 +35,10 @@
 #   <thread>.active           PID lease held while a dispatch is in flight —
 #                             written atomically just before codex runs, removed
 #                             on exit only by the PID that wrote it.
+#   <thread>.detach-output    raw stdout/stderr of a --detach child. The .log
+#                             marker contract above is unchanged — the child
+#                             appends rounds/replies exactly like a foreground
+#                             run.
 #
 # Exit codes:
 #   0   success
@@ -40,6 +50,10 @@
 #   6   --require-existing set but no existing thread
 #   7   persistent mode outside a git repository (state anchors to the repo
 #       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
+#   8   --detach: no session isolator (neither `setsid` nor `python3` on
+#       PATH) — refused with ZERO state written
+#   9   --detach: ready-handshake timed out (spawn killed, launcher-owned
+#       tmpfiles removed; check <thread>.detach-output)
 
 set -euo pipefail
 
@@ -47,14 +61,20 @@ set -euo pipefail
 FORCE_NEW=false
 ONESHOT=false
 REQUIRE_EXISTING=false
+DETACH=false
 THREAD=""
 MODEL=""
 EFFORT=""
 SCHEMA=""
+# Args a --detach launcher forwards to its re-exec'd child: everything except
+# --detach itself (the child is an ordinary foreground invocation).
+CHILD_ARGS=()
+for _a in "$@"; do [[ "$_a" == "--detach" ]] || CHILD_ARGS+=("$_a"); done
 while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
     --oneshot) ONESHOT=true; shift ;;
+    --detach) DETACH=true; shift ;;
     --require-existing) REQUIRE_EXISTING=true; shift ;;
     --model)  [[ $# -ge 2 ]] || { echo "--model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
     --effort) [[ $# -ge 2 ]] || { echo "--effort needs a value" >&2; exit 1; }; EFFORT="$2"; shift 2 ;;
@@ -81,6 +101,10 @@ if $FORCE_NEW && $ONESHOT; then
 fi
 if $ONESHOT && $REQUIRE_EXISTING; then
   echo "--oneshot and --require-existing are mutually exclusive (oneshot keeps no thread to require)." >&2
+  exit 1
+fi
+if $DETACH && $ONESHOT; then
+  echo "--detach and --oneshot are mutually exclusive (--detach hands off to a persistent re-exec; --oneshot keeps no thread state to hand off)." >&2
   exit 1
 fi
 if $FORCE_NEW && $REQUIRE_EXISTING; then
@@ -130,6 +154,25 @@ if ! $ONESHOT; then
   cd "$ROOT"
 fi
 
+# ── detach preflight: select the session isolator ─────────────────────────
+# Runs BEFORE any persistent state is created (the mkdir in the paths section
+# below): a refused --detach must leave ZERO state behind — no state dir, no
+# lease, no tmpfiles. A NEW SESSION is the only thing that survives a
+# group-targeted SIGTERM/SIGKILL; plain `nohup` only shields SIGHUP, so it is
+# NOT an accepted fallback.
+DETACH_ISOLATOR=""
+if $DETACH; then
+  if command -v setsid >/dev/null 2>&1; then
+    DETACH_ISOLATOR="setsid"
+  elif command -v python3 >/dev/null 2>&1; then
+    DETACH_ISOLATOR="python3"
+  else
+    echo "--detach needs a session isolator, but neither 'setsid' nor 'python3' is on PATH." >&2
+    echo "Install one of them, or dispatch without --detach (foreground, or the harness's run_in_background)." >&2
+    exit 8
+  fi
+fi
+
 # ── paths ─────────────────────────────────────────────────────────────────
 STATE_DIR=".claude/codex-threads"
 # Create the state dir only for persistent modes. --oneshot leaves no trace in
@@ -158,6 +201,65 @@ else
     touch "$STATE_DIR/.gitignore-warned"
   fi
 fi
+# ── detach launcher ───────────────────────────────────────────────────────
+# Re-execs this same script (same args minus --detach) in a NEW SESSION and
+# returns after a ready handshake. Lifecycle order is the contract:
+#   isolator preflight (above, exit 8 with zero state) → state dir + gitignore
+#   nudge (paths section above — the sidecar redirection below is performed by
+#   the shell BEFORE the isolator runs, so on a repo's first-ever detach the
+#   directory must already exist) → persist stdin + allocate READY → spawn →
+#   poll READY.
+# The launcher acquires NO lease — only the re-exec'd child (the invocation
+# that actually dispatches) does, and the child reports its PID into READY
+# only AFTER its lease is held, so a DETACHED report can never race /cleanup.
+# The parent OWNS the READY file (the child never deletes it — a child
+# finishing faster than one poll interval must not cause a false timeout);
+# the child's cleanup owns the prompt tmpfile.
+if $DETACH; then
+  DETACH_OUT="$STATE_DIR/${THREAD}.detach-output"
+  PROMPT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.prompt.XXXXXX")"
+  cat > "$PROMPT_TMPFILE"      # persist stdin for the re-exec'd child
+  READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
+  export CC_CODEX_PROMPT_TMPFILE="$PROMPT_TMPFILE"
+  export CC_CODEX_READY_FILE="$READY_FILE"
+  if [[ "$DETACH_ISOLATOR" == "setsid" ]]; then
+    setsid bash "$0" "${CHILD_ARGS[@]}" \
+      < "$PROMPT_TMPFILE" >> "$DETACH_OUT" 2>&1 &
+  else
+    # No `--` separator: with -c, sys.argv[0] is '-c' — the exec target is
+    # sys.argv[1] ('bash').
+    python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      bash "$0" "${CHILD_ARGS[@]}" \
+      < "$PROMPT_TMPFILE" >> "$DETACH_OUT" 2>&1 &
+  fi
+  SPAWN_PID=$!
+  # Handshake: the child writes its PID into READY after acquiring its lease.
+  # Bounded 5s in 0.1s steps (bash 3.2 / macOS `sleep 0.1` is fine).
+  CHILD_PID=""
+  i=0
+  while [[ $i -lt 50 ]]; do
+    if [[ -s "$READY_FILE" ]]; then
+      CHILD_PID="$(cat "$READY_FILE" 2>/dev/null || true)"
+      [[ "$CHILD_PID" =~ ^[0-9]+$ ]] && break
+      CHILD_PID=""
+    fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  if [[ -z "$CHILD_PID" ]]; then
+    # The spawn is its own session leader, so its pgid == its pid — kill the
+    # whole group, then the launcher-owned files.
+    kill -TERM -"$SPAWN_PID" 2>/dev/null || kill -TERM "$SPAWN_PID" 2>/dev/null || true
+    rm -f "$READY_FILE" "$PROMPT_TMPFILE"
+    echo "--detach handshake timed out after 5s: the child never reported ready (spawn killed)." >&2
+    echo "Raw child output (if any): $DETACH_OUT" >&2
+    exit 9
+  fi
+  rm -f "$READY_FILE"
+  echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output — poll the thread log for the next 'round=' header"
+  exit 0
+fi
+
 OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.XXXXXX")"
 JSONL_FILE="${OUT_FILE}.jsonl"
 # Combined EXIT cleanup — installed exactly ONCE. Never add a second
@@ -266,6 +368,14 @@ if ! $ONESHOT; then
   LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
   printf '%s' "$$" > "$LEASE_TMP"
   mv -f "$LEASE_TMP" "$LEASE_FILE"
+  # Detach handshake (child side): a --detach launcher exported
+  # CC_CODEX_READY_FILE and is polling it for our PID. Written only AFTER the
+  # lease is held, so a DETACHED report proves /cleanup already sees this
+  # thread as in-use. The parent owns the READY file and removes it — NEVER
+  # delete it here.
+  if [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+    printf '%s' "$$" > "$CC_CODEX_READY_FILE"
+  fi
 fi
 
 # ── dispatch ──────────────────────────────────────────────────────────────
