@@ -4,6 +4,84 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-19
+
+Closes six state-hygiene gaps surfaced by a 2026-07-19 audit of real
+thread-state dirs across six production repos (marqa agent/platform/analyzer +
+a container root, stokli frontend/backend). Plan:
+`docs/superpowers/plans/2026-07-19-hygiene-0.8.md`.
+
+### Fixed
+
+- **Armed gates now expire after 14 days.** Arming writes `armed_at=<epoch>`;
+  the Stop hook runs a TTL pre-pass over BOTH armed files before any gate
+  evaluates branch/dirt — each expired file is removed with a stderr note and
+  evaluation continues to the surviving gates (a pre-pass, not an inline allow,
+  so one gate's expiry can never suppress or orphan the other). Missing,
+  malformed, or future `armed_at` (including every ≤0.7 armed file) skips the
+  TTL — fail-open, nothing starts blocking on upgrade. `/status` shows a gate's
+  age and warns past 14 days. Closes the audited incident class of month-old
+  armed gates sitting on long-merged branches, waiting to re-fire the moment a
+  branch name is reused.
+- **Driver state is anchored to the RESOLVED repo root, or refused (exit 7).**
+  Persistent modes derive the anchor as `git -C "${CLAUDE_PROJECT_DIR:-$PWD}"
+  rev-parse --show-toplevel` — never the raw candidate: a candidate inside a
+  repo subdirectory resolves UP to the root (driver and hook state can no
+  longer split), and a candidate that is not a repo at all (unset var in a
+  non-repo cwd, `CLAUDE_PROJECT_DIR` pointing at a non-repo or nonexistent
+  path) exits 7 naming the candidate and the fixes (cd into a repo / fix the
+  var / use `--oneshot`, which keeps its no-state exception). Closes the
+  audited incident of a full thread-state dir stranded in a non-repo container
+  directory the hook could never see.
+- **`last-error.jsonl` now means the LAST error.** The moment a dispatch exits
+  0, the thread's previous diag is removed — before UUID extraction, so a
+  UUID-extraction failure (which writes a fresh diag even on exit 0) lands in
+  a clean slot and is never erased by its own dispatch. Every failure-path
+  diag write is capped to the last 64 KB of the stream. Closes the audited
+  235 KB diag and the stale diags that survived threads whose reviews had long
+  since reached APPROVE.
+
+### Changed
+
+- **`/reply`'s default thread now matches `/review`'s** — `review-<branch-slug>`
+  (same `tr -c 'a-zA-Z0-9_.-' '-'` slug rule), falling back to a bare `review`
+  thread when only that exists, with a one-line legacy warning; the
+  `--require-existing` / exit-6 semantics are unchanged. Closes the audited
+  incident of a bare `/reply` on a feature branch silently resuming a 77 KB
+  June-old `review` thread instead of the branch's own.
+
+### Added
+
+- **Two new `/cleanup` detection classes.** (a) **Stale last-error diags** — a
+  diag whose thread has no `.id` (orphan) or whose `.log` is newer (recovered)
+  is archivable; a fresh diag is not flagged. (b) **Dormant threads** —
+  `--older-than <days>` (integer ≥ 1) lists/archives whole thread file-sets
+  (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
+  detach-output, active`) whose newest member is older than N days. Safety
+  rails, in precedence order: a thread whose `.active` lease names a live PID
+  is skipped unconditionally (a resume waiting inside `codex exec` writes
+  nothing mtime could see — the lease is the only honest in-use signal; a
+  dead-PID lease is itself stale and joins the set); threads named by an armed
+  gate's `thread=` are excluded; on `--apply` each set's newest mtime is
+  re-checked immediately before the move; generic `review`/`plan` stay
+  list-only. Closes the two audited stale-state classes `/cleanup` was blind
+  to. The lease itself is written by the driver: `<thread>.active` holds the
+  dispatching PID for the whole dispatch, removal is ownership-checked.
+- **Driver `--detach`** — re-execs the dispatch in its OWN session (`setsid`,
+  or `python3 os.setsid()+execvp` where the binary is missing; plain `nohup`
+  shields only SIGHUP, not the group-targeted kill that was actually observed)
+  so it survives harness process-reaping. Readiness handshake: the child
+  acquires its PID lease FIRST and only then reports ready, so a printed
+  `DETACHED pid=<pid> output=<thread>.detach-output` guarantees `/cleanup`
+  already sees the thread as in-use. New exit codes: 8 — no isolator on PATH,
+  refused with zero state written; 9 — handshake timeout, spawn killed. Raw
+  child stdout/stderr goes to the `<thread>.detach-output` sidecar; the thread
+  `.log` marker contract is untouched. `/review`/`/plan` `--background` now
+  recommends `--detach` + polling the thread log for the next `round=` header;
+  the harness's `run_in_background` stays documented as the fallback with its
+  reaping caveat. Closes the audited incident class of background dispatches
+  dying mid-flight when the harness reaped the process group.
+
 ## [0.7.0] - 2026-07-07
 
 ### Added

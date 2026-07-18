@@ -18,7 +18,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 | Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
 | Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
 | Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
-| Reply back to something Codex said | `/reply [thread]` | named thread, default `review` |
+| Reply back to something Codex said | `/reply [thread]` | named thread, default `review-<branch-slug>` (falls back to a legacy bare `review` if only that exists) |
 | Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
 | See plugin / thread / gate state in this repo | `/status` (read-only) | — |
 | Dispose of a recorded finding (false-positive / accepted / deferred) | `/review-dispute` / `/review-accept` / `/review-defer <id>` | the finding's review thread |
@@ -39,7 +39,9 @@ State files live in `.claude/codex-threads/` in the current repo (git-ignore thi
 
 - `<name>.id` — saved Codex session UUID for the thread.
 - `<name>.log` — append-only audit log of prompt/reply pairs (rotated to `.log.1` at ~1 MB; rotation happens before each append, so the latest entry is always in the current `.log`).
-- `<name>.last-error.jsonl` — raw Codex stream from the most recent failure (the path the driver points you at on error).
+- `<name>.last-error.jsonl` — raw Codex stream from the most recent failure (the path the driver points you at on error; removed on the thread's next successful dispatch, capped to the last 64 KB).
+- `<name>.detach-output` — raw stdout/stderr of a `--detach` child (the reply itself still lands in the `.log` as usual).
+- `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
 
 List with `/thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/thread-new <name>`.
 
@@ -53,7 +55,7 @@ All commands shell out to the bundled driver. When you need to dispatch without 
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing] <<< "$PROMPT"
 ```
 
-The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread. The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.
+The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread, 7 = not a git repo — persistent state refused (cd into a repo, fix `CLAUDE_PROJECT_DIR`, or use `--oneshot`), 8 = `--detach` with no isolator available (neither `setsid` nor `python3` on PATH), 9 = `--detach` readiness handshake timed out (spawn killed; check `<thread>.detach-output`). The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.
 
 ## Codex is an agent, not an LLM endpoint
 
@@ -169,6 +171,7 @@ Arming reviews existing work first, then gates future turns. `/autoreview on`: i
 | Applying a wrong Codex finding to release the gate | `/autoreview` armed, Codex returns a plausible-but-wrong-in-context CRITICAL, user/gate push for speed | Validate against the code first (read the consumers, not just the cited line); reject with file:line via `/reply`; the gate's round cap, not compliance, is the escape hatch. |
 | Guessing instead of running, when a tool call fails | `/reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
 | Wrong intent → wrong sandbox | Using `/review` for an informational question (or vice versa) | Route per the table above. `/ask` is read-only and informational; `/review` is adversarial. |
+| Background dispatch reaped by the harness | A dispatch launched via `Bash(..., run_in_background: true)` dies mid-flight when the harness kills the process group | Use the driver's `--detach` instead — a plain foreground call that re-execs the dispatch in its own session (survives group kills) and prints `DETACHED pid=... output=<thread>.detach-output`; poll the thread log for the next `round=` header to surface the reply. |
 | Codex run stalled mid-investigation | A dispatch returned but produced no verdict / an incomplete reply (Codex was interrupted or ran long) | Do NOT restart the whole investigation. Resume the SAME thread asking it to report what it already concluded without re-running: `Your previous run stalled before a verdict. Do NOT restart — report the findings you already reached and give your verdict line.` The thread keeps its memory, so this recovers the work for one extra dispatch. |
 
 ## Prerequisites
