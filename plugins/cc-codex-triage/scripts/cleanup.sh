@@ -116,9 +116,11 @@ newest_mtime() {
 # Rail 1: true when <thread>.active holds a strictly positive decimal PID that
 # is alive (`kill -0`). Dead-PID / malformed content -> NOT live (stale lease).
 # The grammar is the DRIVER's canonical one (^[1-9][0-9]{0,11}$) applied to the
-# RAW file content — no whitespace normalization: the driver writes the bare
-# PID with printf '%s' "$$", so "0<pid>", " <pid>", "<pid>\n" are all spellings
-# the driver never produces and must read as malformed (stale), not IN USE.
+# post-command-substitution content — no whitespace normalization beyond what
+# $(cat) itself does (it strips trailing newlines, identically in the driver):
+# the driver writes the bare PID with printf '%s' "$$", so "0<pid>", " <pid>",
+# or an embedded newline/additional line are spellings it never produces and
+# must read as malformed (stale), not IN USE.
 lease_live() {
   local f="$STATE_DIR/$1.active" pid
   [ -f "$f" ] || return 1

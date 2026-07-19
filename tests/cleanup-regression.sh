@@ -136,8 +136,10 @@ run --older-than 1 --apply
 
 echo "== boundary spellings of a LIVE pid are still malformed (driver grammar, raw content) =="
 # The driver writes the bare PID via printf '%s' "$$" — a leading zero, leading
-# whitespace, or trailing newline are spellings it never produces. Each must
-# read as stale (archivable), NOT as IN USE, even while the embedded PID lives.
+# whitespace, or an embedded newline/additional line are spellings it never
+# produces. Each must read as stale (archivable), NOT as IN USE, even while the
+# embedded PID lives. (A TRAILING newline is stripped by $(cat) identically in
+# driver and cleanup — that spelling is live-parity, not malformed.)
 sleep 300 & LIVEPID=$!
 reset_state
 echo u > "$SD/mz1.id"; printf '0%s' "$LIVEPID"  > "$SD/mz1.active"   # leading zero
