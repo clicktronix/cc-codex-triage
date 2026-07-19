@@ -13,6 +13,40 @@ a container root, stokli frontend/backend). Plan:
 
 ### Fixed
 
+- **`/cleanup --apply` archives under the driver's acquisition mutex.** The
+  apply-time rail re-check had a TOCTOU window: a dispatch could acquire the
+  thread's lease between the check and that unit's `mv`s. Each per-thread
+  unit (flat targets and dormant sets alike) now takes the SAME
+  `<thread>.active.lock` mkdir mutex the driver serializes lease grants
+  through — rails re-checked inside the lock, held until the unit's moves
+  finish, released ownership-checked; takeover mirrors the driver (live
+  owner never stolen, dead owner reclaimed at once, ownerless > 60s
+  reclaimed). A dispatch starting mid-archive is refused (exit 10) instead
+  of racing. Regression-tested via a post-lock injection seam
+  (`CC_CLEANUP_TEST_POST_LOCK_HOOK`).
+- **`--background` now has a completion-delivery path.** New
+  `scripts/detach-watch.sh <thread> <pid> [log-offset]`: run it as a
+  Claude-managed background task after the `DETACHED` line — it waits on the
+  worker PID (the one signal that fires on success AND on post-READY
+  failure, which appends no `round=` header and so defeated log polling),
+  then delivers the appended reply (exit 0), the `last-error` +
+  `detach-output` diagnostics (exit 1), or a still-running timeout notice
+  (exit 3). The launcher prints `log-offset=<B>` (pre-dispatch log size) so
+  the watcher's baseline cannot race a fast reply; `<thread>.detach-output`
+  is truncated per launch (one job per file — runs no longer interleave).
+  `/review`/`/plan` `--background` steps wire the watcher up explicitly.
+- **Mutating utilities hard-fail outside a git repository (exit 7, driver
+  parity).** `cleanup.sh` and `ledger.sh` previously fell back to the
+  caller's cwd — archiving/writing state the driver could never have put
+  there; read-only `status.sh` now no-ops with a message, and the mutating
+  command snippets (`/autoreview`, `/autoplan`, `/thread-new`) guard their
+  `cd "$(git ...)"` with `|| exit 7`.
+- **A broken `ps` no longer reads as a dead child.** `proc_state()` probes
+  `ps` against `$$` when the target lookup fails: self listable → target
+  really is gone/zombie; self unlistable (process-restricted sandbox) →
+  UNKNOWN, and the launcher trusts `kill -0` alone — previously every such
+  environment misreported healthy detached children (observed as launcher
+  failure storms under a restricted sandbox).
 - **Armed gates now expire after 14 days.** Arming writes `armed_at=<epoch>`;
   the Stop hook runs a TTL pre-pass over BOTH armed files before any gate
   evaluates branch/dirt — each expired file is removed with a stderr note and
@@ -87,6 +121,14 @@ a container root, stokli frontend/backend). Plan:
   the harness's `run_in_background` stays documented as the fallback with its
   reaping caveat. Closes the audited incident class of background dispatches
   dying mid-flight when the harness reaped the process group.
+
+### Documentation
+
+- README (en/ru/es): same-thread dispatches are serialized by the lease/mutex
+  (exit 10) — the old "two sessions can race the counters/log" claim is
+  superseded; the one-session-per-repo guidance now names the real remaining
+  surface (gate arming files, findings ledger, written outside the driver's
+  lease).
 
 ## [0.7.0] - 2026-07-07
 

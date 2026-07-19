@@ -3,8 +3,13 @@ set -u
 LEDGER="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/ledger.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq absent"; exit 0; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-ledger.XXXXXX")"; trap 'rm -rf "$T"' EXIT
-export CLAUDE_PROJECT_DIR="$T"; cd "$T"; PASS=0; FAIL=0
+# The ledger hard-fails outside a git repo (exit 7, driver parity) — the
+# fixture must be a repo, exactly like every production caller.
+export CLAUDE_PROJECT_DIR="$T"; cd "$T"; git init -q -b main .; PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); echo "  ok: $1"; }; bad(){ FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+
+( D="$(mktemp -d)"; cd "$D" && CLAUDE_PROJECT_DIR="$D" bash "$LEDGER" list x ) >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 7 ]] && ok "outside a git repo -> exit 7 (hard root anchoring)" || bad "non-git ledger rc=$rc"
 
 id="$(bash "$LEDGER" create th --file a.py --line 3 --severity blocking --title t --confidence 0.9)"
 got="$(bash "$LEDGER" get th "$id" | jq -r '.confidence')"

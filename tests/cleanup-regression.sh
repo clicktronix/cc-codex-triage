@@ -348,6 +348,53 @@ grep -q 'SKIP (armed since detection): thread ov3' <<<"$OUT" && ok "gate armed m
 [[ ! -e "$SD/aa1.last-error.jsonl" ]] && ok "earlier unit still archived normally" || bad "earlier unit not archived: $OUT"
 rm -f "$SD/autoreview.armed"
 
+echo "== apply mutex: lease injected AFTER lock acquisition -> under-lock re-check skips the unit =="
+# The TOCTOU this closes: without the mutex, a dispatch could write a lease
+# between the rail check and the mv. The test seam injects a live lease at
+# the last point a legitimate writer could (post-lock, pre-re-check) — the
+# unit must be skipped, not archived.
+reset_state
+echo u > "$SD/tc1.id"; echo l > "$SD/tc1.log"; old "$SD/tc1.id" "$SD/tc1.log"
+sleep 30 & LIVE5=$!
+cat > "$T/postlock.sh" <<HOOK
+printf '%s' "$LIVE5" > "$SD/tc1.active"
+HOOK
+OUT="$(CC_CLEANUP_TEST_POST_LOCK_HOOK="$T/postlock.sh" bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+grep -q 'SKIP (in use since detection): thread tc1' <<<"$OUT" && ok "post-lock lease caught by the under-lock re-check" || bad "post-lock lease not caught: $OUT"
+[[ -f "$SD/tc1.id" && -f "$SD/tc1.log" ]] && ok "unit untouched" || bad "unit archived despite live lease"
+[[ ! -d "$SD/tc1.active.lock" ]] && ok "mutex released after the skip" || bad "mutex leaked"
+kill "$LIVE5" 2>/dev/null; wait "$LIVE5" 2>/dev/null
+rm -f "$SD/tc1.active"
+
+echo "== apply mutex: acquisition lock held by a LIVE owner -> unit treated as busy, lock not stolen =="
+reset_state
+echo u > "$SD/tc2.id"; echo l > "$SD/tc2.log"; old "$SD/tc2.id" "$SD/tc2.log"
+sleep 30 & LIVE6=$!
+mkdir -p "$SD/tc2.active.lock"
+printf '%s' "$LIVE6" > "$SD/tc2.active.lock/owner"
+OUT="$(bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+grep -q 'SKIP (in use since detection): thread tc2' <<<"$OUT" && ok "live-owner lock skips the unit" || bad "live-owner lock not respected: $OUT"
+[[ -f "$SD/tc2.id" && "$(cat "$SD/tc2.active.lock/owner" 2>/dev/null)" == "$LIVE6" ]] && ok "unit and foreign lock left intact" || bad "unit archived or lock stolen"
+kill "$LIVE6" 2>/dev/null; wait "$LIVE6" 2>/dev/null
+rm -rf "$SD/tc2.active.lock"
+
+echo "== apply mutex: DEAD-owner lock reclaimed, unit archives, lock released =="
+reset_state
+echo u > "$SD/tc3.id"; echo l > "$SD/tc3.log"; old "$SD/tc3.id" "$SD/tc3.log"
+sleep 0.3 & DEAD1=$!; wait "$DEAD1" 2>/dev/null
+mkdir -p "$SD/tc3.active.lock"
+printf '%s' "$DEAD1" > "$SD/tc3.active.lock/owner"
+OUT="$(bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+[[ ! -e "$SD/tc3.id" && -f "$(last_archive)/tc3.id" ]] && ok "dead-owner lock reclaimed, unit archived" || bad "dead-owner reclaim failed: $OUT"
+[[ ! -d "$SD/tc3.active.lock" ]] && ok "reclaimed lock released after apply" || bad "lock left behind"
+
+echo "== hard root anchoring: cleanup outside a git repo -> exit 7, nothing moved =="
+NONGIT="$T/nongit"; mkdir -p "$NONGIT/.claude/codex-threads"
+printf 'boom\n' > "$NONGIT/.claude/codex-threads/z1.last-error.jsonl"
+OUT="$( cd "$NONGIT" && CLAUDE_PROJECT_DIR="$NONGIT" bash "$CLEANUP" --apply 2>&1 )"; RC=$?
+[[ "$RC" -eq 7 ]] && ok "cleanup outside a repo -> exit 7" || bad "non-git cleanup rc=$RC out=$OUT"
+[[ -f "$NONGIT/.claude/codex-threads/z1.last-error.jsonl" ]] && ok "non-repo state untouched" || bad "non-repo state was moved"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

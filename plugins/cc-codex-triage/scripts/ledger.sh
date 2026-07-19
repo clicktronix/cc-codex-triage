@@ -25,9 +25,14 @@ set -u
 
 # Anchor to the RESOLVED repo root (mirrors the driver's rule): a
 # CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
-# the repo ROOT. Outside a repo, stay where we are (fail-soft).
-ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$ROOT" ]; then cd "$ROOT" 2>/dev/null || true; fi
+# the repo ROOT. HARD-FAIL outside a repo (exit 7, driver parity): `create`
+# WRITES the findings ledger, and a fail-soft fallback would write it into
+# whatever directory the caller happens to sit in.
+if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
+  echo "ledger.sh must run inside a git repository (thread state lives at the repo root)" >&2
+  exit 7
+fi
+cd "$ROOT" || exit 7
 STATE_DIR=".claude/codex-threads"
 
 command -v jq >/dev/null 2>&1 || { echo "ledger: jq is required (brew install jq / apt-get install jq)" >&2; exit 2; }

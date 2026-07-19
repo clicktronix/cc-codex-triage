@@ -16,7 +16,7 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 2. If no further text after the name → just drop the pointer:
 
    ```bash
-   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"   # resolves a subdir candidate UP to the repo root — state lives at the ROOT
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; HARD-FAIL outside a repo (a fail-soft cd would mutate state in the wrong directory)
    D=".claude/codex-threads"
    # Reset the pointer/counter AND the per-task sidecars, so a reused thread
    # name never inherits the previous task's findings/scope/approval baseline.

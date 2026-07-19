@@ -59,10 +59,11 @@
 #                             release removes the lock only while <lock>/owner
 #                             still names this PID. cleanup() releases a
 #                             still-held lock on every exit path.
-#   <thread>.detach-output    raw stdout/stderr of a --detach child. The .log
-#                             marker contract above is unchanged — the child
-#                             appends rounds/replies exactly like a foreground
-#                             run.
+#   <thread>.detach-output    raw stdout/stderr of the LATEST --detach child
+#                             (truncated per launch — one job per file). The
+#                             .log marker contract above is unchanged — the
+#                             child appends rounds/replies exactly like a
+#                             foreground run.
 #
 # Exit codes:
 #   0   success
@@ -319,6 +320,26 @@ if $DETACH; then
   # confirmed DETACHED success the child owns itself — that is the feature —
   # so this kill applies only to ABORTED handshakes (DETACH_DONE
   # short-circuits detach_cleanup before it can run).
+  # Process-state probe with a broken-ps discriminator. `ps` failing on the
+  # TARGET is ambiguous: BSD ps exits non-zero for a zombie it cannot list
+  # (target truly gone), but a process-restricted sandbox fails `ps` for
+  # EVERY pid — including this shell itself. Probing $$ (always alive) tells
+  # the two apart: self listable → the target really is gone/zombie (prints
+  # nothing); self unlistable → ps is unusable here, print UNKNOWN and let
+  # the caller fall back to kill -0 alone. Always returns 0 (set -e safety).
+  proc_state() { # $1=pid → stdout: state chars, '' (gone/zombie-unlistable), or UNKNOWN
+    local out
+    if out="$(ps -o stat= -p "$1" 2>/dev/null)"; then
+      printf '%s' "$out" | tr -d '[:space:]'
+      return 0
+    fi
+    if ps -o stat= -p "$$" >/dev/null 2>&1; then
+      : # ps works; the target is unlistable -> gone (empty output)
+    else
+      printf 'UNKNOWN'
+    fi
+    return 0
+  }
   reap_spawn() {
     [[ -n "$SPAWN_PID" ]] || return 0
     # The spawn is its own session leader (pgid == pid) — kill the whole
@@ -328,17 +349,19 @@ if $DETACH; then
     while [[ $i -lt 20 ]]; do
       kill -0 "$SPAWN_PID" 2>/dev/null || break
       # kill -0 also succeeds on a zombie (dead, not yet reaped child) — read
-      # the real state; empty or Z* means it is already gone. The `|| true`
-      # is load-bearing: BSD ps exits non-zero for a zombie it cannot list,
-      # and under set -e/pipefail a bare failing assignment would kill the
-      # launcher mid-reap.
-      st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+      # the real state via proc_state; '' or Z* means it is already gone,
+      # UNKNOWN (ps unusable) means keep waiting on kill -0 alone — treating
+      # a ps failure as "dead" under a restricted sandbox skipped the KILL
+      # escalation for a still-alive child.
+      st="$(proc_state "$SPAWN_PID")"
       case "$st" in ''|Z*) break ;; esac
       sleep 0.1
       i=$((i+1))
     done
     if kill -0 "$SPAWN_PID" 2>/dev/null; then
-      st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+      # UNKNOWN falls through to the KILL escalation (this is the abort
+      # path — a possibly-alive child must die, not get the benefit of doubt).
+      st="$(proc_state "$SPAWN_PID")"
       case "$st" in ''|Z*) ;; *) kill -KILL -"$SPAWN_PID" 2>/dev/null || kill -KILL "$SPAWN_PID" 2>/dev/null || true ;; esac
     fi
     wait "$SPAWN_PID" 2>/dev/null || true   # reap the zombie
@@ -346,16 +369,18 @@ if $DETACH; then
   }
   # True while the spawn is still RUNNING. kill -0 alone is not enough: it
   # also succeeds on a zombie (dead, not yet reaped) — read the real state
-  # like reap_spawn does; empty or Z* means it is already gone. Without a
-  # `ps` on PATH, trust kill -0 alone: a false "alive" only delays detection
-  # by an iteration (bash reaps the background child asynchronously, after
-  # which kill -0 fails), while a false "dead" would wait out a healthy
-  # child and misreport its handshake.
+  # via proc_state; empty or Z* means it is already gone. Without a usable
+  # `ps` (missing from PATH, or failing even for $$ under a restricted
+  # sandbox → UNKNOWN), trust kill -0 alone: a false "alive" only delays
+  # detection by an iteration (bash reaps the background child
+  # asynchronously, after which kill -0 fails), while a false "dead" would
+  # misreport a healthy child as exited — observed as launcher exit 9/failure
+  # storms in a process-restricted sandbox where every `ps` errors.
   spawn_alive() {
     kill -0 "$SPAWN_PID" 2>/dev/null || return 1
     command -v ps >/dev/null 2>&1 || return 0
     local st
-    st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+    st="$(proc_state "$SPAWN_PID")"
     case "$st" in ''|Z*) return 1 ;; esac
     return 0
   }
@@ -377,15 +402,20 @@ if $DETACH; then
   READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
   export CC_CODEX_PROMPT_TMPFILE="$PROMPT_TMPFILE"
   export CC_CODEX_READY_FILE="$READY_FILE"
+  # Truncating (>) rather than appending: the sidecar holds ONE launch's raw
+  # output — successive runs on the same thread would otherwise interleave
+  # with no job boundary, and a watcher/user reading it after a failure could
+  # attribute a PREVIOUS run's noise to the current one. (Concurrent runs
+  # cannot exist — the lease serializes dispatches per thread.)
   if [[ "$DETACH_ISOLATOR" == "setsid" ]]; then
     setsid bash "$0" "${CHILD_ARGS[@]}" \
-      < "$PROMPT_TMPFILE" >> "$DETACH_OUT" 2>&1 &
+      < "$PROMPT_TMPFILE" > "$DETACH_OUT" 2>&1 &
   else
     # No `--` separator: with -c, sys.argv[0] is '-c' — the exec target is
     # sys.argv[1] ('bash').
     python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
       bash "$0" "${CHILD_ARGS[@]}" \
-      < "$PROMPT_TMPFILE" >> "$DETACH_OUT" 2>&1 &
+      < "$PROMPT_TMPFILE" > "$DETACH_OUT" 2>&1 &
   fi
   SPAWN_PID=$!
   # Handshake: the child writes its PID into READY after acquiring its lease.
@@ -451,7 +481,17 @@ if $DETACH; then
   fi
   rm -f "$READY_FILE"
   DETACH_DONE=true   # handshake complete — the EXIT trap must not touch the child's prompt tmpfile
-  echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output — poll the thread log for the next 'round=' header"
+  # log-offset is the log's size BEFORE this dispatch appends anything (the
+  # child's reply lands minutes later) — pass it to detach-watch.sh so the
+  # watcher's baseline cannot race a fast reply landing before it starts.
+  # set -e safety: a missing log (first-ever dispatch) must yield 0, not a
+  # failed redirect killing the launcher after a successful handshake.
+  LOG_BASE=0
+  if [[ -f "$STATE_DIR/${THREAD}.log" ]]; then
+    LOG_BASE="$(wc -c < "$STATE_DIR/${THREAD}.log" | tr -d ' ')"
+  fi
+  case "${LOG_BASE:-}" in ''|*[!0-9]*) LOG_BASE=0 ;; esac
+  echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output log-offset=$LOG_BASE — for completion delivery run scripts/detach-watch.sh $THREAD $CHILD_PID $LOG_BASE as a background task; fallback: poll the thread log for the next 'round=' header"
   exit 0
 fi
 

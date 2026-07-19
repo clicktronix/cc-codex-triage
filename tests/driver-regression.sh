@@ -714,6 +714,58 @@ T1=$(date +%s)
 [[ $((T1 - T0)) -lt 5 ]] && ok "refusal propagated early ($((T1 - T0))s < 5s)" || bad "took $((T1 - T0))s"
 rm -rf "$SD/e2.active"
 
+echo "== detach: restricted ps (fails for EVERY pid) -> kill -0 trusted, no false 9/failure =="
+# Regression: a ps that errors was read as "child dead" — in a
+# process-restricted sandbox the launcher misreported healthy children.
+# The broken-ps shim fails even for $$, so proc_state's self-probe must
+# yield UNKNOWN and the launcher must trust kill -0 alone.
+rm -rf "$SD"; mkdir -p "$SD" "$T/nops" "$T/dtmp12"
+cat > "$T/nops/ps" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$T/nops/ps"
+TMPDIR="$T/dtmp12" FAKE_CODEX_SLEEP=2 PATH="$T/nops:$PATH" run p1 --detach
+[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "broken ps: handshake still completes (kill -0 trusted)" || bad "broken-ps detach rc=$RC out=$OUT err=$(cat "$T/err")"
+DP1="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP1" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q FAKE_REPLY "$SD/p1.log" 2>/dev/null && ok "reply landed despite broken ps" || bad "no reply with broken ps ($(cat "$SD/p1.detach-output" 2>/dev/null))"
+
+echo "== detach sidecar: truncated per launch (no cross-run interleave) =="
+run p2 --detach
+DP2="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP2" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+printf 'STALE_MARKER\n' >> "$SD/p2.detach-output"
+run p2 --detach
+DP2B="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP2B" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q 'STALE_MARKER' "$SD/p2.detach-output" 2>/dev/null && bad "sidecar kept the previous run's output" || ok "sidecar holds the latest run only"
+
+echo "== DETACHED line carries log-offset= for the watcher baseline =="
+grep -q 'log-offset=[0-9]' <<<"$OUT" && ok "log-offset printed" || bad "no log-offset in: $OUT"
+
+echo "== detach-watch: reply landed -> exit 0 and prints the log delta =="
+WATCH="${DRIVER%codex-thread.sh}detach-watch.sh"   # suite cwd is inside the fixture repo — derive from DRIVER, not $0
+OFF="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
+WOUT="$(bash "$WATCH" p2 "$DP2B" "$OFF" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 0 ]] && grep -q 'DONE' <<<"$WOUT" && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "watcher reports the landed reply" || bad "watcher success path rc=$WRC out=$WOUT"
+
+echo "== detach-watch: worker died with NO new round -> exit 1 with diagnostics =="
+rm -rf "$SD"; mkdir -p "$SD"
+printf 'old\n' > "$SD/p3.log"
+printf '{"err":"boom"}\n' > "$SD/p3.last-error.jsonl"
+printf 'raw child noise\n' > "$SD/p3.detach-output"
+BASE="$(wc -c < "$SD/p3.log" | tr -d ' ')"
+sleep 0.2 & DEADW=$!; wait "$DEADW" 2>/dev/null
+WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 1 ]] && grep -q 'FAILED' <<<"$WOUT" && grep -q 'boom' <<<"$WOUT" && grep -q 'raw child noise' <<<"$WOUT" \
+  && ok "watcher surfaces the post-READY failure diagnostics" || bad "watcher failure path rc=$WRC out=$WOUT"
+
+echo "== detach-watch: outside a git repo -> exit 7 =="
+WNG="$T/watchnongit"; mkdir -p "$WNG"
+( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 1 ) >/dev/null 2>&1; WRC=$?
+[[ "$WRC" -eq 7 ]] && ok "watcher outside a repo -> exit 7" || bad "watcher non-git rc=$WRC"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

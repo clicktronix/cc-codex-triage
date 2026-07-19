@@ -13,7 +13,7 @@ Lists threads under `.claude/codex-threads/` in the current repo.
 1. Run via Bash tool:
 
    ```bash
-   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"   # resolves a subdir candidate UP to the repo root — state lives at the ROOT
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 0   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; read-only, so outside a repo just report nothing
    STATE_DIR=".claude/codex-threads"
    if [ ! -d "$STATE_DIR" ]; then
      echo "No active threads in this repo."

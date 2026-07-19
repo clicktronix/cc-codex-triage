@@ -77,9 +77,15 @@ done
 
 # Anchor to the RESOLVED repo root (mirrors the driver's rule): a
 # CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
-# the repo ROOT. Outside a repo, stay where we are (fail-soft: nothing found).
-ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$ROOT" ]; then cd "$ROOT" 2>/dev/null || true; fi
+# the repo ROOT. HARD-FAIL outside a repo (exit 7, driver parity): this script
+# MUTATES state on --apply, and a fail-soft fallback would operate on whatever
+# ./.claude/codex-threads happens to sit in the caller's cwd — state the
+# driver could never have written there (it refuses to run outside a repo).
+if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
+  echo "cleanup.sh must run inside a git repository (thread state lives at the repo root)" >&2
+  exit 7
+fi
+cd "$ROOT" || exit 7
 STATE_DIR=".claude/codex-threads"
 
 [ -d "$STATE_DIR" ] || { echo "No state directory ($STATE_DIR) — nothing to clean."; exit 0; }
@@ -150,6 +156,54 @@ rail_check() {
   armed_target "$1" && return 2
   case "$1" in review|plan) return 3 ;; esac
   return 0
+}
+
+# ── apply-time mutex (driver protocol parity) ─────────────────────────────
+# The driver serializes lease acquisition through the mkdir mutex
+# <thread>.active.lock and only writes <thread>.active while holding it. A
+# rail check alone therefore has a TOCTOU window: a dispatch could acquire
+# the lease between the check and this unit's `mv`s. Closing it requires
+# taking the SAME mutex around check+moves — while cleanup holds the lock, a
+# concurrent dispatch loses the acquisition (exit 10, "retry shortly") instead
+# of racing the archive. Takeover mirrors the driver exactly: a lock whose
+# recorded owner is ALIVE is never stolen; a dead/invalid owner is reclaimed
+# at once; an ownerless lock older than 60s (acquirer crashed between mkdir
+# and the token write) is reclaimed too.
+# unit_lock returns: 0 = held (owner token published); 1 = busy (a live
+# acquirer/dispatch holds it — treat the unit as IN USE).
+unit_lock() { # $1=thread
+  local lock="$STATE_DIR/$1.active.lock" owner mt
+  if ! mkdir "$lock" 2>/dev/null; then
+    owner="$(cat "$lock/owner" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[1-9][0-9]{0,11}$ ]] && kill -0 "$owner" 2>/dev/null; then
+      return 1
+    fi
+    if [ -e "$lock/owner" ]; then
+      : # dead/garbage owner: reclaim now
+    else
+      mt="$(stat -f '%m' "$lock" 2>/dev/null || stat -c '%Y' "$lock" 2>/dev/null || true)"
+      case "$mt" in
+        *[!0-9]*|'') return 1 ;;
+        *) [ $((NOW - mt)) -gt 60 ] || return 1 ;;
+      esac
+    fi
+    rm -f "$lock/owner" 2>/dev/null || true
+    rmdir "$lock" 2>/dev/null || true
+    mkdir "$lock" 2>/dev/null || return 1
+  fi
+  # Publish ownership with noclobber (driver rule): an existing token means
+  # the dir was reclaimed out from under us — lose without touching it.
+  if ! (set -C; printf '%s' "$$" > "$lock/owner") 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+unit_unlock() { # $1=thread — ownership-checked release, driver parity.
+  local lock="$STATE_DIR/$1.active.lock"
+  if [ "$(cat "$lock/owner" 2>/dev/null)" = "$$" ]; then
+    rm -f "$lock/owner"
+    rmdir "$lock" 2>/dev/null || true
+  fi
 }
 # Standard skip note for a non-zero rail_check result. $1=thread $2=rail code
 rail_note() {
@@ -413,10 +467,16 @@ if [ "$APPLY" = true ]; then
     is_dormant "$n" && continue      # superseded: moves with its whole set below
     case "$DONE_THREADS" in *" $n "*) continue ;; esac
     DONE_THREADS="$DONE_THREADS$n "
-    # One unit: the rail check runs HERE, immediately before this thread's
-    # flat targets move back-to-back.
+    # One unit, under the thread's acquisition mutex: lock → re-check the
+    # rails INSIDE the lock → move → unlock. Without the lock, a dispatch
+    # could acquire the lease between the rail check and the moves.
+    if ! unit_lock "$n"; then apply_rail_note "$n" 1; continue; fi
+    # Test seam: lets the regression suite inject state (e.g. a live lease)
+    # between lock acquisition and the under-lock re-check, proving the
+    # re-check runs after the last possible legitimate write.
+    [ -n "${CC_CLEANUP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_CLEANUP_TEST_POST_LOCK_HOOK"
     rail_check "$n"; rc=$?
-    if [ "$rc" -ne 0 ]; then apply_rail_note "$n" "$rc"; continue; fi
+    if [ "$rc" -ne 0 ]; then unit_unlock "$n"; apply_rail_note "$n" "$rc"; continue; fi
     j=0
     while [ "$j" -lt "${#ARCHIVE[@]}" ]; do
       q="${ARCHIVE[$j]}"; qdet="${ARCHIVE_MTIMES[$j]}"; j=$((j+1))
@@ -428,6 +488,7 @@ if [ "$APPLY" = true ]; then
       fi
       move_one "$q"
     done
+    unit_unlock "$n"
   done
   # Dormant sets move wholesale — one unit per thread: the rail check and the
   # whole-set freshness re-stat run immediately before its members move
@@ -435,11 +496,16 @@ if [ "$APPLY" = true ]; then
   i=0
   while [ "$i" -lt "${#DORMANT_NAMES[@]}" ]; do
     n="${DORMANT_NAMES[$i]}"; det="${DORMANT_MTIMES[$i]}"; i=$((i+1))
+    # Same lock discipline as the flat units above: rails re-checked and the
+    # whole set moved under the thread's acquisition mutex.
+    if ! unit_lock "$n"; then apply_rail_note "$n" 1; continue; fi
+    [ -n "${CC_CLEANUP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_CLEANUP_TEST_POST_LOCK_HOOK"
     rail_check "$n"; rc=$?
-    if [ "$rc" -ne 0 ]; then apply_rail_note "$n" "$rc"; continue; fi
+    if [ "$rc" -ne 0 ]; then unit_unlock "$n"; apply_rail_note "$n" "$rc"; continue; fi
     cur="$(newest_mtime "$n")"
     if [ "$cur" != "$det" ]; then
       echo "  SKIP (changed since detection): thread $n"
+      unit_unlock "$n"
       continue
     fi
     while IFS= read -r p; do
@@ -448,6 +514,7 @@ if [ "$APPLY" = true ]; then
     done <<EOF
 $(thread_files "$n")
 EOF
+    unit_unlock "$n"
   done
   echo "Archived $moved/$PLANNED item(s) to $dest (reversible — move them back to restore)."
 else

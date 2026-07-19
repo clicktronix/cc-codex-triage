@@ -16,9 +16,15 @@ SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 
 # Anchor to the RESOLVED repo root (mirrors the driver's rule): a
 # CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
-# the repo ROOT. Outside a repo, stay where we are (fail-soft: nothing found).
-ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$ROOT" ]; then cd "$ROOT" 2>/dev/null || true; fi
+# the repo ROOT. Read-only script → outside a repo it NO-OPS with a clear
+# message (exit 0) instead of reporting whatever local .claude/codex-threads
+# the caller's cwd happens to contain — that state cannot be the driver's
+# (it refuses to run outside a repo).
+if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
+  echo "Not inside a git repository — no thread state to report."
+  exit 0
+fi
+cd "$ROOT" || { echo "Not inside a git repository — no thread state to report."; exit 0; }
 STATE_DIR=".claude/codex-threads"
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
