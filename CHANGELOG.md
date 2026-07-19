@@ -102,7 +102,8 @@ a container root, stokli frontend/backend). Plan:
   is archivable; a fresh diag is not flagged. (b) **Dormant threads** —
   `--older-than <days>` (integer ≥ 1) lists/archives whole thread file-sets
   (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
-  detach-output, detach-status, active`) whose newest member is older than N days. Safety
+  detach-output, detach-stderr, detach-status, active`) whose newest member
+  is older than N days. Safety
   rails, in precedence order: a thread whose `.active` lease names a live PID
   is skipped unconditionally (a resume waiting inside `codex exec` writes
   nothing mtime could see — the lease is the only honest in-use signal; a
@@ -125,10 +126,11 @@ a container root, stokli frontend/backend). Plan:
   acquisition mutex, or the lease is not a regular file). Lease acquisition
   runs under an ownership-safe mkdir mutex (`<thread>.active.lock` with an
   owner-PID token): live-owner locks are never stolen, dead-owner or
-  ownerless-stale locks are reclaimed automatically. Raw
-  child stdout/stderr goes to the `<thread>.detach-output` sidecar (truncated
-  per launch by the lease-owning child), and the child's real exit status is
-  published to `<thread>.detach-status`; the thread `.log` marker contract is
+  ownerless-stale locks are reclaimed automatically. The
+  child's streams are split per launch by the lease-owning child: stdout
+  (the reply echo) to `<thread>.detach-output`, stderr (warnings/errors) to
+  `<thread>.detach-stderr`, and its real exit status is published to
+  `<thread>.detach-status`; the thread `.log` marker contract is
   untouched. `/review`/`/plan` `--background` now recommends `--detach` plus
   the bundled `detach-watch.sh` watcher run as a Claude-managed background
   task — it delivers the reply or the failure diagnostics (verdict from the

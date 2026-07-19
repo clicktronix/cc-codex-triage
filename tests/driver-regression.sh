@@ -862,6 +862,32 @@ ARCH="$(ls -td "$SD"/.archive-* 2>/dev/null | head -1)"
 { [[ ! -e "$SD/oc1.detach-status" && ! -e "$SD/oc1.detach-stderr" && -f "$ARCH/oc1.detach-status" && -f "$ARCH/oc1.detach-stderr" ]]; } \
   && ok "orphan unit carried both detach sidecar files" || bad "detach files left behind: $(ls "$SD" 2>/dev/null)"
 
+echo "== pre-lease loser: previous launch's canonical stderr labeled UNATTRIBUTED =="
+# The exit-10 loser never owned the canonical sidecars; a leftover warning
+# from the previous successful launch must not be presented as the loser's.
+rm -rf "$SD"; mkdir -p "$SD"
+printf 'WARN: from the previous launch\n' > "$SD/p8.detach-stderr"
+# A held acquisition MUTEX (not a lease): the launcher's fast-fail pre-check
+# only sees .active, so the refusal comes from the CHILD — exercising the
+# early-exit path whose canonical-stderr tail needs the unattributed label.
+sleep 30 & P8OWNER=$!
+mkdir -p "$SD/p8.active.lock"
+printf '%s' "$P8OWNER" > "$SD/p8.active.lock/owner"
+run p8 --detach
+{ [[ "$RC" -eq 10 ]] && grep -q 'latest thread stderr' "$T/err" && grep -q 'previous/concurrent' "$T/err"; } \
+  && ok "loser's report labels the canonical stderr as unattributed" || bad "attribution label missing (rc=$RC err=$(cat "$T/err"))"
+[[ "$(cat "$SD/p8.detach-stderr")" == "WARN: from the previous launch" ]] \
+  && ok "loser did not truncate the canonical stderr" || bad "canonical stderr clobbered by the loser"
+kill "$P8OWNER" 2>/dev/null; wait "$P8OWNER" 2>/dev/null
+rm -rf "$SD/p8.active.lock"
+
+echo "== watcher pid-mismatch: sidecars labeled as latest-thread state, not the watched pid's =="
+printf 'pid=999998\nrc=0\n' > "$SD/p8.detach-status"
+sleep 0.2 & P8DEAD=$!; wait "$P8DEAD" 2>/dev/null
+WOUT="$(bash "$WATCH" p8 "$P8DEAD" 0 2>&1)"; WRC=$?
+{ [[ "$WRC" -eq 4 ]] && grep -q 'may not belong to pid' <<<"$WOUT"; } \
+  && ok "UNKNOWN output disclaims sidecar attribution" || bad "no attribution note (rc=$WRC out=$WOUT)"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

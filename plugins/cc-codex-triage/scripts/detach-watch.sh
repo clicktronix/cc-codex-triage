@@ -138,8 +138,11 @@ fi
 # UNKNOWN (nonzero) with everything we have; the caller decides.
 echo "UNKNOWN: detached dispatch on thread $THREAD (pid $PID) left no matching status record — outcome unconfirmed (treat as failure until verified)."
 if [ "$CUR_BYTES" -ne "$BASE_BYTES" ]; then
-  echo "--- log delta this dispatch appended (outcome still unconfirmed):"
+  echo "--- log delta since the given offset (outcome still unconfirmed):"
   print_delta
 fi
+# A pid mismatch can mean a NEWER launch replaced the record — in that case
+# the canonical sidecars below belong to that newer launch, not to pid $PID.
+echo "note: the sidecar tails below are the thread's LATEST launch state and may not belong to pid $PID:"
 print_diags
 exit 4

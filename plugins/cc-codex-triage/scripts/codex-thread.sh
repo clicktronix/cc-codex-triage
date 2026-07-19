@@ -90,7 +90,8 @@
 #       PATH) — refused with ZERO state written
 #   9   --detach: ready-handshake timed out on a still-ALIVE child (spawn
 #       killed, launcher-owned tmpfiles removed; check
-#       <thread>.detach-output). A child that EXITS before READY instead has
+#       <thread>.detach-output / <thread>.detach-stderr). A child that
+#       EXITS before READY instead has
 #       its own exit status harvested and propagated by the launcher (e.g.
 #       10 for a busy lease/mutex, a non-regular lease, or a lost claim).
 #   10  dispatch refused: could not acquire the thread's lease — another
@@ -496,7 +497,11 @@ if $DETACH; then
         tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
       fi
       if [[ -s "$STATE_DIR/${THREAD}.detach-stderr" ]]; then
-        echo "--- child stderr (post-lease, ${THREAD}.detach-stderr):" >&2
+        # UNATTRIBUTED: a pre-lease loser (exit 10) never truncated the
+        # canonical sidecars — this tail may belong to a previous launch or
+        # a concurrent winner. Only a child that passed lease acquisition
+        # owns it; label accordingly instead of implying ownership.
+        echo "--- latest thread stderr (${THREAD}.detach-stderr — only this child's if it passed lease acquisition; otherwise a previous/concurrent launch's):" >&2
         tail -c 4096 "$STATE_DIR/${THREAD}.detach-stderr" >&2
       fi
       rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
@@ -513,7 +518,7 @@ if $DETACH; then
       echo "--- child output (pre-lease):" >&2
       tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
     fi
-    echo "If the child had passed lease acquisition, its output is in $DETACH_OUT" >&2
+    echo "If the child had passed lease acquisition, its stdout is in $DETACH_OUT and its stderr in ${DETACH_OUT%.detach-output}.detach-stderr" >&2
     rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
     exit 9
   fi
