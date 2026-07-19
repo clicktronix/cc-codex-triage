@@ -44,7 +44,7 @@ elif [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
 else
   echo '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}'
 fi
-[[ -n "$out" ]] && echo "FAKE_REPLY" > "$out"
+[[ -n "$out" ]] && echo "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
 exit "${FAKE_CODEX_EXIT:-0}"
 STUB
 chmod +x "$T/bin/codex"
@@ -746,11 +746,22 @@ grep -q 'STALE_MARKER' "$SD/p2.detach-output" 2>/dev/null && bad "sidecar kept t
 echo "== DETACHED line carries log-offset= for the watcher baseline =="
 grep -q 'log-offset=[0-9]' <<<"$OUT" && ok "log-offset printed" || bad "no log-offset in: $OUT"
 
-echo "== detach-watch: reply landed -> exit 0 and prints the log delta =="
+echo "== detach-watch: reply landed -> exit 0 and prints the detached worker output =="
 WATCH="${DRIVER%codex-thread.sh}detach-watch.sh"   # suite cwd is inside the fixture repo — derive from DRIVER, not $0
 OFF="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
 WOUT="$(bash "$WATCH" p2 "$DP2B" "$OFF" 2>&1)"; WRC=$?
 [[ "$WRC" -eq 0 ]] && grep -q 'DONE' <<<"$WOUT" && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "watcher reports the landed reply" || bad "watcher success path rc=$WRC out=$WOUT"
+
+echo "== detach-watch: later foreground round is not attributed to the detached worker =="
+rm -rf "$SD"; mkdir -p "$SD"
+FAKE_CODEX_REPLY=FIRST_DETACHED run p2a --detach
+DP2A="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+OFF2A="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP2A" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+FAKE_CODEX_REPLY=SECOND_FOREGROUND run p2a
+WOUT="$(bash "$WATCH" p2a "$DP2A" "$OFF2A" 2>&1)"; WRC=$?
+{ [[ "$WRC" -eq 0 ]] && grep -q 'FIRST_DETACHED' <<<"$WOUT" && ! grep -q 'SECOND_FOREGROUND' <<<"$WOUT"; } \
+  && ok "watcher reports only its detached worker's reply" || bad "watcher mixed a later round rc=$WRC out=$WOUT"
 
 echo "== detach-watch: worker died, NO status record -> UNKNOWN exit 4 with diagnostics =="
 rm -rf "$SD"; mkdir -p "$SD"

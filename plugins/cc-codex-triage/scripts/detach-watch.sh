@@ -42,10 +42,10 @@ DIAG="$STATE_DIR/$THREAD.last-error.jsonl"
 SIDE="$STATE_DIR/$THREAD.detach-output"
 ERRS="$STATE_DIR/$THREAD.detach-stderr"
 
-# Baseline: everything appended to the log after this offset is the result.
-# Prefer the launcher-provided log-offset (measured BEFORE the dispatch, so a
-# reply landing before the watcher starts is still counted); fall back to the
-# current size when invoked without it.
+# Diagnostic baseline for failure/UNKNOWN output. Success reads the worker-owned
+# detach-output sidecar directly, so a later foreground round on the same thread
+# cannot be misattributed to this dispatch. Prefer the launcher-provided offset;
+# fall back to the current size when invoked without it.
 if [ -n "$OFFSET" ]; then
   BASE_BYTES="$OFFSET"
 else
@@ -116,8 +116,8 @@ S_RC="$(sed -n 's/^rc=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
 if [ "$S_PID" = "$PID" ]; then
   case "$S_RC" in
     0)
-      echo "DONE: detached dispatch on thread $THREAD finished (worker rc=0) — reply appended to $LOG:"
-      print_delta
+      echo "DONE: detached dispatch on thread $THREAD finished (worker rc=0) — reply captured in $SIDE:"
+      cat "$SIDE" 2>/dev/null || true
       print_warnings
       exit 0 ;;
     [0-9]*)

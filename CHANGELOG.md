@@ -29,7 +29,7 @@ a container root, stokli frontend/backend). Plan:
   Claude-managed background task after the `DETACHED` line — it waits on the
   worker PID (the one signal that fires on success AND on post-READY
   failure, which appends no `round=` header and so defeated log polling),
-  then delivers the appended reply (exit 0), the `last-error` +
+  then delivers the worker-owned `detach-output` reply (exit 0), the `last-error` +
   `detach-output` diagnostics (exit 1), or a still-running timeout notice
   (exit 3). The watcher's verdict comes from `<thread>.detach-status` — the
   worker's REAL exit code, published atomically by its EXIT trap — never
@@ -41,9 +41,11 @@ a container root, stokli frontend/backend). Plan:
   after lease acquisition) so a successful run's warnings — invalid saved
   .id discarded, ignored resume overrides, porcelain guard notes — are
   delivered by the watcher instead of being lost with the launcher's
-  pre-lease tmpfile. The launcher measures `log-offset=<B>` BEFORE spawning
-  the child so the baseline cannot race even an instant reply, and a
-  concurrent exit-10 loser can no longer truncate or interleave the
+  pre-lease tmpfile. Success reads the reply from `detach-output`, not a shared
+  log delta, so a later foreground round on the same thread cannot be
+  misattributed to the detached worker. The launcher measures
+  `log-offset=<B>` BEFORE spawning the child for failure/UNKNOWN diagnostics.
+  A concurrent exit-10 loser can no longer truncate or interleave the
   winner's sidecars. `/review`/`/plan` `--background` steps wire the
   watcher up explicitly.
 - **Mutating utilities hard-fail outside a git repository (exit 7, driver
