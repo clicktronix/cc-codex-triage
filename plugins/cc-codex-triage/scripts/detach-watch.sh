@@ -11,9 +11,12 @@
 # notification. It is DISPOSABLE by design — if the harness reaps it, the
 # worker is unaffected and the fallback is manual log polling.
 #
-# Exit codes: 0 reply landed (prints it); 1 worker died with no new round
-# (prints diagnostics); 2 usage; 3 timeout — worker still running; 7 not a
-# git repo. Watch state is read-only: this script writes nothing.
+# Exit codes: 0 worker succeeded (prints the reply + any warnings); 1 worker
+# failed (prints its rc + diagnostics); 2 usage; 3 timeout — worker still
+# running; 4 UNKNOWN — no status record matches this PID (SIGKILL, or a
+# newer launch already replaced it): treat as failure until confirmed —
+# log growth alone is never read as success; 7 not a git repo. Watch state
+# is read-only: this script writes nothing.
 #
 # Portability: macOS bash 3.2 + Linux. No jq.
 
@@ -37,6 +40,7 @@ STATE_DIR=".claude/codex-threads"
 LOG="$STATE_DIR/$THREAD.log"
 DIAG="$STATE_DIR/$THREAD.last-error.jsonl"
 SIDE="$STATE_DIR/$THREAD.detach-output"
+ERRS="$STATE_DIR/$THREAD.detach-stderr"
 
 # Baseline: everything appended to the log after this offset is the result.
 # Prefer the launcher-provided log-offset (measured BEFORE the dispatch, so a
@@ -81,13 +85,23 @@ print_delta() { # the log bytes this dispatch appended (rotation-aware)
     tail -c 65536 "$LOG" 2>/dev/null
   fi
 }
+print_warnings() { # a successful run's stderr — warnings worth surfacing
+  if [ -s "$ERRS" ]; then
+    echo "--- worker warnings ($ERRS):"
+    tail -c 4096 "$ERRS" 2>/dev/null
+  fi
+}
 print_diags() {
   if [ -s "$DIAG" ]; then
     echo "--- last-error tail ($DIAG):"
     tail -c 4096 "$DIAG" 2>/dev/null
   fi
+  if [ -s "$ERRS" ]; then
+    echo "--- worker stderr tail ($ERRS):"
+    tail -c 4096 "$ERRS" 2>/dev/null
+  fi
   if [ -s "$SIDE" ]; then
-    echo "--- raw child output tail ($SIDE):"
+    echo "--- raw child stdout tail ($SIDE):"
     tail -c 4096 "$SIDE" 2>/dev/null
   fi
 }
@@ -104,6 +118,7 @@ if [ "$S_PID" = "$PID" ]; then
     0)
       echo "DONE: detached dispatch on thread $THREAD finished (worker rc=0) — reply appended to $LOG:"
       print_delta
+      print_warnings
       exit 0 ;;
     [0-9]*)
       echo "FAILED: detached dispatch on thread $THREAD (pid $PID) exited rc=$S_RC (5=tracked-file mutation under strict mode, 3=codex exec failed, 4=resume failed — see the driver's exit-code table)."
@@ -116,14 +131,15 @@ if [ "$S_PID" = "$PID" ]; then
   esac
 fi
 
-# No matching status record (pre-status worker, or it died without its EXIT
-# trap — e.g. SIGKILL): fall back to the growth heuristic.
-if [ "$CUR_BYTES" -gt "$BASE_BYTES" ] || { [ "$CUR_BYTES" -lt "$BASE_BYTES" ] && [ "$CUR_BYTES" -gt 0 ]; }; then
-  echo "DONE (no status record — assumed from log growth): detached dispatch on thread $THREAD appended to $LOG:"
+# No status record matching this PID: the worker was SIGKILL'd before its
+# EXIT trap, the write failed, or a NEWER launch already replaced the record.
+# Log growth is deliberately NOT read as success here — a strict-mutation
+# exchange followed by SIGKILL grows the log and still failed. Report
+# UNKNOWN (nonzero) with everything we have; the caller decides.
+echo "UNKNOWN: detached dispatch on thread $THREAD (pid $PID) left no matching status record — outcome unconfirmed (treat as failure until verified)."
+if [ "$CUR_BYTES" -ne "$BASE_BYTES" ]; then
+  echo "--- log delta this dispatch appended (outcome still unconfirmed):"
   print_delta
-  exit 0
 fi
-
-echo "FAILED: detached dispatch on thread $THREAD (pid $PID) exited without appending a reply to $LOG."
 print_diags
-exit 1
+exit 4

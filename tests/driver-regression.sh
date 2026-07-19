@@ -752,7 +752,7 @@ OFF="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
 WOUT="$(bash "$WATCH" p2 "$DP2B" "$OFF" 2>&1)"; WRC=$?
 [[ "$WRC" -eq 0 ]] && grep -q 'DONE' <<<"$WOUT" && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "watcher reports the landed reply" || bad "watcher success path rc=$WRC out=$WOUT"
 
-echo "== detach-watch: worker died with NO new round -> exit 1 with diagnostics =="
+echo "== detach-watch: worker died, NO status record -> UNKNOWN exit 4 with diagnostics =="
 rm -rf "$SD"; mkdir -p "$SD"
 printf 'old\n' > "$SD/p3.log"
 printf '{"err":"boom"}\n' > "$SD/p3.last-error.jsonl"
@@ -760,8 +760,21 @@ printf 'raw child noise\n' > "$SD/p3.detach-output"
 BASE="$(wc -c < "$SD/p3.log" | tr -d ' ')"
 sleep 0.2 & DEADW=$!; wait "$DEADW" 2>/dev/null
 WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
-[[ "$WRC" -eq 1 ]] && grep -q 'FAILED' <<<"$WOUT" && grep -q 'boom' <<<"$WOUT" && grep -q 'raw child noise' <<<"$WOUT" \
-  && ok "watcher surfaces the post-READY failure diagnostics" || bad "watcher failure path rc=$WRC out=$WOUT"
+[[ "$WRC" -eq 4 ]] && grep -q 'UNKNOWN' <<<"$WOUT" && grep -q 'boom' <<<"$WOUT" && grep -q 'raw child noise' <<<"$WOUT" \
+  && ok "no status record -> UNKNOWN (4) with diagnostics" || bad "watcher unknown path rc=$WRC out=$WOUT"
+
+echo "== detach-watch: log GREW but no status record -> still UNKNOWN, never DONE =="
+# The SIGKILL-after-strict-append shape: growth alone must not read as success.
+printf 'grown beyond baseline\n' >> "$SD/p3.log"
+WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 4 ]] && grep -q 'UNKNOWN' <<<"$WOUT" && grep -q 'grown beyond baseline' <<<"$WOUT" \
+  && ok "growth without status -> UNKNOWN with the delta shown" || bad "growth-no-status rc=$WRC out=$WOUT"
+
+echo "== detach-watch: status record from a NEWER launch (pid mismatch) -> UNKNOWN =="
+printf 'pid=999999\nrc=0\n' > "$SD/p3.detach-status"
+WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 4 ]] && grep -q 'UNKNOWN' <<<"$WOUT" \
+  && ok "pid-mismatched status -> UNKNOWN, not the other launch's verdict" || bad "pid-mismatch rc=$WRC out=$WOUT"
 
 echo "== detach-watch: outside a git repo -> exit 7 =="
 WNG="$T/watchnongit"; mkdir -p "$WNG"
@@ -824,6 +837,30 @@ DP6="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' "$WINOUT")"
 i=0; while [[ -n "$DP6" ]] && kill -0 "$DP6" 2>/dev/null && [[ $i -lt 150 ]]; do sleep 0.1; i=$((i+1)); done
 { grep -q 'FAKE_REPLY' "$SD/p6.detach-output" 2>/dev/null && ! grep -qi 'busy' "$SD/p6.detach-output" 2>/dev/null; } \
   && ok "canonical sidecar holds only the winner's output" || bad "sidecar mixed/missing: $(cat "$SD/p6.detach-output" 2>/dev/null | head -3)"
+
+echo "== detach: successful run's warnings land in detach-stderr and the watcher delivers them =="
+# Invalid saved .id: the child discards it with a warning BEFORE dispatching —
+# previously that warning died with the launcher's pre-lease tmpfile.
+rm -rf "$SD"; mkdir -p "$SD"
+printf 'not-a-uuid' > "$SD/p7.id"
+run p7 --detach
+DP7="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+OFF7="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP7" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+grep -qi 'ignor\|invalid\|discard' "$SD/p7.detach-stderr" 2>/dev/null \
+  && ok "invalid-ID warning captured in detach-stderr" || bad "no warning in detach-stderr: $(cat "$SD/p7.detach-stderr" 2>/dev/null)"
+WOUT="$(bash "$WATCH" p7 "$DP7" "$OFF7" 2>&1)"; WRC=$?
+{ [[ "$WRC" -eq 0 ]] && grep -q 'worker warnings' <<<"$WOUT"; } \
+  && ok "watcher DONE output includes the worker warnings" || bad "warnings not delivered rc=$WRC out=$WOUT"
+
+echo "== cleanup: detach-status + detach-stderr move with their orphan unit =="
+CLEANUP2="${DRIVER%codex-thread.sh}cleanup.sh"   # suite cwd is inside the fixture repo — derive from DRIVER, not $0
+rm -rf "$SD"; mkdir -p "$SD"
+echo l > "$SD/oc1.log"; printf 'pid=1\nrc=0\n' > "$SD/oc1.detach-status"; echo w > "$SD/oc1.detach-stderr"
+OUT="$(bash "$CLEANUP2" --apply 2>&1)"; RC=$?
+ARCH="$(ls -td "$SD"/.archive-* 2>/dev/null | head -1)"
+{ [[ ! -e "$SD/oc1.detach-status" && ! -e "$SD/oc1.detach-stderr" && -f "$ARCH/oc1.detach-status" && -f "$ARCH/oc1.detach-stderr" ]]; } \
+  && ok "orphan unit carried both detach sidecar files" || bad "detach files left behind: $(ls "$SD" 2>/dev/null)"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

@@ -59,13 +59,18 @@
 #                             release removes the lock only while <lock>/owner
 #                             still names this PID. cleanup() releases a
 #                             still-held lock on every exit path.
-#   <thread>.detach-output    raw stdout/stderr of the LATEST --detach child.
-#                             Truncated per launch BY THE CHILD after lease
-#                             arbitration (only the lease owner redirects
-#                             into it — a concurrent exit-10 loser cannot
-#                             touch it); the launcher captures pre-lease
-#                             output in a private tmpfile. The .log marker
-#                             contract above is unchanged.
+#   <thread>.detach-output    raw STDOUT of the LATEST --detach child (the
+#                             reply echo). Truncated per launch BY THE CHILD
+#                             after lease arbitration (only the lease owner
+#                             redirects into it — a concurrent exit-10 loser
+#                             cannot touch it); the launcher captures
+#                             pre-lease output in a private tmpfile. The
+#                             .log marker contract above is unchanged.
+#   <thread>.detach-stderr    raw STDERR of the LATEST --detach child —
+#                             warnings a successful run emits (invalid saved
+#                             .id discarded, ignored resume overrides,
+#                             porcelain guard notes) live here, split from
+#                             the reply so the watcher can deliver them.
 #   <thread>.detach-status    the LATEST detach child's real exit status
 #                             (`pid=`/`rc=` lines, written atomically by the
 #                             child's EXIT trap) — detach-watch.sh decides
@@ -490,6 +495,10 @@ if $DETACH; then
         echo "--- child output (pre-lease):" >&2
         tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
       fi
+      if [[ -s "$STATE_DIR/${THREAD}.detach-stderr" ]]; then
+        echo "--- child stderr (post-lease, ${THREAD}.detach-stderr):" >&2
+        tail -c 4096 "$STATE_DIR/${THREAD}.detach-stderr" >&2
+      fi
       rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
       DETACH_DONE=true
       exit "$SPAWN_RC"
@@ -689,6 +698,22 @@ if ! $ONESHOT; then
     exit 10
   fi
   release_lease_lock
+  # Detach child: canonical output boundary + status slate, established the
+  # moment the lease is OURS — before ANY further preflight, so every later
+  # warning (invalid saved .id discarded, ignored resume overrides, porcelain
+  # guard notes) lands in the canonical sidecars instead of the launcher's
+  # discarded pre-lease tmpfile. stdout and stderr are SPLIT: the reply echo
+  # goes to <thread>.detach-output, warnings/errors to <thread>.detach-stderr
+  # — so the watcher can deliver a successful run's warnings without
+  # re-printing the reply. Both are truncated here, by the lease OWNER only
+  # (a concurrent exit-10 loser never reaches this line). The stale status
+  # record is removed BEFORE dispatch so the watcher can never read an old
+  # verdict against this run's PID.
+  if [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+    rm -f "$STATE_DIR/${THREAD}.detach-status"
+    exec > "$STATE_DIR/${THREAD}.detach-output" 2> "$STATE_DIR/${THREAD}.detach-stderr"
+    DETACH_CHILD=true
+  fi
 fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
@@ -747,14 +772,8 @@ fi
 # proves /cleanup already sees this thread as in-use. The parent owns the
 # READY file and removes it — NEVER delete it here.
 if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
-  # Canonical sidecar job boundary, established HERE — by the lease OWNER,
-  # after arbitration — not by the launcher: a concurrent exit-10 loser never
-  # touches the file, so it always holds exactly the winning launch's output.
-  # A stale detach-status from a previous launch is removed BEFORE dispatch
-  # so the watcher can never read an old verdict against this run's PID.
-  rm -f "$STATE_DIR/${THREAD}.detach-status"
-  exec > "$STATE_DIR/${THREAD}.detach-output" 2>&1
-  DETACH_CHILD=true
+  # (The canonical sidecar boundary + status slate were established right
+  # after lease acquisition, above — here we only publish the PID.)
   printf '%s' "$$" > "$CC_CODEX_READY_FILE"
 fi
 

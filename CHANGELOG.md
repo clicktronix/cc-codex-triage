@@ -33,14 +33,19 @@ a container root, stokli frontend/backend). Plan:
   `detach-output` diagnostics (exit 1), or a still-running timeout notice
   (exit 3). The watcher's verdict comes from `<thread>.detach-status` — the
   worker's REAL exit code, published atomically by its EXIT trap — never
-  from log growth alone (a strict-mutation exit 5 appends the exchange and
-  still fails). The launcher measures `log-offset=<B>` BEFORE spawning the
-  child so the baseline cannot race even an instant reply, and the canonical
-  `<thread>.detach-output` job boundary is established by the lease-owning
-  CHILD after arbitration (the launcher captures pre-lease output in a
-  private tmpfile) — a concurrent exit-10 loser can no longer truncate or
-  interleave the winner's sidecar. `/review`/`/plan` `--background` steps
-  wire the watcher up explicitly.
+  from log growth (a strict-mutation exit 5 appends the exchange and still
+  fails); a missing/mismatched record is reported as UNKNOWN (exit 4, treat
+  as failure until verified), not assumed success. The child's stdout and
+  stderr are split (`<thread>.detach-output` / `<thread>.detach-stderr`,
+  both truncated per launch by the lease OWNER, boundary established right
+  after lease acquisition) so a successful run's warnings — invalid saved
+  .id discarded, ignored resume overrides, porcelain guard notes — are
+  delivered by the watcher instead of being lost with the launcher's
+  pre-lease tmpfile. The launcher measures `log-offset=<B>` BEFORE spawning
+  the child so the baseline cannot race even an instant reply, and a
+  concurrent exit-10 loser can no longer truncate or interleave the
+  winner's sidecars. `/review`/`/plan` `--background` steps wire the
+  watcher up explicitly.
 - **Mutating utilities hard-fail outside a git repository (exit 7, driver
   parity).** `cleanup.sh` and `ledger.sh` previously fell back to the
   caller's cwd — archiving/writing state the driver could never have put

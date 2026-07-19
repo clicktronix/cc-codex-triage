@@ -22,8 +22,8 @@ Detection classes:
   5 digits; `0`, negatives, non-numbers, and longer values are rejected — a
   leading-zero value like `08` is read base-10 as 8): a thread's whole file-set
   (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
-  detach-output, active`) qualifies when its NEWEST member is older than N
-  days. Listed on dry run, moved wholesale on `--apply`.
+  detach-output, detach-stderr, detach-status, active`) qualifies when its
+  NEWEST member is older than N days. Listed on dry run, moved wholesale on `--apply`.
 - **Generic threads** — `review`/`plan` default threads. Listed only, never
   auto-archived.
 

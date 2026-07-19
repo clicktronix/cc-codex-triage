@@ -156,11 +156,11 @@ kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 
 echo "== file-set includes log.1 + detach-output; --apply moves exactly the listed files =="
 reset_state
-for ext in id log log.1 rounds findings.jsonl scope approved detach-output; do
+for ext in id log log.1 rounds findings.jsonl scope approved detach-output detach-stderr detach-status; do
   echo z > "$SD/fu1.$ext"
 done
 touch -t 202001010001 "$SD/fu1.last-error.jsonl"   # diag NEWER than the log (fresh rule) but still ancient
-old "$SD"/fu1.id "$SD"/fu1.log "$SD"/fu1.log.1 "$SD"/fu1.rounds "$SD"/fu1.findings.jsonl "$SD"/fu1.scope "$SD"/fu1.approved "$SD"/fu1.detach-output
+old "$SD"/fu1.id "$SD"/fu1.log "$SD"/fu1.log.1 "$SD"/fu1.rounds "$SD"/fu1.findings.jsonl "$SD"/fu1.scope "$SD"/fu1.approved "$SD"/fu1.detach-output "$SD"/fu1.detach-stderr "$SD"/fu1.detach-status
 run --older-than 30
 grep -q 'DORMANT fu1' <<<"$OUT" && grep -q 'fu1.log.1' <<<"$OUT" && grep -q 'fu1.detach-output' <<<"$OUT" \
   && ok "dry run lists log.1 + detach-output in the set" || bad "set listing wrong: $OUT"

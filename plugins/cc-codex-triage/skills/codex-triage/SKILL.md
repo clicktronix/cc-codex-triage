@@ -40,8 +40,9 @@ State files live in `.claude/codex-threads/` in the current repo (git-ignore thi
 - `<name>.id` — saved Codex session UUID for the thread.
 - `<name>.log` — append-only audit log of prompt/reply pairs (rotated to `.log.1` at ~1 MB; rotation happens before each append, so the latest entry is always in the current `.log`).
 - `<name>.last-error.jsonl` — raw Codex stream from the most recent failure (the path the driver points you at on error; removed on the thread's next successful dispatch, capped to the last 64 KB).
-- `<name>.detach-output` — raw stdout/stderr of the LATEST `--detach` child (truncated per launch by the lease-owning child; the reply itself still lands in the `.log` as usual).
-- `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on.
+- `<name>.detach-output` — raw STDOUT of the LATEST `--detach` child (truncated per launch by the lease-owning child; the reply itself still lands in the `.log` as usual).
+- `<name>.detach-stderr` — the latest detach child's STDERR — warnings a successful run emits (invalid saved ID discarded, ignored resume overrides, porcelain guard notes); the watcher surfaces it on every outcome.
+- `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on; no matching record → the watcher reports UNKNOWN (exit 4), never success-from-log-growth.
 - `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
 - `<name>.active.lock` — transient acquisition mutex directory (with an owner-PID token inside) held only while a dispatch claims the lease. Stale recovery is automatic: a lock whose owner PID is dead, or an ownerless lock older than 60s, is reclaimed by the next dispatch; a lock with a live owner is never stolen.
 

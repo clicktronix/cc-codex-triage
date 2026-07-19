@@ -19,7 +19,8 @@
 #   - dormant threads     : with --older-than <days> (integer >= 1), whole
 #                           thread file-sets — id, log, log.1, rounds,
 #                           findings.jsonl, scope, approved, last-error.jsonl,
-#                           detach-output, detach-status, active — whose NEWEST member is
+#                           detach-output, detach-stderr, detach-status,
+#                           active — whose NEWEST member is
 #                           older than N days. Listed on dry run, moved
 #                           wholesale on --apply.
 #   - generic threads     : `review`/`plan` default threads (contamination risk).
@@ -96,7 +97,7 @@ NOW="$(date +%s)"
 # Every known per-thread state file (deduplicated — the extensions are
 # distinct). Kept in ONE place so the dormant file-set and the mtime scan can
 # never drift apart.
-THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-status active"
+THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status active"
 
 # Existing member paths of a thread's file-set, one per line.  $1=thread
 thread_files() {
@@ -223,23 +224,21 @@ add_dead_lease() {
 
 # Thread name owning a state-file path; empty for gate files and unknown
 # names. Shared by the dormant grouping scan and apply-time revalidation.
+# DERIVED from THREAD_EXTS — a hardcoded copy of the extension list here
+# drifted once already (detach-status was in the set but unrecognized, so a
+# status-only leftover could never be grouped into its thread's unit).
 thread_of() {
-  local b n=""
+  local b ext
   b="$(basename "$1")"
-  case "$b" in
-    autoreview.armed|autoplan.armed) ;;
-    *.last-error.jsonl) n="${b%.last-error.jsonl}" ;;
-    *.findings.jsonl)   n="${b%.findings.jsonl}" ;;
-    *.detach-output)    n="${b%.detach-output}" ;;
-    *.log.1)            n="${b%.log.1}" ;;
-    *.log)              n="${b%.log}" ;;
-    *.id)               n="${b%.id}" ;;
-    *.rounds)           n="${b%.rounds}" ;;
-    *.scope)            n="${b%.scope}" ;;
-    *.approved)         n="${b%.approved}" ;;
-    *.active)           n="${b%.active}" ;;
-  esac
-  printf '%s' "$n"
+  case "$b" in autoreview.armed|autoplan.armed) printf ''; return 0 ;; esac
+  for ext in $THREAD_EXTS; do
+    case "$b" in *".$ext")
+      # Suffix matching disambiguates the only prefix-related pair
+      # (log vs log.1) by itself: "x.log.1" does not end in ".log".
+      printf '%s' "${b%."$ext"}"; return 0 ;;
+    esac
+  done
+  printf ''
 }
 
 # Collect targets to archive. add_archive dedups — a stale diag can be flagged
@@ -297,8 +296,12 @@ for lg in "$STATE_DIR"/*.log; do
     echo "  ORPHAN  $n  (size $(wc -c < "$lg" 2>/dev/null | tr -d ' ') bytes)"
     orphans=$((orphans+1)); issues=$((issues+1))
     add_archive "$lg"
-    # A dead-PID/malformed lease is stale state — .active joins the set.
-    for ext in log.1 rounds last-error.jsonl findings.jsonl scope approved detach-output active; do
+    # Companions come from the CENTRAL extension list (minus the .log that
+    # anchored the detection and the .id whose absence defines an orphan) —
+    # a hand-copied list here already drifted once. A dead-PID/malformed
+    # lease is stale state — .active joins the set.
+    for ext in $THREAD_EXTS; do
+      case "$ext" in log|id) continue ;; esac
       [ -f "$STATE_DIR/$n.$ext" ] && add_archive "$STATE_DIR/$n.$ext"
     done
   fi
