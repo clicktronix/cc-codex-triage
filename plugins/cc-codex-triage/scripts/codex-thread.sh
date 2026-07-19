@@ -42,9 +42,14 @@
 #                             dispatch (exit 10); a dead or malformed lease is
 #                             stale state and is overwritten.
 #   <thread>.active.lock      mkdir mutex serializing lease acquisition (mkdir
-#                             is atomic on POSIX). The winner records its PID
-#                             in <lock>/owner immediately after the mkdir, and
-#                             takeover is OWNERSHIP-gated, not age-gated: a
+#                             is atomic on POSIX). The winner publishes its
+#                             PID into <lock>/owner immediately after the
+#                             mkdir via a NOCLOBBER (O_EXCL) write — if a
+#                             token already exists, the directory was
+#                             reclaimed out from under a stalled pre-token
+#                             acquirer, which loses (exit 10) without touching
+#                             the reclaimer's token. Takeover is
+#                             OWNERSHIP-gated, not age-gated: a
 #                             lock whose recorded owner is ALIVE is never
 #                             stolen (regardless of age); a dead/invalid owner
 #                             is reclaimed at once; an ownerless lock older
@@ -71,16 +76,20 @@
 #       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
 #   8   --detach: no session isolator (neither `setsid` nor `python3` on
 #       PATH) — refused with ZERO state written
-#   9   --detach: ready-handshake timed out (spawn killed, launcher-owned
-#       tmpfiles removed; check <thread>.detach-output)
+#   9   --detach: ready-handshake timed out on a still-ALIVE child (spawn
+#       killed, launcher-owned tmpfiles removed; check
+#       <thread>.detach-output). A child that EXITS before READY instead has
+#       its own exit status harvested and propagated by the launcher (e.g.
+#       10 for a busy lease/mutex, a non-regular lease, or a lost claim).
 #   10  dispatch refused: could not acquire the thread's lease — another
 #       dispatch is mid-flight (<thread>.active names a live PID: wait for
 #       it or use a different --thread), a concurrent claim holds the
 #       acquisition mutex (<thread>.active.lock — held by a LIVE recorded
 #       owner or freshly claimed: retry shortly; only dead-owner or
 #       ownerless>60s locks are reclaimed), this acquisition lost the mutex
-#       to a stale-lock takeover mid-claim, or <thread>.active is not a
-#       regular file (inspect and remove it manually)
+#       to a concurrent reclaim (before or after publishing its owner
+#       token), or <thread>.active is not a regular file (inspect and
+#       remove it manually)
 
 set -euo pipefail
 
@@ -335,6 +344,21 @@ if $DETACH; then
     wait "$SPAWN_PID" 2>/dev/null || true   # reap the zombie
     return 0
   }
+  # True while the spawn is still RUNNING. kill -0 alone is not enough: it
+  # also succeeds on a zombie (dead, not yet reaped) — read the real state
+  # like reap_spawn does; empty or Z* means it is already gone. Without a
+  # `ps` on PATH, trust kill -0 alone: a false "alive" only delays detection
+  # by an iteration (bash reaps the background child asynchronously, after
+  # which kill -0 fails), while a false "dead" would wait out a healthy
+  # child and misreport its handshake.
+  spawn_alive() {
+    kill -0 "$SPAWN_PID" 2>/dev/null || return 1
+    command -v ps >/dev/null 2>&1 || return 0
+    local st
+    st="$(ps -o stat= -p "$SPAWN_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$st" in ''|Z*) return 1 ;; esac
+    return 0
+  }
   detach_cleanup() {
     "$DETACH_DONE" && return 0
     # Settle the spawn FIRST, only then remove the launcher-owned tmpfiles —
@@ -365,8 +389,13 @@ if $DETACH; then
   fi
   SPAWN_PID=$!
   # Handshake: the child writes its PID into READY after acquiring its lease.
-  # Bounded 5s in 0.1s steps (bash 3.2 / macOS `sleep 0.1` is fine).
+  # Bounded 5s in 0.1s steps (bash 3.2 / macOS `sleep 0.1` is fine). Each
+  # iteration also watches the spawn itself: a child that EXITS before READY
+  # (e.g. a held acquisition mutex or a non-regular lease — refusals only the
+  # child can detect) already reported its verdict via its exit status;
+  # waiting out the full 5s would misreport it as a timeout.
   CHILD_PID=""
+  SPAWN_EXITED=false
   i=0
   while [[ $i -lt 50 ]]; do
     if [[ -s "$READY_FILE" ]]; then
@@ -374,13 +403,46 @@ if $DETACH; then
       [[ "$CHILD_PID" =~ ^[0-9]+$ ]] && break
       CHILD_PID=""
     fi
+    if ! spawn_alive; then
+      # Dead spawn: re-check READY once — it may have landed between the
+      # check above and the death check (the child writes READY and can
+      # finish an instant dispatch within one poll interval) — then stop
+      # polling.
+      if [[ -s "$READY_FILE" ]]; then
+        CHILD_PID="$(cat "$READY_FILE" 2>/dev/null || true)"
+        [[ "$CHILD_PID" =~ ^[0-9]+$ ]] || CHILD_PID=""
+      fi
+      [[ -n "$CHILD_PID" ]] || SPAWN_EXITED=true
+      break
+    fi
     sleep 0.1
     i=$((i+1))
   done
   if [[ -z "$CHILD_PID" ]]; then
-    # ABORTED handshake: TERM the spawn's session group and CONFIRM it is
-    # dead (bounded wait, KILL escalation) BEFORE removing the launcher-owned
-    # files — an unconfirmed TERM would let a slow child recreate READY.
+    if [[ "$SPAWN_EXITED" == true ]]; then
+      # EARLY CHILD EXIT: harvest and propagate the child's own exit status.
+      # `wait` works because the spawn is a DIRECT child of this launcher
+      # shell under BOTH isolators: the setsid binary does not fork here (a
+      # `&` background spawn of a non-interactive shell is never a process-
+      # group leader, so setsid(1) calls setsid(2) in place), and the python
+      # one-liner execs the worker in place. No reaping needed — it already
+      # exited (bash recorded the status).
+      SPAWN_RC=0
+      wait "$SPAWN_PID" 2>/dev/null || SPAWN_RC=$?
+      # A zero status without READY should be impossible (a persistent child
+      # always writes READY before dispatching) — report the generic
+      # handshake failure rather than a bogus success.
+      [[ "$SPAWN_RC" -eq 0 ]] && SPAWN_RC=9
+      rm -f "$READY_FILE" "$PROMPT_TMPFILE"
+      DETACH_DONE=true
+      echo "--detach child exited early (status $SPAWN_RC) before reporting ready — propagating its exit status." >&2
+      echo "Raw child output (if any): $DETACH_OUT" >&2
+      exit "$SPAWN_RC"
+    fi
+    # ABORTED handshake (child alive but unresponsive): TERM the spawn's
+    # session group and CONFIRM it is dead (bounded wait, KILL escalation)
+    # BEFORE removing the launcher-owned files — an unconfirmed TERM would
+    # let a slow child recreate READY.
     reap_spawn
     rm -f "$READY_FILE" "$PROMPT_TMPFILE"
     echo "--detach handshake timed out after 5s: the child never reported ready (spawn killed)." >&2
@@ -464,8 +526,10 @@ PROMPT="$(cat)"
 # dispatches can never both pass the busy check and both write the lease
 # (and a directory can no longer race into place between the check and the
 # mv). Inside the mutex: the live-owner check, the non-regular-file refusal,
-# and the tmp write + mv + verification. The winner records its PID in
-# <lock>/owner, and takeover is OWNERSHIP-gated: a lock with a LIVE recorded
+# and the tmp write + mv + verification. The winner publishes its PID into
+# <lock>/owner with a noclobber (O_EXCL) write — an existing token means the
+# directory was reclaimed from a stalled pre-token acquirer, which loses —
+# and takeover is OWNERSHIP-gated: a lock with a LIVE recorded
 # owner is never stolen regardless of age (an acquirer merely paused inside
 # the critical section must not be robbed — age-only stealing reopened the
 # exact double-dispatch race the mutex closes); a dead/invalid owner is
@@ -504,8 +568,20 @@ if ! $ONESHOT; then
   fi
   # Owner token: records WHO holds the mutex, so a paused-but-alive acquirer
   # is distinguishable from a crashed one and every release can be
-  # ownership-checked. Written immediately after the mkdir wins.
-  printf '%s' "$$" > "$LEASE_LOCK/owner"
+  # ownership-checked. PUBLISHED WITH NOCLOBBER (set -C → open(O_EXCL)): the
+  # write fails if a token already exists. An acquirer that won the mkdir but
+  # stalled past the 60s ownerless-reclaim threshold resumes here to find the
+  # reclaimer's token — it must LOSE, not overwrite (an unguarded write would
+  # hand both processes a verified claim → double dispatch). A failed
+  # publication means the directory is no longer ours: refuse WITHOUT touching
+  # the existing token or the lock (HAVE_LEASE_LOCK is still false, so
+  # cleanup() leaves both alone). The reclaim path above removed the
+  # dead/absent owner file before its mkdir retry, so a legitimate winner
+  # always finds an empty slot.
+  if ! (set -C; printf '%s' "$$" > "$LEASE_LOCK/owner") 2>/dev/null; then
+    echo "thread $THREAD is busy (lost $LEASE_LOCK to a concurrent reclaim before publishing ownership — now owned by pid=$(cat "$LEASE_LOCK/owner" 2>/dev/null)) — retry shortly, or use a different --thread" >&2
+    exit 10
+  fi
   HAVE_LEASE_LOCK=true
   # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
   # faster of two overlapping dispatches remove the lease on exit (ownership

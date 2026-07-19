@@ -575,6 +575,72 @@ OUT="$(PATH="$T/robbin:$PATH" bash "$DRIVER" o3 2>"$T/err" <<< "ping")"; RC=$?
 unset FAKE_CODEX_ARGV
 rm -rf "$SD/o3.active.lock"
 
+echo "== live acquirer paused BEFORE the token write cannot clobber a reclaimer's token =="
+# The mkdir→owner-token window: A wins the mkdir but stalls before publishing
+# its token; after 60s B legitimately reclaims the ownerless dir and writes
+# ITS token. A's resumed token write must FAIL (noclobber) — an unguarded
+# overwrite would hand both processes a verified claim (double dispatch).
+rm -rf "$SD"
+mkdir -p "$T/pausebin"
+REAL_MKDIR2="$(command -v mkdir)"
+# PATH mkdir stub for driver A: after WINNING the .active.lock mkdir it pauses
+# (marker + flag-file wait) — exactly the pre-token stall under test.
+cat > "$T/pausebin/mkdir" <<STUB
+#!/usr/bin/env bash
+"$REAL_MKDIR2" "\$@"; rc=\$?
+for a in "\$@"; do
+  case "\$a" in *.active.lock)
+    if [ "\$rc" -eq 0 ]; then
+      : > "$T/p1.a-won"
+      i=0
+      while [ ! -e "$T/p1.resume-a" ] && [ "\$i" -lt 300 ]; do sleep 0.05; i=\$((i+1)); done
+    fi
+  ;; esac
+done
+exit "\$rc"
+STUB
+chmod +x "$T/pausebin/mkdir"
+mkdir -p "$T/verifybin"
+REAL_CAT2="$(command -v cat)"
+# PATH cat stub for driver B: the FIRST time it reads an EXISTING owner token
+# (B's own re-verify, after B reclaimed the lock and wrote its token) it
+# pauses — holding B inside its critical section while A resumes.
+cat > "$T/verifybin/cat" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in *.active.lock/owner)
+    if [ -e "\$a" ] && [ ! -e "$T/p1.b-at-verify" ]; then
+      : > "$T/p1.b-at-verify"
+      i=0
+      while [ ! -e "$T/p1.resume-b" ] && [ "\$i" -lt 300 ]; do sleep 0.05; i=\$((i+1)); done
+    fi
+  ;; esac
+done
+exec "$REAL_CAT2" "\$@"
+STUB
+chmod +x "$T/verifybin/cat"
+rm -f "$T/p1.a-won" "$T/p1.resume-a" "$T/p1.b-at-verify" "$T/p1.resume-b" "$T/p1.calls"
+PATH="$T/pausebin:$PATH" FAKE_CODEX_CALLS="$T/p1.calls" bash "$DRIVER" p1 <<< "ping" > "$T/p1a.out" 2>"$T/p1a.err" &
+PA=$!
+i=0; while [[ ! -e "$T/p1.a-won" && $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -e "$T/p1.a-won" ]] && ok "A won the mkdir and paused before the token write" || bad "A never reached the pause"
+touch -t 202001010000 "$SD/p1.active.lock"   # age the ownerless lock past the 60s reclaim threshold
+PATH="$T/verifybin:$PATH" FAKE_CODEX_CALLS="$T/p1.calls" bash "$DRIVER" p1 <<< "ping" > "$T/p1b.out" 2>"$T/p1b.err" &
+PB=$!
+i=0; while [[ ! -e "$T/p1.b-at-verify" && $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -e "$T/p1.b-at-verify" ]] && ok "B reclaimed the ownerless lock and holds its token" || bad "B never reached its re-verify"
+[[ "$(cat "$SD/p1.active.lock/owner" 2>/dev/null)" == "$PB" ]] && ok "owner token names B" || bad "owner token: '$(cat "$SD/p1.active.lock/owner" 2>/dev/null)' expected $PB"
+: > "$T/p1.resume-a"          # A resumes exactly at its owner-token write
+wait "$PA"; RCA=$?
+[[ "$RCA" -eq 10 ]] && ok "resumed pre-token loser A refused with exit 10" || bad "A rc=$RCA err=$(cat "$T/p1a.err")"
+[[ "$(cat "$SD/p1.active.lock/owner" 2>/dev/null)" == "$PB" ]] && ok "B's token intact after A's refused write" || bad "B's token clobbered: '$(cat "$SD/p1.active.lock/owner" 2>/dev/null)'"
+: > "$T/p1.resume-b"          # release B — it must dispatch normally
+wait "$PB"; RCB=$?
+[[ "$RCB" -eq 0 ]] && ok "reclaimer B dispatched successfully" || bad "B rc=$RCB err=$(cat "$T/p1b.err")"
+P1CALLS="$(wc -l < "$T/p1.calls" 2>/dev/null | tr -d ' ')"
+[[ "$P1CALLS" == "1" ]] && ok "exactly one dispatch total" || bad "dispatch count: ${P1CALLS:-0}"
+[[ ! -e "$SD/p1.active" && ! -e "$SD/p1.active.lock" ]] && ok "lease + lock released after the pair" || bad "leftovers: $(ls "$SD" 2>/dev/null)"
+
 echo "== detach: aborted handshake reaps a delayed READY-writing child =="
 rm -rf "$SD"
 mkdir -p "$T/dtmp9" "$T/delayisol"
@@ -620,6 +686,33 @@ NRPID="$(cat "$T/noready.pid" 2>/dev/null)"
 i=0; while kill -0 "$NRPID" 2>/dev/null && [[ $i -lt 30 ]]; do sleep 0.1; i=$((i+1)); done
 kill -0 "$NRPID" 2>/dev/null && bad "never-ready child survived the timeout reap" || ok "never-ready child confirmed terminated"
 [[ -z "$(ls -A "$T/dtmp10" 2>/dev/null)" ]] && ok "timeout path left no tmpfiles" || bad "leftovers: $(ls -A "$T/dtmp10")"
+
+echo "== detach: child refusal (live foreign mutex) propagates exit 10, well under the 5s timeout =="
+# The launcher's fast-fail pre-check covers only <thread>.active; a held
+# ACQUISITION MUTEX is detected by the child AFTER the spawn — it exits 10
+# without READY, and the parent must report THAT, not a 9-timeout.
+rm -rf "$SD"; mkdir -p "$SD/e1.active.lock" "$T/dtmp11"
+sleep 30 & E1OWNER=$!
+printf '%s' "$E1OWNER" > "$SD/e1.active.lock/owner"
+T0=$(date +%s)
+TMPDIR="$T/dtmp11" run e1 --detach
+T1=$(date +%s)
+[[ "$RC" -eq 10 ]] && ok "detached dispatch against a live mutex -> exit 10" || bad "detach mutex rc=$RC err=$(cat "$T/err")"
+[[ $((T1 - T0)) -lt 5 ]] && ok "refusal propagated early ($((T1 - T0))s < 5s timeout)" || bad "took $((T1 - T0))s — waited out the timeout"
+grep -qi 'timed out' "$T/err" && bad "refusal misreported as a handshake timeout" || ok "no timeout misreport"
+i=0; while [[ -n "$(ls -A "$T/dtmp11" 2>/dev/null)" && $i -lt 30 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -z "$(ls -A "$T/dtmp11" 2>/dev/null)" ]] && ok "early-exit path left no tmpfiles" || bad "leftovers: $(ls -A "$T/dtmp11")"
+kill "$E1OWNER" 2>/dev/null; wait "$E1OWNER" 2>/dev/null
+rm -rf "$SD/e1.active.lock"
+
+echo "== detach: child refusal (non-regular .active) propagates exit 10 too =="
+mkdir -p "$SD/e2.active"
+T0=$(date +%s)
+run e2 --detach
+T1=$(date +%s)
+[[ "$RC" -eq 10 ]] && ok "detached dispatch against a directory lease -> exit 10" || bad "detach dir-lease rc=$RC err=$(cat "$T/err")"
+[[ $((T1 - T0)) -lt 5 ]] && ok "refusal propagated early ($((T1 - T0))s < 5s)" || bad "took $((T1 - T0))s"
+rm -rf "$SD/e2.active"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
