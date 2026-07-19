@@ -77,7 +77,10 @@ a container root, stokli frontend/backend). Plan:
   refused with zero state written; 9 — handshake timeout, spawn killed; 10 —
   thread busy: the dispatch lease could not be acquired (another dispatch
   holds `<thread>.active` with a live PID, a concurrent claim holds the
-  acquisition mutex, or the lease is not a regular file). Raw
+  acquisition mutex, or the lease is not a regular file). Lease acquisition
+  runs under an ownership-safe mkdir mutex (`<thread>.active.lock` with an
+  owner-PID token): live-owner locks are never stolen, dead-owner or
+  ownerless-stale locks are reclaimed automatically. Raw
   child stdout/stderr goes to the `<thread>.detach-output` sidecar; the thread
   `.log` marker contract is untouched. `/review`/`/plan` `--background` now
   recommends `--detach` + polling the thread log for the next `round=` header;

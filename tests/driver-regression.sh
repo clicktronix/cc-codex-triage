@@ -519,6 +519,62 @@ grep -q 'concurrent lease acquisition' "$T/err" && ok "refusal names the lock co
 unset FAKE_CODEX_ARGV
 rm -rf "$SD/s2.active.lock"
 
+echo "== live-owner acquisition mutex is NEVER stolen, regardless of age =="
+rm -rf "$SD"; mkdir -p "$SD/o1.active.lock"
+sleep 30 & LOCKOWNER=$!
+printf '%s' "$LOCKOWNER" > "$SD/o1.active.lock/owner"
+touch -t 202001010000 "$SD/o1.active.lock"   # old mtime must NOT permit the steal
+export FAKE_CODEX_ARGV="$T/o1argv"; rm -f "$T/o1argv"
+run o1
+[[ "$RC" -eq 10 ]] && ok "old lock with LIVE owner -> exit 10" || bad "live-owner lock rc=$RC err=$(cat "$T/err")"
+grep -q "pid=$LOCKOWNER" "$T/err" && ok "refusal names the live lock holder" || bad "holder not named: $(cat "$T/err")"
+[[ -d "$SD/o1.active.lock" ]] && ok "live-owner lock left in place" || bad "live-owner lock stolen"
+[[ "$(cat "$SD/o1.active.lock/owner" 2>/dev/null)" == "$LOCKOWNER" ]] && ok "owner token untouched" || bad "owner token altered: '$(cat "$SD/o1.active.lock/owner" 2>/dev/null)'"
+[[ ! -e "$T/o1argv" ]] && ok "stub codex never ran under the live-owner lock" || bad "dispatch ran despite the live-owner lock"
+kill "$LOCKOWNER" 2>/dev/null; wait "$LOCKOWNER" 2>/dev/null
+unset FAKE_CODEX_ARGV
+rm -rf "$SD/o1.active.lock"
+
+echo "== dead-owner acquisition mutex is stolen even when FRESH -> one dispatch =="
+sleep 0 & DOP=$!; wait "$DOP" 2>/dev/null
+mkdir -p "$SD/o2.active.lock"
+printf '%s' "$DOP" > "$SD/o2.active.lock/owner"   # fresh mtime: age must not matter
+rm -f "$T/o2.calls"
+FAKE_CODEX_CALLS="$T/o2.calls" run o2
+[[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "dead-owner lock stolen, dispatch went through" || bad "dead-owner steal rc=$RC err=$(cat "$T/err")"
+[[ "$(wc -l < "$T/o2.calls" 2>/dev/null | tr -d ' ')" == "1" ]] && ok "exactly one dispatch over the dead-owner lock" || bad "dispatch count: $(wc -l < "$T/o2.calls" 2>/dev/null | tr -d ' ')"
+[[ ! -e "$SD/o2.active.lock" ]] && ok "reclaimed lock released after the dispatch" || bad "lock left behind"
+
+echo "== robbed acquirer aborts before the lease write (no .active, robber's lock intact) =="
+rm -rf "$SD"
+mkdir -p "$T/robbin"
+REAL_CAT="$(command -v cat)"
+# A PATH cat stub that swaps the owner token to a foreign PID the first time
+# the driver reads it back — simulating a stale-takeover robbing this acquirer
+# between its mkdir + token write and its lease write.
+cat > "$T/robbin/cat" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in *.active.lock/owner)
+    if [ ! -e "$T/robbed" ]; then
+      printf '%s' 424242 > "\$a"
+      : > "$T/robbed"
+    fi
+  ;; esac
+done
+exec "$REAL_CAT" "\$@"
+STUB
+chmod +x "$T/robbin/cat"
+rm -f "$T/robbed"
+export FAKE_CODEX_ARGV="$T/o3argv"; rm -f "$T/o3argv"
+OUT="$(PATH="$T/robbin:$PATH" bash "$DRIVER" o3 2>"$T/err" <<< "ping")"; RC=$?
+[[ "$RC" -eq 10 ]] && ok "robbed acquirer -> exit 10" || bad "robbed rc=$RC err=$(cat "$T/err")"
+[[ ! -e "$SD/o3.active" ]] && ok "no lease written by the robbed acquirer" || bad ".active written despite the robbery"
+[[ -d "$SD/o3.active.lock" && "$(cat "$SD/o3.active.lock/owner" 2>/dev/null)" == "424242" ]] && ok "robber's lock + owner token left intact" || bad "robber's lock touched: owner='$(cat "$SD/o3.active.lock/owner" 2>/dev/null)'"
+[[ ! -e "$T/o3argv" ]] && ok "stub codex never ran for the robbed acquirer" || bad "dispatch ran despite losing the lock"
+unset FAKE_CODEX_ARGV
+rm -rf "$SD/o3.active.lock"
+
 echo "== detach: aborted handshake reaps a delayed READY-writing child =="
 rm -rf "$SD"
 mkdir -p "$T/dtmp9" "$T/delayisol"

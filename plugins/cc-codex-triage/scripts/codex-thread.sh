@@ -42,10 +42,18 @@
 #                             dispatch (exit 10); a dead or malformed lease is
 #                             stale state and is overwritten.
 #   <thread>.active.lock      mkdir mutex serializing lease acquisition (mkdir
-#                             is atomic on POSIX). Held only for the few file
-#                             ops of the claim; a lock older than 60s can only
-#                             be a crashed acquirer and is stolen. Released by
-#                             cleanup() on every exit path.
+#                             is atomic on POSIX). The winner records its PID
+#                             in <lock>/owner immediately after the mkdir, and
+#                             takeover is OWNERSHIP-gated, not age-gated: a
+#                             lock whose recorded owner is ALIVE is never
+#                             stolen (regardless of age); a dead/invalid owner
+#                             is reclaimed at once; an ownerless lock older
+#                             than 60s (acquirer crashed between mkdir and the
+#                             token write) is reclaimed too. Ownership is
+#                             re-verified before the lease write, and every
+#                             release removes the lock only while <lock>/owner
+#                             still names this PID. cleanup() releases a
+#                             still-held lock on every exit path.
 #   <thread>.detach-output    raw stdout/stderr of a --detach child. The .log
 #                             marker contract above is unchanged — the child
 #                             appends rounds/replies exactly like a foreground
@@ -68,9 +76,11 @@
 #   10  dispatch refused: could not acquire the thread's lease — another
 #       dispatch is mid-flight (<thread>.active names a live PID: wait for
 #       it or use a different --thread), a concurrent claim holds the
-#       acquisition mutex (<thread>.active.lock — retry shortly), or
-#       <thread>.active is not a regular file (inspect and remove it
-#       manually)
+#       acquisition mutex (<thread>.active.lock — held by a LIVE recorded
+#       owner or freshly claimed: retry shortly; only dead-owner or
+#       ownerless>60s locks are reclaimed), this acquisition lost the mutex
+#       to a stale-lock takeover mid-claim, or <thread>.active is not a
+#       regular file (inspect and remove it manually)
 
 set -euo pipefail
 
@@ -112,7 +122,7 @@ done
 
 [[ -z "$THREAD" ]] && {
   echo "usage: codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing] [--detach]" >&2
-  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease held) — see --help" >&2
+  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
@@ -212,9 +222,25 @@ LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # combined cleanup() can always remove it — no exit path may leak it.
 LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
 # mkdir mutex serializing lease acquisition; HAVE_LEASE_LOCK tracks whether
-# THIS process currently holds it so cleanup() can release it on every path.
+# THIS process acquired it so the release helper below runs on every path.
 LEASE_LOCK="$STATE_DIR/${THREAD}.active.lock"
 HAVE_LEASE_LOCK=false
+
+# Ownership-checked mutex release — the ONE rule for every removal of the
+# lock: this process removes it ONLY while <lock>/owner still records $$.
+# After a stale takeover robbed us, the dir (and its owner token) belong to
+# the new owner and must be left intact; an owner token that vanished out
+# from under us is treated the same way (no longer provably ours — the
+# ownerless>60s reclaim below will eventually collect it if it was).
+release_lease_lock() {
+  [[ "$HAVE_LEASE_LOCK" == true ]] || return 0
+  if [[ "$(cat "$LEASE_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
+    rm -f "$LEASE_LOCK/owner"
+    rmdir "$LEASE_LOCK" 2>/dev/null || true
+  fi
+  HAVE_LEASE_LOCK=false
+  return 0
+}
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -376,12 +402,11 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 cleanup() {
   rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP"
   # Release a still-held acquisition mutex (exit paths inside the claim's
-  # critical section — busy refusal, non-regular lease, failed verify). A
-  # normal acquisition releases it inline and clears the flag first.
-  if [[ "$HAVE_LEASE_LOCK" == true ]]; then
-    rmdir "$LEASE_LOCK" 2>/dev/null || true
-    HAVE_LEASE_LOCK=false
-  fi
+  # critical section — busy refusal, non-regular lease, lost ownership,
+  # failed verify). A normal acquisition releases it inline first. The
+  # helper is ownership-checked: a robbed acquirer leaves the new owner's
+  # lock intact.
+  release_lease_lock
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
   # an earlier owner's exit.
@@ -439,22 +464,48 @@ PROMPT="$(cat)"
 # dispatches can never both pass the busy check and both write the lease
 # (and a directory can no longer race into place between the check and the
 # mv). Inside the mutex: the live-owner check, the non-regular-file refusal,
-# and the tmp write + mv + verification. The mutex is held only for those
-# few file ops — a lock older than 60s can only be a crashed acquirer and is
-# stolen (rmdir + one retry). cleanup() releases a still-held mutex on every
-# exit path.
+# and the tmp write + mv + verification. The winner records its PID in
+# <lock>/owner, and takeover is OWNERSHIP-gated: a lock with a LIVE recorded
+# owner is never stolen regardless of age (an acquirer merely paused inside
+# the critical section must not be robbed — age-only stealing reopened the
+# exact double-dispatch race the mutex closes); a dead/invalid owner is
+# reclaimed at once; an ownerless lock older than 60s (its acquirer crashed
+# between mkdir and the token write) is reclaimed too. cleanup() releases a
+# still-held mutex on every exit path.
 if ! $ONESHOT; then
   if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
-    LOCK_MTIME="$(stat -f '%m' "$LEASE_LOCK" 2>/dev/null || stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || true)"
-    NOW_EPOCH="$(date +%s)"
-    if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
-      rmdir "$LEASE_LOCK" 2>/dev/null || true   # stale: its acquirer crashed mid-claim
+    LOCK_OWNER="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
+    if [[ "$LOCK_OWNER" =~ ^[1-9][0-9]{0,11}$ ]] && kill -0 "$LOCK_OWNER" 2>/dev/null; then
+      # LIVE recorded owner: never steal, no matter how old the lock is.
+      echo "thread $THREAD is busy (lease acquisition mutex $LEASE_LOCK is held by live pid=$LOCK_OWNER) — wait for it or use a different --thread" >&2
+      exit 10
+    fi
+    STEAL=false
+    if [[ -e "$LEASE_LOCK/owner" ]]; then
+      STEAL=true   # owner recorded but dead (or token garbage): acquirer is gone
+    else
+      # Ownerless lock: only a crash between mkdir and the token write leaves
+      # this state, and that window is a couple of builtins wide — an
+      # ownerless lock older than 60s can only be a crashed acquirer.
+      LOCK_MTIME="$(stat -f '%m' "$LEASE_LOCK" 2>/dev/null || stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || true)"
+      NOW_EPOCH="$(date +%s)"
+      if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
+        STEAL=true
+      fi
+    fi
+    if [[ "$STEAL" == true ]]; then
+      rm -f "$LEASE_LOCK/owner" 2>/dev/null || true
+      rmdir "$LEASE_LOCK" 2>/dev/null || true
     fi
     if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
       echo "thread $THREAD is busy (concurrent lease acquisition holds $LEASE_LOCK) — retry shortly, or use a different --thread" >&2
       exit 10
     fi
   fi
+  # Owner token: records WHO holds the mutex, so a paused-but-alive acquirer
+  # is distinguishable from a crashed one and every release can be
+  # ownership-checked. Written immediately after the mkdir wins.
+  printf '%s' "$$" > "$LEASE_LOCK/owner"
   HAVE_LEASE_LOCK=true
   # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
   # faster of two overlapping dispatches remove the lease on exit (ownership
@@ -473,6 +524,15 @@ if ! $ONESHOT; then
     echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE exists but is not a regular file — inspect and remove it manually." >&2
     exit 10
   fi
+  # Ownership re-verification, immediately before the lease write: an
+  # acquirer that stalled long enough to be (wrongly or rightly) taken over
+  # would otherwise resume here and double-dispatch. If the owner token no
+  # longer names this PID the mutex is LOST — abort without writing .active;
+  # the ownership-checked release leaves the new owner's lock intact.
+  if [[ "$(cat "$LEASE_LOCK/owner" 2>/dev/null)" != "$$" ]]; then
+    echo "thread $THREAD is busy (this acquisition lost $LEASE_LOCK to a stale-lock takeover mid-claim — now owned by pid=$(cat "$LEASE_LOCK/owner" 2>/dev/null)) — retry shortly, or use a different --thread" >&2
+    exit 10   # cleanup()'s release is ownership-checked: the robber's lock survives
+  fi
   printf '%s' "$$" > "$LEASE_TMP"
   mv -f "$LEASE_TMP" "$LEASE_FILE"
   # Verify the acquisition before releasing the mutex: races are excluded by
@@ -482,8 +542,7 @@ if ! $ONESHOT; then
     echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE is not a regular file holding this PID after acquisition — inspect the state dir." >&2
     exit 10
   fi
-  rmdir "$LEASE_LOCK" 2>/dev/null || true
-  HAVE_LEASE_LOCK=false
+  release_lease_lock
 fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
