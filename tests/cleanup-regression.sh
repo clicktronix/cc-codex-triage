@@ -134,6 +134,24 @@ old "$SD/ml1.id" "$SD/ml1.active"
 run --older-than 1 --apply
 [[ ! -e "$SD/ml1.id" && ! -e "$SD/ml1.active" ]] && ok "malformed lease archived with the set" || bad "malformed-lease set not moved: $OUT"
 
+echo "== boundary spellings of a LIVE pid are still malformed (driver grammar, raw content) =="
+# The driver writes the bare PID via printf '%s' "$$" — a leading zero, leading
+# whitespace, or trailing newline are spellings it never produces. Each must
+# read as stale (archivable), NOT as IN USE, even while the embedded PID lives.
+sleep 300 & LIVEPID=$!
+reset_state
+echo u > "$SD/mz1.id"; printf '0%s' "$LIVEPID"  > "$SD/mz1.active"   # leading zero
+echo u > "$SD/mz2.id"; printf ' %s' "$LIVEPID"  > "$SD/mz2.active"   # leading space
+echo u > "$SD/mz3.id"; printf '%s\n7' "$LIVEPID" > "$SD/mz3.active"  # embedded newline (a TRAILING one is stripped identically by $(cat) in driver and cleanup — that spelling is live-parity, not malformed)
+old "$SD/mz1.id" "$SD/mz1.active" "$SD/mz2.id" "$SD/mz2.active" "$SD/mz3.id" "$SD/mz3.active"
+run --older-than 1 --apply
+for t in mz1 mz2 mz3; do
+  [[ ! -e "$SD/$t.id" && ! -e "$SD/$t.active" ]] \
+    && ok "$t: boundary-spelling lease archived (not IN USE)" \
+    || bad "$t: boundary-spelling lease wrongly treated as live: $OUT"
+done
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
+
 echo "== file-set includes log.1 + detach-output; --apply moves exactly the listed files =="
 reset_state
 for ext in id log log.1 rounds findings.jsonl scope approved detach-output; do

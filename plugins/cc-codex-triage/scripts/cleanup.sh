@@ -115,15 +115,18 @@ newest_mtime() {
 
 # Rail 1: true when <thread>.active holds a strictly positive decimal PID that
 # is alive (`kill -0`). Dead-PID / malformed content -> NOT live (stale lease).
+# The grammar is the DRIVER's canonical one (^[1-9][0-9]{0,11}$) applied to the
+# RAW file content — no whitespace normalization: the driver writes the bare
+# PID with printf '%s' "$$", so "0<pid>", " <pid>", "<pid>\n" are all spellings
+# the driver never produces and must read as malformed (stale), not IN USE.
 lease_live() {
   local f="$STATE_DIR/$1.active" pid
   [ -f "$f" ] || return 1
-  pid="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$pid" -gt 0 ] || return 1
+  pid="$(cat "$f" 2>/dev/null)"
+  [[ "$pid" =~ ^[1-9][0-9]{0,11}$ ]] || return 1
   kill -0 "$pid" 2>/dev/null
 }
-lease_pid() { tr -d '[:space:]' < "$STATE_DIR/$1.active" 2>/dev/null; }
+lease_pid() { cat "$STATE_DIR/$1.active" 2>/dev/null; }
 
 # Rail 2: true when either armed gate's thread= names this thread.
 armed_target() {
