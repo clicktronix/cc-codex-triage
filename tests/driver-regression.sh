@@ -31,6 +31,8 @@ printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
 # append one line per invocation so tests can COUNT dispatches (race tests)
 [[ -n "${FAKE_CODEX_CALLS:-}" ]] && echo "$$" >> "$FAKE_CODEX_CALLS"
 cat >/dev/null
+# FAKE_CODEX_MUTATE=<path>: append to a tracked file mid-dispatch (strict-mode tests)
+[[ -n "${FAKE_CODEX_MUTATE:-}" ]] && echo mutated >> "$FAKE_CODEX_MUTATE"
 [[ "${FAKE_CODEX_SLEEP:-0}" != "0" ]] && sleep "$FAKE_CODEX_SLEEP"
 if [[ "${FAKE_CODEX_BIGERR:-0}" == "1" ]]; then
   awk 'BEGIN{for(i=0;i<2000;i++)print "ERRPAD "i" 0123456789012345678901234567890123456789012345678901234567890123456789"}' >&2
@@ -765,6 +767,63 @@ echo "== detach-watch: outside a git repo -> exit 7 =="
 WNG="$T/watchnongit"; mkdir -p "$WNG"
 ( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 1 ) >/dev/null 2>&1; WRC=$?
 [[ "$WRC" -eq 7 ]] && ok "watcher outside a repo -> exit 7" || bad "watcher non-git rc=$WRC"
+
+echo "== detach-watch: INSTANT child (reply lands before the watcher starts) -> still DONE =="
+# B1 regression: log-offset is measured pre-spawn, so a reply appended before
+# the watcher's own start is still counted as growth.
+rm -rf "$SD"; mkdir -p "$SD"
+run p4 --detach
+DP4="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+OFF4="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP4" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+sleep 0.3   # ensure the reply/status landed well before the watcher starts
+WOUT="$(bash "$WATCH" p4 "$DP4" "$OFF4" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 0 ]] && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "instant child: watcher still reports DONE with the reply" || bad "instant-child watcher rc=$WRC out=$WOUT"
+
+echo "== detach-status: published by the worker, pid + rc=0 =="
+{ [[ "$(sed -n 's/^pid=//p' "$SD/p4.detach-status" 2>/dev/null)" == "$DP4" ]] \
+  && [[ "$(sed -n 's/^rc=//p' "$SD/p4.detach-status" 2>/dev/null)" == "0" ]]; } \
+  && ok "detach-status names the worker pid with rc=0" || bad "detach-status wrong: $(cat "$SD/p4.detach-status" 2>/dev/null)"
+
+echo "== detach + strict mutation: worker exits 5 with a log append — watcher must FAIL, not DONE =="
+# B2 regression: log growth alone is not success. The stub mutates a tracked
+# file mid-dispatch; under CC_CODEX_TRIAGE_STRICT=1 the worker appends the
+# exchange and exits 5 — the watcher must surface that, not report DONE.
+echo tracked > mutate-me.txt && git add mutate-me.txt && git commit -qm strict-fixture
+run p5 --detach   # non-strict warmup so the thread exists
+DP5="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP5" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+CC_CODEX_TRIAGE_STRICT=1 FAKE_CODEX_MUTATE="$PWD/mutate-me.txt" run p5 --detach
+DP5B="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+OFF5="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DP5B" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+[[ "$(sed -n 's/^rc=//p' "$SD/p5.detach-status" 2>/dev/null)" == "5" ]] \
+  && ok "strict worker published rc=5" || bad "strict status: $(cat "$SD/p5.detach-status" 2>/dev/null)"
+WOUT="$(bash "$WATCH" p5 "$DP5B" "$OFF5" 2>&1)"; WRC=$?
+{ [[ "$WRC" -eq 1 ]] && grep -q 'rc=5' <<<"$WOUT"; } \
+  && ok "watcher reports FAILED rc=5 despite the log append" || bad "strict watcher rc=$WRC out=$WOUT"
+git checkout -q mutate-me.txt
+
+echo "== concurrent --detach launchers: one DETACHED, one exit 10, winner's sidecar unmixed =="
+# B3 regression: the canonical sidecar job boundary is established by the
+# lease-owning child — the exit-10 loser must not truncate or write into it.
+rm -rf "$SD"; mkdir -p "$SD"
+FAKE_CODEX_SLEEP=2 bash "$DRIVER" p6 --detach <<< "ping" > "$T/p6a.out" 2>"$T/p6a.err" &
+L1=$!
+FAKE_CODEX_SLEEP=2 bash "$DRIVER" p6 --detach <<< "ping" > "$T/p6b.out" 2>"$T/p6b.err" &
+L2=$!
+wait "$L1"; RC1=$?
+wait "$L2"; RC2=$?
+if [[ "$RC1" -eq 0 && "$RC2" -eq 10 ]] || [[ "$RC1" -eq 10 && "$RC2" -eq 0 ]]; then
+  ok "exactly one launcher won (rcs: $RC1/$RC2)"
+else
+  bad "concurrent launchers rcs: $RC1/$RC2 ($(cat "$T/p6a.err" "$T/p6b.err" 2>/dev/null | head -3))"
+fi
+WINOUT="$T/p6a.out"; [[ "$RC2" -eq 0 ]] && WINOUT="$T/p6b.out"
+DP6="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' "$WINOUT")"
+i=0; while [[ -n "$DP6" ]] && kill -0 "$DP6" 2>/dev/null && [[ $i -lt 150 ]]; do sleep 0.1; i=$((i+1)); done
+{ grep -q 'FAKE_REPLY' "$SD/p6.detach-output" 2>/dev/null && ! grep -qi 'busy' "$SD/p6.detach-output" 2>/dev/null; } \
+  && ok "canonical sidecar holds only the winner's output" || bad "sidecar mixed/missing: $(cat "$SD/p6.detach-output" 2>/dev/null | head -3)"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

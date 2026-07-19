@@ -31,10 +31,16 @@ a container root, stokli frontend/backend). Plan:
   failure, which appends no `round=` header and so defeated log polling),
   then delivers the appended reply (exit 0), the `last-error` +
   `detach-output` diagnostics (exit 1), or a still-running timeout notice
-  (exit 3). The launcher prints `log-offset=<B>` (pre-dispatch log size) so
-  the watcher's baseline cannot race a fast reply; `<thread>.detach-output`
-  is truncated per launch (one job per file — runs no longer interleave).
-  `/review`/`/plan` `--background` steps wire the watcher up explicitly.
+  (exit 3). The watcher's verdict comes from `<thread>.detach-status` — the
+  worker's REAL exit code, published atomically by its EXIT trap — never
+  from log growth alone (a strict-mutation exit 5 appends the exchange and
+  still fails). The launcher measures `log-offset=<B>` BEFORE spawning the
+  child so the baseline cannot race even an instant reply, and the canonical
+  `<thread>.detach-output` job boundary is established by the lease-owning
+  CHILD after arbitration (the launcher captures pre-lease output in a
+  private tmpfile) — a concurrent exit-10 loser can no longer truncate or
+  interleave the winner's sidecar. `/review`/`/plan` `--background` steps
+  wire the watcher up explicitly.
 - **Mutating utilities hard-fail outside a git repository (exit 7, driver
   parity).** `cleanup.sh` and `ledger.sh` previously fell back to the
   caller's cwd — archiving/writing state the driver could never have put
@@ -91,7 +97,7 @@ a container root, stokli frontend/backend). Plan:
   is archivable; a fresh diag is not flagged. (b) **Dormant threads** —
   `--older-than <days>` (integer ≥ 1) lists/archives whole thread file-sets
   (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
-  detach-output, active`) whose newest member is older than N days. Safety
+  detach-output, detach-status, active`) whose newest member is older than N days. Safety
   rails, in precedence order: a thread whose `.active` lease names a live PID
   is skipped unconditionally (a resume waiting inside `codex exec` writes
   nothing mtime could see — the lease is the only honest in-use signal; a
@@ -115,11 +121,15 @@ a container root, stokli frontend/backend). Plan:
   runs under an ownership-safe mkdir mutex (`<thread>.active.lock` with an
   owner-PID token): live-owner locks are never stolen, dead-owner or
   ownerless-stale locks are reclaimed automatically. Raw
-  child stdout/stderr goes to the `<thread>.detach-output` sidecar; the thread
-  `.log` marker contract is untouched. `/review`/`/plan` `--background` now
-  recommends `--detach` + polling the thread log for the next `round=` header;
-  the harness's `run_in_background` stays documented as the fallback with its
-  reaping caveat. Closes the audited incident class of background dispatches
+  child stdout/stderr goes to the `<thread>.detach-output` sidecar (truncated
+  per launch by the lease-owning child), and the child's real exit status is
+  published to `<thread>.detach-status`; the thread `.log` marker contract is
+  untouched. `/review`/`/plan` `--background` now recommends `--detach` plus
+  the bundled `detach-watch.sh` watcher run as a Claude-managed background
+  task — it delivers the reply or the failure diagnostics (verdict from the
+  published exit status, NOT from log growth) as a completion notification;
+  the harness's `run_in_background` on the plain command stays documented as
+  the fallback with its reaping caveat. Closes the audited incident class of background dispatches
   dying mid-flight when the harness reaped the process group.
 
 ### Documentation

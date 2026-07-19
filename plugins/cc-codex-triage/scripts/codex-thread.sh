@@ -59,11 +59,17 @@
 #                             release removes the lock only while <lock>/owner
 #                             still names this PID. cleanup() releases a
 #                             still-held lock on every exit path.
-#   <thread>.detach-output    raw stdout/stderr of the LATEST --detach child
-#                             (truncated per launch — one job per file). The
-#                             .log marker contract above is unchanged — the
-#                             child appends rounds/replies exactly like a
-#                             foreground run.
+#   <thread>.detach-output    raw stdout/stderr of the LATEST --detach child.
+#                             Truncated per launch BY THE CHILD after lease
+#                             arbitration (only the lease owner redirects
+#                             into it — a concurrent exit-10 loser cannot
+#                             touch it); the launcher captures pre-lease
+#                             output in a private tmpfile. The .log marker
+#                             contract above is unchanged.
+#   <thread>.detach-status    the LATEST detach child's real exit status
+#                             (`pid=`/`rc=` lines, written atomically by the
+#                             child's EXIT trap) — detach-watch.sh decides
+#                             success/failure from it, not from log growth.
 #
 # Exit codes:
 #   0   success
@@ -312,7 +318,7 @@ if $DETACH; then
   # just before the normal-success exit — at that point READY is already gone
   # and the child owns the prompt tmpfile.
   DETACH_DONE=false
-  PROMPT_TMPFILE=""; READY_FILE=""; SPAWN_PID=""
+  PROMPT_TMPFILE=""; READY_FILE=""; SPAWN_PID=""; SPAWNOUT_TMPFILE=""
   # Settle an ABORTED handshake's spawn: TERM its whole session/process group,
   # then CONFIRM termination (bounded ~2s poll, escalating to KILL) — a
   # delayed child left unsignaled (or TERMed but unconfirmed) could recreate
@@ -392,6 +398,7 @@ if $DETACH; then
     reap_spawn
     [[ -n "$PROMPT_TMPFILE" ]] && rm -f "$PROMPT_TMPFILE"
     [[ -n "$READY_FILE" ]] && rm -f "$READY_FILE"
+    [[ -n "$SPAWNOUT_TMPFILE" ]] && rm -f "$SPAWNOUT_TMPFILE"
     return 0
   }
   trap detach_cleanup EXIT
@@ -400,22 +407,37 @@ if $DETACH; then
   PROMPT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.prompt.XXXXXX")"
   cat > "$PROMPT_TMPFILE"      # persist stdin for the re-exec'd child
   READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
+  SPAWNOUT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.spawnout.XXXXXX")"
   export CC_CODEX_PROMPT_TMPFILE="$PROMPT_TMPFILE"
   export CC_CODEX_READY_FILE="$READY_FILE"
-  # Truncating (>) rather than appending: the sidecar holds ONE launch's raw
-  # output — successive runs on the same thread would otherwise interleave
-  # with no job boundary, and a watcher/user reading it after a failure could
-  # attribute a PREVIOUS run's noise to the current one. (Concurrent runs
-  # cannot exist — the lease serializes dispatches per thread.)
+  # log-offset baseline for detach-watch.sh, measured BEFORE the spawn: the
+  # child cannot have appended anything yet, so a fast reply landing before
+  # the watcher starts is still counted as growth. (Measuring after the
+  # handshake had a race: an instant child could append its reply first.)
+  # set -e safety: a missing log (first-ever dispatch) must yield 0.
+  LOG_BASE=0
+  if [[ -f "$STATE_DIR/${THREAD}.log" ]]; then
+    LOG_BASE="$(wc -c < "$STATE_DIR/${THREAD}.log" | tr -d ' ')"
+  fi
+  case "${LOG_BASE:-}" in ''|*[!0-9]*) LOG_BASE=0 ;; esac
+  # The spawn writes to a launcher-owned UNIQUE tmpfile, NOT the canonical
+  # sidecar: two near-simultaneous launchers can both pass the preliminary
+  # lease check, and truncating a shared path here would let the exit-10
+  # loser and the winner interleave/overwrite output. The canonical
+  # <thread>.detach-output job boundary is established by the CHILD, after
+  # lease arbitration — only the lease OWNER redirects into it (truncating),
+  # so the file always holds exactly the winning launch's output. This
+  # tmpfile only ever captures PRE-LEASE output (usage errors, busy
+  # refusals) and is removed by every launcher exit path.
   if [[ "$DETACH_ISOLATOR" == "setsid" ]]; then
     setsid bash "$0" "${CHILD_ARGS[@]}" \
-      < "$PROMPT_TMPFILE" > "$DETACH_OUT" 2>&1 &
+      < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   else
     # No `--` separator: with -c, sys.argv[0] is '-c' — the exec target is
     # sys.argv[1] ('bash').
     python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
       bash "$0" "${CHILD_ARGS[@]}" \
-      < "$PROMPT_TMPFILE" > "$DETACH_OUT" 2>&1 &
+      < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   fi
   SPAWN_PID=$!
   # Handshake: the child writes its PID into READY after acquiring its lease.
@@ -463,10 +485,13 @@ if $DETACH; then
       # always writes READY before dispatching) — report the generic
       # handshake failure rather than a bogus success.
       [[ "$SPAWN_RC" -eq 0 ]] && SPAWN_RC=9
-      rm -f "$READY_FILE" "$PROMPT_TMPFILE"
-      DETACH_DONE=true
       echo "--detach child exited early (status $SPAWN_RC) before reporting ready — propagating its exit status." >&2
-      echo "Raw child output (if any): $DETACH_OUT" >&2
+      if [[ -s "$SPAWNOUT_TMPFILE" ]]; then
+        echo "--- child output (pre-lease):" >&2
+        tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
+      fi
+      rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
+      DETACH_DONE=true
       exit "$SPAWN_RC"
     fi
     # ABORTED handshake (child alive but unresponsive): TERM the spawn's
@@ -474,24 +499,19 @@ if $DETACH; then
     # BEFORE removing the launcher-owned files — an unconfirmed TERM would
     # let a slow child recreate READY.
     reap_spawn
-    rm -f "$READY_FILE" "$PROMPT_TMPFILE"
     echo "--detach handshake timed out after 5s: the child never reported ready (spawn killed)." >&2
-    echo "Raw child output (if any): $DETACH_OUT" >&2
+    if [[ -s "$SPAWNOUT_TMPFILE" ]]; then
+      echo "--- child output (pre-lease):" >&2
+      tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
+    fi
+    echo "If the child had passed lease acquisition, its output is in $DETACH_OUT" >&2
+    rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
     exit 9
   fi
-  rm -f "$READY_FILE"
+  rm -f "$READY_FILE" "$SPAWNOUT_TMPFILE"
   DETACH_DONE=true   # handshake complete — the EXIT trap must not touch the child's prompt tmpfile
-  # log-offset is the log's size BEFORE this dispatch appends anything (the
-  # child's reply lands minutes later) — pass it to detach-watch.sh so the
-  # watcher's baseline cannot race a fast reply landing before it starts.
-  # set -e safety: a missing log (first-ever dispatch) must yield 0, not a
-  # failed redirect killing the launcher after a successful handshake.
-  LOG_BASE=0
-  if [[ -f "$STATE_DIR/${THREAD}.log" ]]; then
-    LOG_BASE="$(wc -c < "$STATE_DIR/${THREAD}.log" | tr -d ' ')"
-  fi
-  case "${LOG_BASE:-}" in ''|*[!0-9]*) LOG_BASE=0 ;; esac
-  echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output log-offset=$LOG_BASE — for completion delivery run scripts/detach-watch.sh $THREAD $CHILD_PID $LOG_BASE as a background task; fallback: poll the thread log for the next 'round=' header"
+  WATCHER_PATH="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/detach-watch.sh"
+  echo "DETACHED pid=$CHILD_PID output=${THREAD}.detach-output log-offset=$LOG_BASE — for completion delivery run: bash '$WATCHER_PATH' $THREAD $CHILD_PID $LOG_BASE (as a background task); fallback: poll the thread log for the next 'round=' header"
   exit 0
 fi
 
@@ -501,7 +521,17 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 # `trap ... EXIT`: it would silently replace this one. (The --detach launcher
 # above installs its own EXIT trap, but that code path exits before ever
 # reaching this line, so the two can never collide.)
+DETACH_CHILD=false
 cleanup() {
+  # $? FIRST — every later command in this trap would clobber it. Publishing
+  # the worker's real exit status lets detach-watch.sh decide success from
+  # fact, not from log growth (which strict-mutation exit 5 also produces).
+  local rc=$?
+  if [[ "$DETACH_CHILD" == true ]]; then
+    printf 'pid=%s\nrc=%s\n' "$$" "$rc" > "$STATE_DIR/${THREAD}.detach-status.tmp" 2>/dev/null \
+      && mv -f "$STATE_DIR/${THREAD}.detach-status.tmp" "$STATE_DIR/${THREAD}.detach-status" 2>/dev/null \
+      || true
+  fi
   rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP"
   # Release a still-held acquisition mutex (exit paths inside the claim's
   # critical section — busy refusal, non-regular lease, lost ownership,
@@ -717,6 +747,14 @@ fi
 # proves /cleanup already sees this thread as in-use. The parent owns the
 # READY file and removes it — NEVER delete it here.
 if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+  # Canonical sidecar job boundary, established HERE — by the lease OWNER,
+  # after arbitration — not by the launcher: a concurrent exit-10 loser never
+  # touches the file, so it always holds exactly the winning launch's output.
+  # A stale detach-status from a previous launch is removed BEFORE dispatch
+  # so the watcher can never read an old verdict against this run's PID.
+  rm -f "$STATE_DIR/${THREAD}.detach-status"
+  exec > "$STATE_DIR/${THREAD}.detach-output" 2>&1
+  DETACH_CHILD=true
   printf '%s' "$$" > "$CC_CODEX_READY_FILE"
 fi
 

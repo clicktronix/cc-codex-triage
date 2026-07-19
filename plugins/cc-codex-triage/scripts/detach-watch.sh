@@ -66,30 +66,64 @@ while kill -0 "$PID" 2>/dev/null; do
   WAITED=$((WAITED + 2))
 done
 
-# Worker is gone. New log bytes → the reply landed; show exactly the delta.
+# Worker is gone. Current log size for the delta prints below.
 CUR_BYTES="$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')"
 CUR_BYTES="${CUR_BYTES:-0}"
 case "$CUR_BYTES" in *[!0-9]*) CUR_BYTES=0 ;; esac
-if [ "$CUR_BYTES" -gt "$BASE_BYTES" ]; then
-  echo "DONE: detached dispatch on thread $THREAD finished — reply appended to $LOG:"
-  tail -c "+$((BASE_BYTES + 1))" "$LOG" 2>/dev/null
-  exit 0
+
+print_delta() { # the log bytes this dispatch appended (rotation-aware)
+  if [ "$CUR_BYTES" -gt "$BASE_BYTES" ]; then
+    tail -c "+$((BASE_BYTES + 1))" "$LOG" 2>/dev/null
+  elif [ "$CUR_BYTES" -lt "$BASE_BYTES" ] && [ "$CUR_BYTES" -gt 0 ]; then
+    # Rotation happened mid-dispatch — the newest entry is still in the
+    # current .log (rotation precedes append).
+    echo "(log rotated mid-run — current tail)"
+    tail -c 65536 "$LOG" 2>/dev/null
+  fi
+}
+print_diags() {
+  if [ -s "$DIAG" ]; then
+    echo "--- last-error tail ($DIAG):"
+    tail -c 4096 "$DIAG" 2>/dev/null
+  fi
+  if [ -s "$SIDE" ]; then
+    echo "--- raw child output tail ($SIDE):"
+    tail -c 4096 "$SIDE" 2>/dev/null
+  fi
+}
+
+# Authoritative verdict: the worker publishes its REAL exit status to
+# <thread>.detach-status (atomic, EXIT trap). Log growth alone is NOT
+# success — a strict-mutation dispatch (exit 5) appends the exchange and
+# still fails, and a partial append before a nonzero death looks identical.
+STATUS_FILE="$STATE_DIR/$THREAD.detach-status"
+S_PID="$(sed -n 's/^pid=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
+S_RC="$(sed -n 's/^rc=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
+if [ "$S_PID" = "$PID" ]; then
+  case "$S_RC" in
+    0)
+      echo "DONE: detached dispatch on thread $THREAD finished (worker rc=0) — reply appended to $LOG:"
+      print_delta
+      exit 0 ;;
+    [0-9]*)
+      echo "FAILED: detached dispatch on thread $THREAD (pid $PID) exited rc=$S_RC (5=tracked-file mutation under strict mode, 3=codex exec failed, 4=resume failed — see the driver's exit-code table)."
+      if [ "$CUR_BYTES" -ne "$BASE_BYTES" ]; then
+        echo "--- log delta this dispatch appended (present despite the failure):"
+        print_delta
+      fi
+      print_diags
+      exit 1 ;;
+  esac
 fi
-# Log rotation edge: a shrunken log means rotation happened mid-dispatch —
-# the newest entry is still in the current .log (rotation precedes append).
-if [ "$CUR_BYTES" -lt "$BASE_BYTES" ] && [ "$CUR_BYTES" -gt 0 ]; then
-  echo "DONE: detached dispatch on thread $THREAD finished (log rotated mid-run) — current $LOG tail:"
-  tail -c 65536 "$LOG" 2>/dev/null
+
+# No matching status record (pre-status worker, or it died without its EXIT
+# trap — e.g. SIGKILL): fall back to the growth heuristic.
+if [ "$CUR_BYTES" -gt "$BASE_BYTES" ] || { [ "$CUR_BYTES" -lt "$BASE_BYTES" ] && [ "$CUR_BYTES" -gt 0 ]; }; then
+  echo "DONE (no status record — assumed from log growth): detached dispatch on thread $THREAD appended to $LOG:"
+  print_delta
   exit 0
 fi
 
 echo "FAILED: detached dispatch on thread $THREAD (pid $PID) exited without appending a reply to $LOG."
-if [ -s "$DIAG" ]; then
-  echo "--- last-error tail ($DIAG):"
-  tail -c 4096 "$DIAG" 2>/dev/null
-fi
-if [ -s "$SIDE" ]; then
-  echo "--- raw child output tail ($SIDE):"
-  tail -c 4096 "$SIDE" 2>/dev/null
-fi
+print_diags
 exit 1
