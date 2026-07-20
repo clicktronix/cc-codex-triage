@@ -9,7 +9,7 @@ All notable changes to this project are documented in this file.
 Closes six state-hygiene gaps surfaced by a 2026-07-19 audit of real
 thread-state dirs across six production repos (marqa agent/platform/analyzer +
 a container root, stokli frontend/backend). Plan:
-`docs/superpowers/plans/2026-07-19-hygiene-0.8.md`.
+`wiki/ARCHIVE/PLANS/2026-07-19-hygiene-0.8.md`.
 
 ### Fixed
 
