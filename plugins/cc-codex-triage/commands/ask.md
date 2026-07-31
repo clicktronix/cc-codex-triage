@@ -53,7 +53,7 @@ Threads default to one per *command kind* — `ask`, `review-<branch>`, `plan-<b
 
 Two things bound how far that goes:
 
-- **The sandbox is fixed at session creation.** `codex exec resume` accepts `-m` and `--output-schema` but no `-s`, so a feature thread chooses its sandbox once, on the first dispatch. Read-only is usually right for a thread that answers and critiques — it is also the only setting under which Codex can never trip the tracked-file mutation guard.
+- **The sandbox is fixed at session creation.** `codex exec resume` accepts `-m` and `--output-schema` but no `-s`, so a feature thread chooses its sandbox once, on the first dispatch. (The CLI does still take `-c sandbox_mode=…` on a resume; the driver deliberately never forwards `-c` there, to keep a thread's execution environment stable across rounds — so within this plugin the choice really is made once.) Read-only is usually right for a thread that answers and critiques — it is also the only setting under which Codex can never trip the tracked-file mutation guard.
 - **A thread is not free to grow.** Every resume re-feeds the history: production feature threads reach ~130 KB by round 9, and the longest on record (13 rounds, ~135 KB) never converged. Past roughly 10 rounds or 100 KB — `/thread-list` shows both — start a fresh `--thread <feature>-2` with a short written handoff instead of resuming further.
 
 ## Notes

@@ -49,10 +49,15 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk '
     # turns REQUEST_CHANGES into REQUESTCHANGES and silently stops every
     # change request from being seen.
     line = $0
-    sub(/^[[:space:]*_#`]+/, "", line)             # heading marks, emphasis, indent
+    # Leading set also covers list bullets and blockquotes ("- APPROVE",
+    # "> APPROVE"): the trailing set already tolerated a dash, so rejecting a
+    # leading one was an accident rather than a decision.
+    sub(/^[[:space:]*_#`>-]+/, "", line)           # heading marks, emphasis, bullets, quotes, indent
     sub(/[-.:;!,*_`[:space:]]+$/, "", line)        # trailing punctuation, plus the --- reply terminator
-    sub(/^[Vv]erdict[[:space:]]*:[[:space:]]*/, "", line)
-    sub(/^[[:space:]*_`]+/, "", line)              # emphasis that opened after "Verdict:"
+    # Spelled out per character because awk has no portable case-insensitive
+    # flag, and "VERDICT: APPROVE" in a heading is entirely plausible.
+    sub(/^[Vv][Ee][Rr][Dd][Ii][Cc][Tt][[:space:]]*:[[:space:]]*/, "", line)
+    sub(/^[[:space:]*_`>]+/, "", line)             # emphasis that opened after "Verdict:"
     if (line == "APPROVE" || line == "REQUEST_CHANGES" || line == "COMMENT") v = line
   }
   END { if (v != "") print v }

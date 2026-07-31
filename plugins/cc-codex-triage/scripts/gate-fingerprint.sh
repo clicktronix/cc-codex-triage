@@ -44,29 +44,45 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$ROOT" ] || exit 0            # not a repo → no fingerprint, caller fails open
 cd "$ROOT" 2>/dev/null || exit 0
 
-# Content of every untracked, non-ignored file in scope. `--stdin-paths` takes
-# newline-separated paths; a path containing a literal newline makes git error
-# out mid-stream, which changes the hash and re-arms the gate — failing toward
-# a review, never toward a silent release.
+# Content of every untracked, non-ignored file in scope.
+#
+# `git hash-object --stdin-paths` die()s on the FIRST path it cannot read — a
+# dangling symlink, a chmod 000 file, or one removed between `ls-files` and the
+# hash — and stops there. The remaining files are never hashed. Left unchecked
+# that is the worst possible failure for this gate: the hash changes once and
+# then reports "unchanged" forever, so edits to everything after the bad path
+# become invisible. Reproduced with a dangling symlink sorting before a file
+# that was then edited: the fingerprint did not move.
+#
+# So the exit status is checked, and a failure produces NO output at all — the
+# caller sees an unknown fingerprint and fails open, which is loud in effect
+# (the gate stops firing) rather than silently wrong.
+#
+# Both halves filter the state dir with the SAME `grep -vF` form. They used to
+# differ (anchored BRE here, unanchored fixed there) for no reason, and the
+# unanchored fixed match is the safer of the two: git C-quotes unusual paths, so
+# an anchored pattern misses `?? ".claude/codex-threads/a b"` and lets the gate
+# re-arm on the driver's own writes.
 untracked_content() {
-  git ls-files --others --exclude-standard -- "$@" 2>/dev/null \
-    | grep -v "^$STATE_DIR/" \
-    | git hash-object --stdin-paths 2>/dev/null
+  local out
+  out="$(git ls-files --others --exclude-standard -- "$@" 2>/dev/null \
+         | grep -vF "$STATE_DIR/" \
+         | git hash-object --stdin-paths 2>/dev/null)" || return 1
+  printf '%s' "$out"
 }
 
-if [ "$#" -gt 0 ]; then
-  # Pathspec-scoped (autoplan). Globbing is off so the patterns reach git
-  # unexpanded — git does its own pathspec matching.
-  set -f
-  { git rev-parse HEAD 2>/dev/null
+# `set -e` is not in force, so the untracked half is computed FIRST and its
+# failure aborts the whole fingerprint. Inside a pipeline its exit status would
+# be discarded and the caller would receive a confidently wrong hash.
+UNTRACKED="$(untracked_content "$@")" || exit 0
+
+{ git rev-parse HEAD 2>/dev/null
+  if [ "$#" -gt 0 ]; then
     git status --porcelain -uall -- "$@" 2>/dev/null
     git diff HEAD -- "$@" 2>/dev/null
-    untracked_content "$@"
-  } | git hash-object --stdin 2>/dev/null
-else
-  { git rev-parse HEAD 2>/dev/null
+  else
     git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/"
     git diff HEAD -- . ":(exclude)$STATE_DIR/" 2>/dev/null
-    untracked_content
-  } | git hash-object --stdin 2>/dev/null
-fi
+  fi
+  printf '%s' "$UNTRACKED"
+} | git hash-object --stdin 2>/dev/null

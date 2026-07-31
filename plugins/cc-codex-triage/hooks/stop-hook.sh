@@ -52,8 +52,10 @@
 #   autoplan releases when the log size differs from it. It is advanced on
 #   every release so one verdict cannot release two cycles.
 #   fp_at_arming / released_fp are OPTIONAL: an armed file with neither is a
-#   pre-0.9 arming and keeps the old dirty-tree behaviour, so upgrading
-#   mid-task never silently changes a live gate.
+#   pre-0.9 arming and keeps the old dirty-tree behaviour UNTIL ITS FIRST
+#   RELEASE, at which point this hook writes released_fp and it follows the
+#   cycle model from then on. So an upgrade never changes a gate mid-cycle, and
+#   an old gate still picks up the fix rather than carrying the holes forever.
 #
 # Output contract: JSON {"decision":"block","reason":"..."} on stdout blocks
 # the stop; exit 0 with no JSON allows it. Never exit non-zero (fail-open).
@@ -129,10 +131,12 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # state dir). The caller must then fail OPEN: blocking without a persisted
   # counter would bypass the cap into unlimited blocking.
   local f="$1" b=$(( $2 + 1 ))
-  {
-    grep -v '^blocks=' "$f" 2>/dev/null
+  # stderr is silenced on the write itself: a read-only state dir otherwise
+  # prints a raw "…armed.tmp: Permission denied" next to the tidy explanation
+  # below, and the raw one is the confusing half.
+  { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
-  } > "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
+  } > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || { rm -f "$f.tmp" 2>/dev/null; return 1; }
   printf '%s' "$b"
 }
 
@@ -186,9 +190,60 @@ gate_baseline() { # $1=armed file — the code state this gate last RELEASED,
 }
 
 has_unreviewed_work() { # $1=baseline fp  $2=current fp  $3=legacy dirt predicate
-  [[ -n "$1" ]] || { "$3"; return; }   # pre-0.9 armed file → old behaviour
-  [[ -n "$2" ]] || return 1            # fingerprint unavailable → fail open
+  # Two ways to have no fingerprint to compare: a pre-0.9 armed file (no
+  # baseline recorded) or a fingerprint that could not be computed (script
+  # missing, git failure). BOTH fall back to the dirty-tree predicate. The
+  # second case used to disable the gate outright while the stderr note said
+  # it had fallen back — the note is now true, and a weakened gate beats none.
+  { [[ -n "$1" && -n "$2" ]]; } || { "$3"; return; }
   [[ "$1" != "$2" ]]
+}
+
+reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked at.
+  # The driver snapshots the code state when it dispatches, into
+  # <thread>.dispatch-fp. Releasing against THAT rather than the worktree at
+  # turn-end matters: code written after the verdict arrived but before the
+  # turn ended was never reviewed, and stamping it approved is precisely the
+  # leak this gate exists to prevent.
+  #
+  # A stale file (from an older dispatch on the same thread) is safe — it
+  # describes an EARLIER state, so the next turn sees a difference and blocks.
+  # Absent or malformed falls back to the caller's fingerprint, i.e. exactly
+  # the previous behaviour.
+  #
+  # WHOLE-TREE ONLY. The driver has no idea what pathspec a gate is scoped to,
+  # so it snapshots the whole tree — usable by autoreview, never by autoplan,
+  # whose fingerprint covers only the plan paths and would never compare equal.
+  local v
+  v="$(head -1 "$STATE_DIR/$1.dispatch-fp" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$v" =~ ^[0-9a-f]{40}$ ]] || v="$2"
+  printf '%s' "$v"
+}
+
+consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
+  # No cycle is open, so anything appended to the thread log since the last cut
+  # answers a question nobody asked. Leaving it there BANKS it: the next
+  # cycle's first evaluation finds that APPROVE already sitting past the offset
+  # and releases without a review.
+  #
+  # Not hypothetical — it is what /autoreview's own arming flow produces. The
+  # command writes fp_at_arming and then reviews existing work immediately, so
+  # that APPROVE lands while the fingerprint still equals fp_at_arming. No
+  # cycle is open to consume it, and the first genuinely new code after arming
+  # shipped ungated.
+  #
+  # Only 0.9 armed files are touched: a pre-0.9 file keeps 0.8 semantics
+  # entirely until its first release, which is what its documentation promises.
+  # Writes only when the log actually grew, so an idle turn costs one wc -c.
+  local f="$1" fp="$2" t="$3" now off
+  [[ -n "$fp" ]] || return 0                      # unknown state → change nothing
+  [[ -n "$(gate_baseline "$f")" ]] || return 0    # pre-0.9 file → leave alone
+  has_field "$f" log_bytes_at_arming || return 0
+  off="$(raw_field "$f" log_bytes_at_arming)"
+  is_num "$off" || return 0
+  now="$(log_size "$t")"
+  [[ "$now" -ne "$off" ]] || return 0
+  record_release "$f" "$fp" "$t" >/dev/null 2>&1 || true
 }
 
 record_release() { # $1=armed file $2=fingerprint $3=thread — start a new cycle.
@@ -205,16 +260,25 @@ record_release() { # $1=armed file $2=fingerprint $3=thread — start a new cycl
   #                        terminates any cycle that never earns an APPROVE,
   #                        so this cannot run away — only a real release
   #                        refills it.
-  # Returns non-zero if the rewrite failed; the caller releases anyway (a
-  # persisted counter is not worth withholding an earned APPROVE over).
+  # Diagnoses its own failure, because the two ways to fail need different
+  # advice and a single "could not persist (state dir not writable?)" was wrong
+  # half the time. Returns non-zero either way; the caller releases anyway (a
+  # persisted marker is not worth withholding an earned APPROVE over).
   local f="$1" fp="$2" size
-  [[ -n "$fp" ]] || return 1
+  if [[ -z "$fp" ]]; then
+    echo "cc-codex-triage: released, but the code fingerprint is unavailable so the release could not be recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
   size="$(log_size "$3")"
-  { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' "$f" 2>/dev/null
-    echo "released_fp=$fp"
-    echo "log_bytes_at_arming=$size"
-    echo "blocks=0"
-  } > "$f.tmp" && mv -f "$f.tmp" "$f"
+  if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+         echo "released_fp=$fp"
+         echo "log_bytes_at_arming=$size"
+         echo "blocks=0"
+       } > "$f.tmp" 2>/dev/null || ! mv -f "$f.tmp" "$f" 2>/dev/null; then
+    rm -f "$f.tmp" 2>/dev/null
+    echo "cc-codex-triage: released, but could not write $f (state dir not writable?) — the next turn may re-block. Re-arm to continue." >&2
+    return 1
+  fi
 }
 
 last_review_verdict() { # $1=thread $2=byte offset of the log at the cycle cut.
@@ -230,9 +294,10 @@ last_review_verdict() { # $1=thread $2=byte offset of the log at the cycle cut.
 # verdict" would block every cycle to its cap on a broken install. The gate is
 # skipped instead, loudly, touching no state.
 VERDICT_SH="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/last-verdict.sh}"
+VERDICT_SH_OK=1
 if [[ -z "$VERDICT_SH" || ! -f "$VERDICT_SH" ]]; then
-  echo "cc-codex-triage: last-verdict.sh not found next to the hook — cannot read thread verdicts, skipping the gates for this turn." >&2
-  allow
+  echo "cc-codex-triage: last-verdict.sh not found next to the hook — cannot read thread verdicts, skipping the autoreview gate for this turn." >&2
+  VERDICT_SH_OK=0
 fi
 
 # ── Gate TTL pre-pass ───────────────────────────────────────────────────────
@@ -272,12 +337,15 @@ fi
 
 # ── /autoreview ─────────────────────────────────────────────────────────────
 AR="$STATE_DIR/autoreview.armed"
-if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
+if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 ]]; then
   ar_branch="$(read_field "$AR" branch "")"
+  # Fingerprint only AFTER the branch check — it walks the worktree, and an
+  # armed gate on another branch should cost nothing.
+  if [[ "$ar_branch" == "$BRANCH" ]]; then
+  thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
+  is_thread "$thread" || thread="review-$BRANCH_SLUG"
   ar_fp="$(code_fingerprint)"
-  if [[ "$ar_branch" == "$BRANCH" ]] && has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code; then
-    thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="review-$BRANCH_SLUG"
+  if has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code; then
     lens="$(read_field "$AR" lens correctness)"
     is_review_lens "$lens" || lens=correctness
     cap="$(raw_field "$AR" cap)"
@@ -301,8 +369,7 @@ if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
         # APPROVE earned this cycle — release, and record WHAT it approved.
         # Without the record, this one verdict would keep releasing every
         # later turn no matter how much new unreviewed code was written.
-        record_release "$AR" "$ar_fp" "$thread" \
-          || echo "autoreview: released on APPROVE but could not persist the release marker (state dir not writable?) — the next turn may re-block. Re-arm with /autoreview on." >&2
+        record_release "$AR" "$(reviewed_fingerprint "$thread" "$ar_fp")" "$thread" || true   # diagnoses itself
       elif [[ "$blocks" -ge "$cap" ]]; then
         echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
       elif n="$(bump_blocks "$AR" "$blocks")"; then
@@ -311,6 +378,9 @@ if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
         echo "autoreview: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
       fi
     fi
+  else
+    consume_idle_verdicts "$AR" "$ar_fp" "$thread"
+  fi
   fi
 fi
 
@@ -318,10 +388,11 @@ fi
 AP="$STATE_DIR/autoplan.armed"
 if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
   ap_branch="$(read_field "$AP" branch "")"
+  if [[ "$ap_branch" == "$BRANCH" ]]; then
+  thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
+  is_thread "$thread" || thread="plan-$BRANCH_SLUG"
   ap_fp="$(code_fingerprint "${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}")"
-  if [[ "$ap_branch" == "$BRANCH" ]] && has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans; then
-    thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="plan-$BRANCH_SLUG"
+  if has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans; then
     lens="$(read_field "$AP" lens stress-test)"
     is_plan_lens "$lens" || lens=stress-test
     cap="$(raw_field "$AP" cap)"
@@ -345,8 +416,10 @@ if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
       # At least one dispatch on the plan thread this cycle — release, and
       # record the plan state it covered plus the new log baseline, so the
       # NEXT plan edit needs its OWN dispatch rather than coasting on this one.
-      record_release "$AP" "$ap_fp" "$thread" \
-        || echo "autoplan: released on a post-arming dispatch but could not persist the release marker (state dir not writable?) — the next turn may re-block. Re-arm with /autoplan on." >&2
+      # NOT reviewed_fingerprint here: the driver snapshots the WHOLE tree,
+      # while this gate compares a plan-pathspec fingerprint. Mixing the two
+      # would never compare equal and would block every turn to the cap.
+      record_release "$AP" "$ap_fp" "$thread" || true   # diagnoses itself
     elif [[ "$blocks" -ge "$cap" ]]; then
       echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
     elif n="$(bump_blocks "$AP" "$blocks")"; then
@@ -354,6 +427,9 @@ if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
     else
       echo "autoplan: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
     fi
+  else
+    consume_idle_verdicts "$AP" "$ap_fp" "$thread"
+  fi
   fi
 fi
 

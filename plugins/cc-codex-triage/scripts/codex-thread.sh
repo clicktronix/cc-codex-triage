@@ -752,6 +752,27 @@ porcelain() {
 REPO_ROOT="$(git -C . rev-parse --show-toplevel 2>/dev/null || true)"
 PRE_PORCELAIN="$(porcelain)"
 
+# ── code state at dispatch time (for the /autoreview gate) ────────────────
+# This is the state Codex is about to look at. The Stop hook records it as the
+# released fingerprint when this thread's verdict releases a cycle, instead of
+# fingerprinting the worktree at turn-end: anything written between the verdict
+# arriving and the turn ending was never reviewed, and stamping it as approved
+# is how unreviewed code slips through a gate that is doing its job.
+#
+# Best-effort in every direction. --oneshot leaves no state at all; outside a
+# repo, or with the fingerprint script missing, the file is simply absent and
+# the hook falls back to its own fingerprint (the previous behaviour).
+if ! $ONESHOT && [[ -n "$REPO_ROOT" && -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  _fp_sh="$CLAUDE_PLUGIN_ROOT/scripts/gate-fingerprint.sh"
+  if [[ -f "$_fp_sh" ]]; then
+    _fp="$( cd "$REPO_ROOT" && bash "$_fp_sh" 2>/dev/null || true )"
+    if [[ -n "$_fp" ]]; then
+      mkdir -p "$STATE_DIR" 2>/dev/null || true
+      printf '%s\n' "$_fp" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # ── resolve thread ─────────────────────────────────────────────────────────
 MODE=""
 SID=""

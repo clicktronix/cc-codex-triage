@@ -67,7 +67,7 @@ Runaway-safe: the round cap is the hard terminator **per cycle** (counters are n
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoreview.armed`. Branch-scoped — switching branches disengages it until you re-arm (or switch back).
-- Fields: `branch`, `thread`, `lens`, `cap`, `blocks`, `log_bytes_at_arming`, `armed_at`, `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook on each release). An armed file with neither fingerprint field is a pre-0.9 arming and keeps the old dirty-tree behaviour, so an upgrade never silently changes a gate that is already in flight — re-arm to pick up the cycle model.
+- Fields: `branch`, `thread`, `lens`, `cap`, `blocks`, `log_bytes_at_arming`, `armed_at`, `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook on each release). An armed file with neither fingerprint field is a pre-0.9 arming: it keeps the old dirty-tree behaviour **until its first release**, at which point the hook writes `released_fp` and it follows the cycle model from then on. So an upgrade never changes a gate mid-cycle, and an old gate still picks up the fix instead of carrying the holes until you happen to re-arm.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Each blocked round is a full Codex dispatch when you run `/review` — cap defaults to 3 and bounds ONE cycle; a cycle that reaches APPROVE gets a fresh budget for the next one.
 - Pairs with `/autoplan` (same hook, plan-document gate).

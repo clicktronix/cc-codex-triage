@@ -374,6 +374,21 @@ printf 'PROMPT:\n  APPROVE\n' > "$VLOG"
 printf 'REPLY:\n  ## APPROVE\n' > "$VLOG"
 [[ "$(bash "$VSH" "$VLOG" 0)" == "APPROVE" ]] && ok "status.sh and the hook share this one parser" || bad "shared parser mismatch"
 
+echo "== fingerprint: an unreadable untracked path fails OPEN, never truncates =="
+# git hash-object --stdin-paths die()s on the first path it cannot read and
+# stops. Unchecked, the hash moves once and then reports "unchanged" forever,
+# so every file sorting after the bad one becomes invisible to the gate.
+git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null
+echo v1 > zzz.txt
+FP_BEFORE="$(fp_now)"
+ln -s /nonexistent/target aaa-dangling
+[[ -z "$(fp_now)" ]] && ok "dangling symlink -> empty fingerprint (caller fails open)" || bad "produced a hash despite an unreadable path"
+echo v2 > zzz.txt
+[[ -z "$(fp_now)" ]] && ok "and stays empty rather than silently ignoring the edit" || bad "truncated hash returned"
+rm -f aaa-dangling
+[[ -n "$(fp_now)" && "$(fp_now)" != "$FP_BEFORE" ]] && ok "recovers once the path is readable, edit visible" || bad "did not recover"
+rm -f zzz.txt
+
 echo "== fingerprint: identical state hashes identically, any change moves it =="
 git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null
 FP_A="$(fp_now)"
@@ -458,17 +473,98 @@ git add -A >/dev/null && git commit -qm "legacy commit"
 expect_allow "legacy file: committing still releases (documented old behaviour)"
 rm -f "$SD/autoreview.armed"
 
-echo "== a missing fingerprint script fails OPEN, loudly =="
+echo "== a missing fingerprint script degrades to the dirty-tree test, loudly =="
+# The stderr note says the gate "falls back to the dirty-tree test". It has to
+# actually do that: disabling the gate while telling the user it is running in
+# a weakened mode is worse than either honest option.
 BASE="$(fp_now)"
 arm_review_fp main review-main 3 0 0 "$BASE"
 echo unreviewed >> f.txt
 expect_block "precondition: blocks while the script is present"
 HOOK_DIR="$(dirname "$HOOK")"; mv "$HOOK_DIR/../scripts/gate-fingerprint.sh" "$T/fp.bak"
-expect_allow "no fingerprint script -> fail open"
+expect_block "no fingerprint script -> still gates, via the legacy dirty test"
 grep -q "gate-fingerprint.sh not found" "$ERR" && ok "loud warning names the missing script" || bad "silent fallback"
+git add -A >/dev/null && git commit -qm "clean for the degraded-mode check"
+expect_allow "degraded mode allows a clean tree (documented weaker guarantee)"
 mv "$T/fp.bak" "$HOOK_DIR/../scripts/gate-fingerprint.sh"
 rm -f "$SD/autoreview.armed"
-git add -A >/dev/null && git commit -qm "settle 2"
+git add -A >/dev/null && git commit -qm "settle 2" >/dev/null 2>&1
+
+echo "== a verdict landing outside an open cycle does not bank =="
+# THE hole a code review found. With no cycle open the hook used to exit
+# without advancing the offset, so an APPROVE appended in that window sat past
+# the cut and released the NEXT cycle for free.
+git add -A >/dev/null && git commit -qm "settle before bank test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work" >> f.txt
+expect_block "cycle 1 opens"
+reply_log APPROVE
+expect_allow "cycle 1 releases"
+# Now an extra round arrives while nothing is open — /reply, a re-review, a
+# stray dispatch. It answers no open cycle and must not be spendable later.
+printf 'REPLY:\n  APPROVE\n---\nREPLY:\n  APPROVE\n' > "$SD/review-main.log"
+expect_allow "an idle extra APPROVE is allowed through (nothing is open)"
+OFF="$(sed -n 's/^log_bytes_at_arming=//p' "$SD/autoreview.armed")"
+[[ "$OFF" == "$(logsize "$SD/review-main.log")" ]] && ok "the idle verdict was consumed, not banked" || bad "offset stale at '$OFF' (log is $(logsize "$SD/review-main.log"))"
+echo "brand new unreviewed code" >> f.txt
+expect_block "the next cycle still needs its OWN review (was: released free)"
+
+echo "== the /autoreview arming flow itself cannot leak the first change =="
+# /autoreview on writes fp_at_arming and THEN reviews existing work, so that
+# APPROVE lands while the fingerprint still equals fp_at_arming. That is the
+# sequence which shipped the first genuinely new change ungated.
+git add -A >/dev/null && git commit -qm "settle before arming-flow test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"     # armed on a clean tree
+reply_log APPROVE                                     # the arming-time review
+expect_allow "clean tree right after arming -> allow"
+echo "first real change after arming" >> f.txt
+expect_block "the first change after arming is gated (was: allowed)"
+
+echo "== release records what CODEX saw, not the tree at turn-end =="
+# Code written after the verdict arrives but before the turn ends was never
+# reviewed. Releasing against the driver's dispatch-time snapshot keeps it
+# gated; releasing against the worktree at Stop would stamp it approved.
+git add -A >/dev/null && git commit -qm "settle before dispatch-fp test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "reviewed change" >> f.txt
+expect_block "cycle opens"
+printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"   # what the driver snapshots
+reply_log APPROVE
+echo "snuck in after the verdict" >> f.txt                  # never reviewed
+expect_allow "the approved state releases this turn"
+expect_block "the code added after the verdict is still gated"
+rm -f "$SD/review-main.dispatch-fp"
+# A malformed snapshot must not poison the release — fall back to the hook's own.
+git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "x" >> f.txt; expect_block "cycle opens"
+echo "not-a-fingerprint" > "$SD/review-main.dispatch-fp"
+reply_log APPROVE
+expect_allow "a malformed dispatch-fp falls back instead of blocking forever"
+rm -f "$SD/review-main.dispatch-fp" "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
+
+echo "== a pre-0.9 armed file adopts the cycle model at its FIRST release =="
+# The compatibility promise is "keeps the old behaviour UNTIL its first
+# release", not "forever". The old test only exercised clean/dirty/commit and
+# never reached a release, so it could not have caught this either way.
+: > "$SD/review-main.log"
+arm_review main review-main 3 0 0        # legacy: no fp_at_arming
+echo legacy-work >> f.txt
+expect_block "legacy file blocks on a dirty tree"
+reply_log APPROVE
+expect_allow "legacy file releases on APPROVE"
+[[ -n "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "released_fp now present: it has joined the cycle model" \
+  || bad "legacy file did not adopt the cycle model on release"
+echo "post-release code" >> f.txt
+expect_block "and it now gates new code like a 0.9 gate"
+rm -f "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
 
 echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
 mkdir -p docs/plans

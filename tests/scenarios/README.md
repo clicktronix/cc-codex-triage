@@ -138,9 +138,20 @@ are unreproducible — capable agents already do the right thing, so those
 sections were kept narrow or demoted. This is the eval doing its job: it stopped
 hypotheses from masquerading as validated guidance.
 
-**Not covered by a scenario.** The `codex-second-opinion` skill (added
-2026-08-01) ships with **no baseline at all**, and this is the honest place to
-say so. It is an entry point rather than a behavioural claim — it exists because
+**Not covered by a scenario.** Two additions from 2026-08-01 ship with **no
+baseline at all**, and this is the honest place to say so.
+
+The **one-feature-one-thread** routing rule in `codex-triage` (point `/ask`,
+`/plan` and `/debate` at a single per-feature thread; split past ~10 rounds or
+~100 KB) is derived, not measured. The two constraints inside it are verified
+facts — `codex exec resume` takes no `-s`, and production feature threads reach
+~130 KB by round 9 — but the claim that an agent left to itself scatters a
+feature across three threads, and that doing so measurably costs something, was
+never tested. The thresholds in particular are round numbers, not findings. The
+RED would be: give an agent a multi-step feature task with the plugin available
+and see how many distinct threads it opens unprompted.
+
+The **`codex-second-opinion`** skill has no baseline either. It is an entry point rather than a behavioural claim — it exists because
 every command in the plugin is `disable-model-invocation`, so an agent that
 wanted a third opinion had to read a 100-line command file to get one. The
 claim it *would* need a RED for is narrower: "an agent stuck at a fork the

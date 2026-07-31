@@ -34,9 +34,11 @@ full.
   fired again however much the plan was rewritten.
 
   Backwards compatible: an armed file with neither `fp_at_arming` nor
-  `released_fp` is a pre-0.9 arming and keeps the old dirty-tree behaviour, so
-  upgrading mid-task never silently changes a live gate. Re-arm to pick up the
-  cycle model.
+  `released_fp` is a pre-0.9 arming, and keeps the old dirty-tree behaviour
+  until its first release — after which the hook records `released_fp` and it
+  follows the cycle model. An upgrade therefore never changes a gate
+  mid-cycle, and an old gate still picks up the fix rather than carrying the
+  holes until someone re-arms.
 
 - **A review verdict the gate can actually read.** The review
   `output_contract` asked for "Last line is the verdict" while the parsers

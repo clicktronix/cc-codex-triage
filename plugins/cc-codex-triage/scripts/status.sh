@@ -33,6 +33,7 @@ REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (
 # implementation here would eventually report an APPROVE the gate does not
 # accept, which reads as the gate being broken. Prints '-' when none.
 VERDICT_SH="$(cd "$(dirname "$0")" && pwd)/last-verdict.sh"
+FP_SH="$(cd "$(dirname "$0")" && pwd)/gate-fingerprint.sh"
 last_verdict() {
   local v
   v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" 0 2>/dev/null)"
@@ -53,13 +54,14 @@ fi
 echo "cc-codex-triage status"
 echo "  repo branch : $BRANCH"
 
+plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"   # also read by the cycle-state check below
 if $IN_GIT; then
   code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
-  plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
   # Word-split the pathspecs (intentional) but disable shell globbing so they
   # reach git unexpanded — git does its own pathspec matching. shellcheck disable=SC2086
   plan_changes=$( set -f; git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ' )
   echo "  working tree: ${code_changes:-0} code change(s), ${plan_changes:-0} plan-doc change(s)"
+  echo "                (a dirty tree is NOT what the gates compare — see 'cycle' below)"
 fi
 
 # Codex CLI presence + version vs the documented minimum.
@@ -143,7 +145,26 @@ for kind in autoreview autoplan; do
   if [ -n "$at" ] && [ ! -f "$STATE_DIR/$at.log" ] && [ ! -f "$STATE_DIR/$at.id" ]; then
     echo "      WARNING target thread '$at' has no log/id on disk — the gate cannot find it. Did you run /$base with a different --thread name?"
   fi
-  [ -n "$at" ] && echo "      last verdict on $at (whole log — the gate releases only on an APPROVE made AFTER arming): $(last_verdict "$at")"
+  # Cycle state. Without this, /status reported a clean tree while the hook was
+  # blocking on unreviewed committed work, and /status is exactly where someone
+  # goes to understand a block they did not expect.
+  if [ -n "$(field "$f" released_fp)$(field "$f" fp_at_arming)" ]; then
+    case "$base" in
+      autoplan) fp_now="$( set -f; bash "$FP_SH" $plan_paths 2>/dev/null )" ;;
+      *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
+    esac
+    fp_base="$(field "$f" released_fp)"; [ -n "$fp_base" ] || fp_base="$(field "$f" fp_at_arming)"
+    if [ -z "$fp_now" ]; then
+      echo "      cycle: UNKNOWN — the code fingerprint could not be computed; the gate falls back to its dirty-tree test"
+    elif [ "$fp_now" = "$fp_base" ]; then
+      echo "      cycle: at baseline — nothing to review, the gate will not fire"
+    else
+      echo "      cycle: OPEN — the code differs from the last released state; this gate blocks until a verdict inside this cycle"
+    fi
+  else
+    echo "      cycle: n/a — armed before 0.9, still using the dirty-tree test until its first release"
+  fi
+  [ -n "$at" ] && echo "      last verdict on $at (whole log — the gate releases only on a verdict made INSIDE the current cycle): $(last_verdict "$at")"
 done
 [ "$shown" = 0 ] && echo "  (none)"
 echo "  note: 'cap' counts hook-blocks (gated turn-ends), NOT Codex review rounds."

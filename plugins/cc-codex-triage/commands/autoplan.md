@@ -63,7 +63,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoplan.armed`. Branch-scoped.
-- Fields mirror `/autoreview`, including `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook). An armed file with neither is a pre-0.9 arming and keeps the old dirty-tree behaviour.
+- Fields mirror `/autoreview`, including `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook). An armed file with neither is a pre-0.9 arming: dirty-tree behaviour until its first release, cycle model after it.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Plan-doc detection covers `docs/plans/` and `docs/PLANS/` by default. For other layouts, set `CC_CODEX_PLAN_PATHS` (space-separated pathspecs, e.g. `CC_CODEX_PLAN_PATHS="docs/rfcs planning"`) in your environment — the hook and the arming check both honor it. Or use `/plan` manually.
 - Pairs with `/autoreview` (same hook, code gate).
