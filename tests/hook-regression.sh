@@ -166,6 +166,12 @@ arm_review main review-main 3 0 0
 expect_allow "450-line reply ending in APPROVE releases (no tail window)"
 
 echo "== verdict literal inside a PROMPT section cannot fake APPROVE =="
+# A log OPENING with PROMPT never sets the in-reply flag, so it would pass even
+# without the section rule. The load-bearing order is reply-then-prompt: a
+# /reply quoting "earlier you said APPROVE" must not release the gate.
+printf 'REPLY:\n  REQUEST_CHANGES\n---\nPROMPT:\n  earlier you said: APPROVE\n  APPROVE\n' > "$SD/review-main.log"
+arm_review main review-main 3 0 0
+expect_block "APPROVE quoted back in a later PROMPT does not release"
 printf 'PROMPT:\n  earlier you said: APPROVE\n  APPROVE\nREPLY:\n  no verdict here\n---\n' > "$SD/review-main.log"
 arm_review main review-main 3 0 0
 expect_block "standalone APPROVE in PROMPT does not release"
@@ -324,6 +330,49 @@ arm_review_fp() { # branch thread cap blocks log_bytes fp
     "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoreview.armed"
 }
 reply_log() { printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"; }   # overwrite: one verdict, at offset 0
+
+echo "== verdict parser: the formats Codex actually writes =="
+VSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/last-verdict.sh"
+VLOG="$T/verdict.log"
+v() { # $1 = reply body line, $2 = expected verdict ('-' for none)
+  printf 'REPLY:\n%s\n' "$1" > "$VLOG"
+  local got; got="$(bash "$VSH" "$VLOG" 0)"; got="${got:--}"
+  [[ "$got" == "$2" ]] && ok "[$1] -> $2" || bad "[$1] -> got '$got', want '$2'"
+}
+# Accepted: the contract asks for a bare verdict, but a production thread went
+# five rounds without one matching, so emphasis and heading marks are tolerated.
+v '  APPROVE'                 APPROVE
+v '  ## APPROVE'              APPROVE
+v '  ## Verdict: APPROVE'     APPROVE
+v '  **APPROVE**'             APPROVE
+v '  __APPROVE__'             APPROVE
+v '  Verdict: **APPROVE**'    APPROVE
+v '  Verdict: APPROVE.'       APPROVE
+v '  COMMENT'                 COMMENT
+# The underscore in REQUEST_CHANGES is why the strip is anchored to the line
+# ENDS: a global strip of emphasis characters turns it into REQUESTCHANGES and
+# silently stops every change request from being seen.
+v '  REQUEST_CHANGES'         REQUEST_CHANGES
+v '  REQUEST_CHANGES---'      REQUEST_CHANGES
+v '  ## REQUEST_CHANGES'      REQUEST_CHANGES
+# Refused: any line carrying other words. Tolerating those would also accept
+# the first of these, which is a REFUSAL to approve.
+v '  ## Verdict: very close, but not quite APPROVE'  -
+v '  I would not give APPROVE here'                  -
+v '  **Final review decision: APPROVE.**'            -
+v '  APPROVE the migration first'                    -
+# Section boundary. The order matters: a log that OPENS with PROMPT never sets
+# the in-reply flag, so it passes whether or not the boundary rule exists. The
+# real hazard is a reply followed by a /reply quoting the word back.
+printf 'REPLY:\n  REQUEST_CHANGES\n---\nPROMPT:\n  earlier you said: APPROVE\n  APPROVE\n' > "$VLOG"
+[[ "$(bash "$VSH" "$VLOG" 0)" == "REQUEST_CHANGES" ]] \
+  && ok "a verdict quoted back inside a later PROMPT cannot override the reply" \
+  || bad "PROMPT-section verdict leaked (got '$(bash "$VSH" "$VLOG" 0)')"
+printf 'PROMPT:\n  APPROVE\n' > "$VLOG"
+[[ -z "$(bash "$VSH" "$VLOG" 0)" ]] && ok "a log that opens with a PROMPT yields no verdict" || bad "PROMPT-only log produced a verdict"
+# The gate and /status must never disagree about the same log.
+printf 'REPLY:\n  ## APPROVE\n' > "$VLOG"
+[[ "$(bash "$VSH" "$VLOG" 0)" == "APPROVE" ]] && ok "status.sh and the hook share this one parser" || bad "shared parser mismatch"
 
 echo "== fingerprint: identical state hashes identically, any change moves it =="
 git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null

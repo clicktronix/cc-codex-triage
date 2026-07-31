@@ -28,19 +28,14 @@ cd "$ROOT" || { echo "Not inside a git repository — no thread state to report.
 STATE_DIR=".claude/codex-threads"
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
-# Last standalone verdict from a thread log — REPLY sections only, whole log
-# (same marker/section rules as the Stop hook, minus the arming offset since
-# this is informational). Prints '-' when none.
+# Last verdict from a thread log — whole log, no offset, since this is
+# informational. Delegates to the SAME parser the Stop hook uses: a second
+# implementation here would eventually report an APPROVE the gate does not
+# accept, which reads as the gate being broken. Prints '-' when none.
+VERDICT_SH="$(cd "$(dirname "$0")" && pwd)/last-verdict.sh"
 last_verdict() {
-  local log="$STATE_DIR/$1.log"
-  [ -f "$log" ] || { printf '%s' '-'; return; }
   local v
-  v="$(awk '
-    /^REPLY:/            { r=1; next }
-    /^(PROMPT:|---$|\[)/ { r=0; next }
-    r && /^[[:space:]]*([Vv]erdict:[[:space:]]*)?(APPROVE|REQUEST_CHANGES|COMMENT)(---)?[[:space:]]*$/ { v=$0 }
-    END { if (v!="") print v }
-  ' "$log" | grep -oE 'APPROVE|REQUEST_CHANGES|COMMENT' | tail -1)"
+  v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" 0 2>/dev/null)"
   printf '%s' "${v:--}"
 }
 

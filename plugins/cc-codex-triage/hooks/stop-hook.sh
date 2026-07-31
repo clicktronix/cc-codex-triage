@@ -217,33 +217,23 @@ record_release() { # $1=armed file $2=fingerprint $3=thread — start a new cycl
   } > "$f.tmp" && mv -f "$f.tmp" "$f"
 }
 
-last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.
-  # Standalone verdict line from REPLY sections ONLY, and only from log content
-  # APPENDED AFTER ARMING. Two protections in one:
-  #   - section tracking: the driver writes column-0 markers (PROMPT:/REPLY:/
-  #     ---/[timestamp]) and indents body lines by two spaces, so a verdict
-  #     literal inside a logged PROMPT (e.g. a /reply quoting "earlier you
-  #     said: APPROVE") can never release the gate;
-  #   - the arming offset: a stale pre-arming APPROVE can never release, even
-  #     if later non-verdict rounds (a /reply) bump the round counter.
-  # No line-count window: a single long reply cannot push its verdict out of
-  # scope. tail -c may start mid-line/mid-section; until a column-0 REPLY:
-  # marker is seen, lines are conservatively ignored (blocks toward the cap,
-  # never falsely releases).
-  local log="$STATE_DIR/$1.log" off="${2:-0}" size
-  [[ -f "$log" ]] || return 0
-  size="$(wc -c 2>/dev/null < "$log" | tr -d ' ')"
-  is_num "$size" || size=0
-  # Log smaller than the arming offset = rotated or reset since arming; all
-  # surviving content is post-arming, so parse the whole current log.
-  [[ "$size" -lt "$off" ]] && off=0
-  tail -c +"$(( off + 1 ))" "$log" 2>/dev/null | awk '
-    /^REPLY:/            { r = 1; next }
-    /^(PROMPT:|---$|\[)/ { r = 0; next }
-    r && /^[[:space:]]*([Vv]erdict:[[:space:]]*)?(APPROVE|REQUEST_CHANGES|COMMENT)(---)?[[:space:]]*$/ { v = $0 }
-    END { if (v != "") print v }
-  ' | grep -oE 'APPROVE|REQUEST_CHANGES|COMMENT' | tail -1
+last_review_verdict() { # $1=thread $2=byte offset of the log at the cycle cut.
+  # Delegates to the ONE canonical parser, which /status also calls — the two
+  # disagreeing would mean /status reporting an APPROVE while the gate keeps
+  # blocking on the same log. Availability is settled once, just below.
+  bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${2:-0}" 2>/dev/null
 }
+
+# Resolved once. A missing parser means the gate cannot evaluate at all, and it
+# must not guess in EITHER direction: a faked APPROVE would record a
+# released_fp and mark unreviewed code as approved, while treating it as "no
+# verdict" would block every cycle to its cap on a broken install. The gate is
+# skipped instead, loudly, touching no state.
+VERDICT_SH="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/last-verdict.sh}"
+if [[ -z "$VERDICT_SH" || ! -f "$VERDICT_SH" ]]; then
+  echo "cc-codex-triage: last-verdict.sh not found next to the hook — cannot read thread verdicts, skipping the gates for this turn." >&2
+  allow
+fi
 
 # ── Gate TTL pre-pass ───────────────────────────────────────────────────────
 # An armed gate older than 14 days is stale — a month-old gate re-firing on a

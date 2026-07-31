@@ -36,7 +36,16 @@ Labels: issue | suggestion | question | nitpick | praise | todo | chore | note
 Decorations: (blocking) | (non-blocking) | (if-minor)
 Cite file:line for every finding. Do NOT restate the diff. Do NOT edit files — report only.
 Skip nitpicks unless a file has no higher-severity finding; skip praise unless non-obviously well done.
-Last line is the verdict: APPROVE | REQUEST_CHANGES | COMMENT. Use REQUEST_CHANGES only when at least one (blocking) finding remains.
+On a follow-up round, report only what CHANGED: findings whose status moved (resolved / partial /
+not addressed) and genuinely new ones. Every still-open non-blocking item from earlier rounds is
+carried as ONE line at the end — `carried over (non-blocking): <count> — <short titles>` — never
+re-stated as a block. Re-listing an unchanged nitpick in full makes a converging round read as a
+stalled one and buys another round for nothing.
+End your message with the verdict ALONE on its own final line — exactly APPROVE, REQUEST_CHANGES or
+COMMENT and nothing else on that line. Not `**Final review decision: APPROVE.**`, not a sentence that
+happens to contain the word: a program reads that line to decide whether the review loop is finished,
+and a verdict buried in prose reads as no verdict at all. Use REQUEST_CHANGES only when at least one
+(blocking) finding remains.
 Honour AGENTS.md if present.
 </output_contract>
 
@@ -69,7 +78,9 @@ When you find a gap of some class (e.g. an uncovered ingress path, a missing
 rollback step), enumerate ALL instances of that class in this round — do not
 surface one per round.
 
-End with a standalone verdict line: APPROVE | REQUEST_CHANGES | COMMENT.
+End your message with the verdict ALONE on its own final line — exactly
+APPROVE, REQUEST_CHANGES or COMMENT and nothing else on that line, not a
+sentence that happens to contain the word. A program reads that line.
 APPROVE = the plan is sound to execute as written; REQUEST_CHANGES = at least
 one blocking gap remains; COMMENT = only minor or optional concerns. Use
 REQUEST_CHANGES only for a genuinely blocking gap — do not hold APPROVE on
