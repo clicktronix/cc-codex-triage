@@ -59,6 +59,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - **APPROVE** → done.
    - **only `(non-blocking)`/`(if-minor)` items remain** → done; report them, do not loop on nitpicks (the verdict contract already keeps those out of `REQUEST_CHANGES`).
    - **`--cap` rounds reached** → stop and tell the user the open findings — do not keep looping.
+   - **the loop is diverging** → two rounds running whose blocking findings are entirely NEW classes, with nothing carried over from the previous round. Stop and put it to the user: back to `/plan`, or cut the scope. Per skill `codex-triage` ("when the review loop is the wrong tool") — the design is being discovered through review at one paid dispatch per decision. Judge by repeat structure, not round count: a long thread whose blocking count is falling and whose findings are repairs of earlier ones is converging and must not be interrupted.
    A finding you've refuted with file:line is resolved; if Codex still holds it, **escalate to the user** (they lower the bar or accept the open item) — do not fix a wrong finding just to release.
 
 ## Findings ledger (machine-readable history, needs `jq`)

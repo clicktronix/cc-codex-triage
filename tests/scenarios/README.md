@@ -115,9 +115,32 @@ Added 2026-06-09 (run against fresh subagents the same day):
   still holding the core behaviour — the measured onset of sequential-rebuttal
   capitulation. Anti-capitulation rules kept.
 
-**Net:** of six scenarios, one is a consistent RED (`resume-failure-handling`),
-one has a documented production RED in its real regime (`fix-neighborhood`),
-one is a narrow partial (`debate-capitulation`), and three are unreproducible —
-capable agents already do the right thing, so those sections were kept narrow
-or demoted. This is the eval doing its job: it stopped hypotheses from
-masquerading as validated guidance.
+Added 2026-08-01:
+
+- **`review-divergence.json`** — **PRODUCTION RED, no synthetic baseline.**
+  Same standing as `fix-neighborhood`: the failure needs a task whose design is
+  genuinely unfinished, and any fixture cheap enough to probe is small enough to
+  converge, so no fresh-subagent RED was dispatched. The RED is stokli/backend's
+  `review-refactor-266-thread-execution-lease` — 13 rounds, never an APPROVE,
+  **zero repeated findings**, after that task's plan thread ended on
+  `REQUEST_CHANGES` and implementation started anyway. The contrast case
+  (marqa/platform `review-feat-400-analytics-ui`: 9 rounds, blocking findings
+  decaying 10 → 0, mostly repairs) is why the rule keys on repeat structure and
+  not round count — a round-count trigger would have stopped a converging
+  review. Method: indexed all 37 thread logs across stokli and marqa (187
+  replies), extracted verdicts and finding headers per round, read the divergent
+  threads in full.
+
+**Net:** of seven scenarios, one is a consistent RED (`resume-failure-handling`),
+two have documented production REDs in their real regime (`fix-neighborhood`,
+`review-divergence`), one is a narrow partial (`debate-capitulation`), and three
+are unreproducible — capable agents already do the right thing, so those
+sections were kept narrow or demoted. This is the eval doing its job: it stopped
+hypotheses from masquerading as validated guidance.
+
+**On production REDs.** Two of seven claims rest on observed production
+behaviour rather than a dispatched probe. That is weaker evidence about *what a
+fresh agent would do unaided* and stronger evidence about *what actually goes
+wrong at scale*. Both say so in their `verdict` field and in
+`references/test-provenance.md`; neither is presented as a reproduced synthetic
+baseline. If a cheap multi-round harness appears, they are the two to re-test.

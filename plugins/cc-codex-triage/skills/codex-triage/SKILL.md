@@ -158,6 +158,21 @@ When fixing a review finding, treat it as an instance of a **problem class**, no
 
 A fix that addresses only the cited line invites the next round to flag the sibling — every such round costs a full Codex dispatch.
 
+## When the review loop is the wrong tool
+
+*Rule strength: production RED, no synthetic baseline — the failure needs a task whose design is genuinely unfinished, and any fixture cheap enough to probe is small enough to converge. Baselines: [references/test-provenance.md](references/test-provenance.md), scenario `review-divergence`.*
+
+Iterating to APPROVE assumes the review is **closing** a known design. Check each round which regime you are in:
+
+- **Converging** — this round's findings are repairs of earlier ones (still open, partially fixed, a sibling of the same invariant, an ordering correction), and the blocking count is falling. Keep going; this is what the loop is for.
+- **Diverging** — this round's blocking findings are **new classes** with nothing carried over, and it has happened two rounds running. The design is being discovered through review rather than validated by it, one paid dispatch at a time.
+
+**Round count is not the signal — repeat structure is.** A 9-round thread whose blocking findings decay 10 → 6 → 3 → … → 0 is healthy and must not be interrupted. A 3-round thread that produces three unrelated blocking classes is already diverging.
+
+On divergence, stop dispatching and put it to the user: go back to `/plan` on the design, or cut the scope to something the current design covers. Say plainly that the findings are real and the review is working — it is being asked to do design work, which costs one full dispatch per decision and is the most expensive way to make one.
+
+**A plan thread that never reached APPROVE predicts this.** If `/plan` ended on `REQUEST_CHANGES` or its cap and implementation started anyway, expect the review to collect the difference. Check `<plugin>/scripts/status.sh` output (or the plan thread's last verdict) before opening a long review loop.
+
 ## Self-verification gates (`/autoreview`, `/autoplan`)
 
 Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch already has changes, run the review flow on it immediately (no manual step); then a Stop hook blocks the end of every future turn whose code differs from the last state the gate released, until the per-branch review thread reaches an **APPROVE earned inside that cycle** or the round cap. `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until the plan thread has seen one dispatch within the cycle (the gate detects thread-log growth, not command identity).
