@@ -4,6 +4,113 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-01
+
+Closes the gaps that stopped the review loop rather than loosened it, found by
+auditing 37 real thread logs across stokli and marqa (187 replies): every
+verdict and finding header extracted per round, the divergent threads read in
+full.
+
+### Fixed
+
+- **The gates no longer go quiet at the moment the next round is owed.**
+  `/autoreview` and `/autoplan` decided "is there work?" from
+  `git status --porcelain` and "is it approved?" from the last verdict in the
+  thread log. Both answers were wrong, and both reproduce:
+  - committing the fixes made the tree clean, so the gate allowed the turn to
+    end with the thread's last verdict still `REQUEST_CHANGES`;
+  - the first APPROVE stayed the last parsed verdict for the rest of the
+    arming, releasing every later turn no matter how much new unreviewed code
+    was written.
+
+  Both gates now work in **cycles**. A cycle opens when the code differs from
+  the last released state and closes on a verdict earned inside it; each
+  release re-baselines the approved fingerprint, the verdict window and the
+  round budget together. The fingerprint (new
+  `scripts/gate-fingerprint.sh`, shared by the hook and both arming commands)
+  covers `HEAD`, the porcelain status, the tracked diff and **untracked file
+  content** — the last of those because a plan document is untracked for its
+  whole first life, and without it an autoplan gate released once and never
+  fired again however much the plan was rewritten.
+
+  Backwards compatible: an armed file with neither `fp_at_arming` nor
+  `released_fp` is a pre-0.9 arming and keeps the old dirty-tree behaviour, so
+  upgrading mid-task never silently changes a live gate. Re-arm to pick up the
+  cycle model.
+
+- **A review verdict the gate can actually read.** The review
+  `output_contract` asked for "Last line is the verdict" while the parsers
+  required a line consisting of nothing but the verdict. Codex legitimately
+  writes `## APPROVE`. In one production thread **not one of five replies
+  matched**, on a branch that was in fact approved — so the gate could never
+  release and spent its whole cap on approved work. The contract now says the
+  verdict stands alone on its own final line, and says why. The parser is now
+  one script (`scripts/last-verdict.sh`, shared by the hook and `/status`,
+  which previously carried separate copies) that trims heading marks and
+  emphasis from the line ends and then compares exactly — accepting
+  `## APPROVE` and `**APPROVE**` while still refusing "not quite APPROVE".
+  Measured across the 187 production replies: 178 parsed before, 180 now.
+
+- **Non-blocking findings are carried, not restated.** In
+  `review-feat-400-analytics-ui` the same four non-blocking items were
+  re-listed in full across rounds 2–6, one through round 7. The verdict was
+  never wrong — `REQUEST_CHANGES` was correctly reserved for blocking items —
+  but a converging round read as a stalled one, and each restatement bought
+  another round. Still-open non-blocking items now carry as one
+  count-and-titles line.
+
+- **`/ask` can target a thread.** It was pinned to a single repo-wide `ask`
+  thread with no override, contradicting the one-task-one-thread rule stated in
+  the same document. It now takes `--thread`, and only applies its read-only
+  default on an initial dispatch — `codex exec resume` accepts no `-s`, so
+  passing it on a resume set a flag Codex ignores.
+
+- **The comparison table in `README.md`** claimed an open-ended round cap,
+  false since `/review` and `/plan` gained `--cap` (default 5).
+
+- **The skill's exit-code list** omitted 2 and 3; exit 3 (dispatch failed) is
+  the most common real failure and had no documented meaning.
+
+- **`tests/driver-regression.sh`** symlinked `command -v python3` — a pyenv
+  shim — into a minimal PATH farm where the shim cannot resolve, so the suite
+  failed 2 on the maintainer's own machine while the product path was fine.
+
+### Added
+
+- **A divergence criterion: when the review loop is the wrong tool.**
+  `review-refactor-266-thread-execution-lease` ran 13 rounds over three days,
+  never reached APPROVE, and repeated **not one finding** — each round produced
+  2–5 new blocking classes. That task's plan thread had ended at round 6 on
+  `REQUEST_CHANGES` the day before implementation started. The rule keys on
+  repeat structure rather than round count, because a 9-round thread whose
+  blocking findings decay 10 → 0 is converging and must not be interrupted.
+  Ships with `tests/scenarios/codex-triage/review-divergence.json`, a
+  production RED with no synthetic baseline, which says so.
+
+- **Skill `codex-second-opinion`** — the one part of this plugin Claude may
+  invoke itself. Every slash command is `disable-model-invocation`, so an agent
+  wanting a third opinion mid-task had to read a 101-line command file to get
+  one. This is a single bounded dispatch for a fork the repository cannot
+  settle, an irreversible change, or two sources that contradict each other. It
+  announces the cost before spending it, spends exactly one dispatch, and never
+  targets a `review-<branch>` gate thread. It ships with **no baseline**, and
+  `tests/scenarios/README.md` records both that fact and the RED that would
+  test it.
+
+- **The one-feature-one-thread convention.** Thread defaults are per *command
+  kind*, so a feature's context splits across three or four Codex sessions that
+  each know a third of the story. Documented with its two real limits: the
+  sandbox is fixed at session creation (verified against codex-cli 0.146), and
+  a thread should be split past ~10 rounds or ~100 KB rather than resumed
+  indefinitely.
+
+### Note on versioning
+
+No git tags exist in this repository, including for 0.7.0 and 0.8.0 — the
+0.8.0 entry below was written before its own work finished (13 commits landed
+after the release commit), so there is no commit that cleanly marks it.
+Tagging from 0.9.0 onward.
+
 ## [0.8.0] - 2026-07-19
 
 Closes six state-hygiene gaps surfaced by a 2026-07-19 audit of real

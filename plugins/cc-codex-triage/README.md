@@ -31,7 +31,7 @@ Every command keeps a persistent Codex thread by default; `--oneshot` makes any 
 | | This plugin | `hamelsmu/claude-review-loop` | `dementev-dev/adversarial-review` |
 |---|---|---|---|
 | Codex sessions | **Persistent via `exec resume`** | Fresh each time | Persistent via `exec resume` |
-| Round cap | **Open-ended (capped only in the `/autoreview`/`/autoplan` gates)** | 1 | 5 (approve/revise) |
+| Round cap | **`--cap` per loop (default 5), separate per-cycle cap in the gates** | 1 | 5 (approve/revise) |
 | Purpose | **Iterative triage dialogue + opt-in self-verification gate** | Multi-agent one-shot review | Approve/revise fix loop |
 | Output | Markdown stream, raw | Consolidated Markdown file | JSON + Markdown + VERDICT literal |
 
@@ -57,6 +57,25 @@ The plugin never deletes Codex's rollout files. `/thread-new` only clears the lo
 - **No silent fresh exec on resume failure.** If `codex exec resume` fails, the driver exits 4 and asks you to `--new` explicitly. Your memory of "Codex remembers this" never silently breaks.
 - **Tracked-file mutation guard.** The driver snapshots `git status --porcelain` pre/post each Codex dispatch and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. Run with `CC_CODEX_FLAGS="-s read-only"` for pure-review threads.
 - **No `--last`.** Threads are pinned to their saved UUID; if it's gone, the next call starts fresh, not "whatever was most recently touched in `~/.codex/sessions/`".
+
+### Known over-grant: `allowed-tools: Bash`
+
+Every command here declares a bare `allowed-tools: Bash`. That field is a
+**pre-approval grant, not a restriction** — so for the turn that invokes one of
+these commands, any Bash command runs without a permission prompt, not just the
+plugin's driver. It should be scoped to the driver invocation.
+
+It is not scoped yet, deliberately. The documented substitutions inside
+`allowed-tools` Bash rules are `${CLAUDE_SKILL_DIR}` and `${CLAUDE_PROJECT_DIR}`;
+`${CLAUDE_PLUGIN_ROOT}` — which is what every command actually invokes through —
+is not among them. A rule written against it would most likely stay a literal
+string, match nothing, and turn every dispatch into a permission prompt. Trading
+a narrow over-grant for a broken flow is a bad deal, so this waits on either
+confirming `${CLAUDE_PLUGIN_ROOT}` expands there, or rewriting the rules against
+`${CLAUDE_SKILL_DIR}`.
+
+The grant lasts only for the turn that invoked the command and clears on your
+next message.
 
 ## Judge-mode framing
 
