@@ -374,19 +374,22 @@ printf 'PROMPT:\n  APPROVE\n' > "$VLOG"
 printf 'REPLY:\n  ## APPROVE\n' > "$VLOG"
 [[ "$(bash "$VSH" "$VLOG" 0)" == "APPROVE" ]] && ok "status.sh and the hook share this one parser" || bad "shared parser mismatch"
 
-echo "== fingerprint: an unreadable untracked path fails OPEN, never truncates =="
-# git hash-object --stdin-paths die()s on the first path it cannot read and
-# stops. Unchecked, the hash moves once and then reports "unchanged" forever,
-# so every file sorting after the bad one becomes invisible to the gate.
+echo "== fingerprint: an unreadable path yields NOTHING, never a fabricated hash =="
+# The script promises to print nothing when it cannot compute. It used to
+# silence every git invocation and hash whatever came out, so a failure
+# produced a confident but wrong hash — the one outcome it promises never to
+# produce. A dangling symlink is NOT such a case: git records the link itself,
+# so it hashes fine and must keep doing so.
 git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null
 echo v1 > zzz.txt
 FP_BEFORE="$(fp_now)"
 ln -s /nonexistent/target aaa-dangling
-[[ -z "$(fp_now)" ]] && ok "dangling symlink -> empty fingerprint (caller fails open)" || bad "produced a hash despite an unreadable path"
-echo v2 > zzz.txt
-[[ -z "$(fp_now)" ]] && ok "and stays empty rather than silently ignoring the edit" || bad "truncated hash returned"
+[[ -n "$(fp_now)" && "$(fp_now)" != "$FP_BEFORE" ]] && ok "a dangling symlink is hashable content, not a failure" || bad "dangling symlink broke the fingerprint"
 rm -f aaa-dangling
-[[ -n "$(fp_now)" && "$(fp_now)" != "$FP_BEFORE" ]] && ok "recovers once the path is readable, edit visible" || bad "did not recover"
+chmod 000 zzz.txt
+[[ -z "$(fp_now)" ]] && ok "an unreadable file -> empty (caller fails open)" || bad "fabricated a hash for an unreadable file"
+chmod 644 zzz.txt
+[[ "$(fp_now)" == "$FP_BEFORE" ]] && ok "recovers to the same hash once readable" || bad "did not recover"
 rm -f zzz.txt
 
 echo "== fingerprint: identical state hashes identically, any change moves it =="
@@ -399,11 +402,17 @@ FP_DIRTY="$(fp_now)"
 [[ "$FP_DIRTY" != "$FP_A" ]] && ok "an uncommitted edit moves it" || bad "edit did not move the fingerprint"
 git add -A >/dev/null && git commit -qm "cycle-test commit"
 FP_COMMITTED="$(fp_now)"
-# THE property the old dirty-tree test lacked: committing is a CHANGE, not a
-# return to the pre-edit state. Without this, committing the fixes read as
-# "nothing to review" while the verdict was still REQUEST_CHANGES.
-[[ "$FP_COMMITTED" != "$FP_A" && "$FP_COMMITTED" != "$FP_DIRTY" ]] \
-  && ok "committing moves it too (never back to the pre-edit state)" || bad "commit collapsed the fingerprint (a: $FP_A dirty: $FP_DIRTY committed: $FP_COMMITTED)"
+# It hashes CONTENT, so committing is not itself an event. Both directions
+# matter and an earlier version got one of them wrong:
+#   - the content still differs from the pre-edit state, so a fix survives its
+#     own commit and the gate stays engaged (a bare dirty-tree test goes quiet
+#     here, exactly when the follow-up round is still owed);
+#   - committing the SAME bytes is not a change, so approving work and then
+#     committing it costs no review round. Hashing HEAD made it cost one.
+[[ "$FP_COMMITTED" != "$FP_A" ]] \
+  && ok "a change survives its own commit (never back to the pre-edit state)" || bad "commit collapsed to the pre-edit fingerprint"
+[[ "$FP_COMMITTED" == "$FP_DIRTY" ]] \
+  && ok "committing identical content is NOT a change (burns no gate round)" || bad "commit of identical content moved the fingerprint (dirty: $FP_DIRTY committed: $FP_COMMITTED)"
 # The gate's own bookkeeping must never count as reviewable work, or the gate
 # re-arms on the driver's writes until the cap.
 mkdir -p "$SD"; echo noise > "$SD/scratch.log"
@@ -418,6 +427,36 @@ FP_U1="$(fp_now)"
 echo "v2" >> newfile.txt
 [[ "$(fp_now)" != "$FP_U1" ]] && ok "EDITING an untracked file moves it" || bad "untracked edit invisible (porcelain-only blind spot)"
 rm -f newfile.txt
+
+echo "== fingerprint: scoped pathspecs that match nothing are normal, not an error =="
+# "No plan documents yet" is the ordinary state of a fresh branch, and `git add`
+# is FATAL on a pathspec matching nothing. Returning empty here would silently
+# disable the autoplan gate on every branch that has not written a plan yet.
+EMPTY_SCOPE="$(fp_now docs/plans docs/PLANS)"
+[[ -n "$EMPTY_SCOPE" ]] && ok "absent plan dirs still yield a fingerprint" || bad "absent plan dirs returned empty (gate would silently disable)"
+[[ "$(fp_now docs/plans docs/PLANS)" == "$EMPTY_SCOPE" ]] && ok "and it is stable" || bad "unstable empty-scope fingerprint"
+mkdir -p docs/plans; echo "# p" > docs/plans/p.md
+[[ "$(fp_now docs/plans docs/PLANS)" != "$EMPTY_SCOPE" ]] && ok "a first plan doc moves it" || bad "first plan doc invisible"
+rm -rf docs
+
+echo "== fingerprint: the state dir is excluded even when NOT gitignored =="
+# The add cannot name the state dir in a pathspec (git exits 1 when a pathspec
+# names an ignored path, which is the normal case), so it is dropped from the
+# throwaway index instead — which also covers a repo that never ignored it.
+mkdir -p "$SD"
+# The developer's GLOBAL gitignore also covers .claude/codex-threads, so moving
+# the repo .gitignore aside is not enough — without neutralising core.excludesFile
+# this test passes even with the exclusion deleted. (It did; a mutation caught it.)
+if [[ -f .gitignore ]]; then mv .gitignore .gitignore.bak; fi
+GLOBAL_EX="$(git config --get core.excludesFile || true)"
+git config core.excludesFile /dev/null
+echo tracked-state > "$SD/tracked.log"
+FP_S1="$(fp_now)"
+echo more >> "$SD/tracked.log"
+[[ "$(fp_now)" == "$FP_S1" ]] && ok "un-ignored state-dir writes still excluded" || bad "state dir leaked when not gitignored"
+rm -f "$SD/tracked.log"
+if [[ -n "$GLOBAL_EX" ]]; then git config core.excludesFile "$GLOBAL_EX"; else git config --unset core.excludesFile || true; fi
+if [[ -f .gitignore.bak ]]; then mv .gitignore.bak .gitignore; fi
 
 echo "== hole 1: committing the fixes does NOT silence an open REQUEST_CHANGES =="
 BASE="$(fp_now)"

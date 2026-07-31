@@ -183,7 +183,7 @@ Arming reviews existing work first, then gates future turns. `/autoreview on`: i
 
 **The unit is a cycle, not an arming** — this is what makes the loop continue rather than fall silent:
 
-- The gate compares a fingerprint covering `HEAD`, the porcelain status, the tracked diff and untracked file *content*. So **committing the fixes keeps the gate engaged**; a dirty-tree test would go quiet at exactly the moment the follow-up round is still owed.
+- The gate compares a hash of the working-tree **content** (tracked and untracked; `.gitignore` honoured). So **committing the fixes keeps the gate engaged** — a dirty-tree test goes quiet at exactly the moment the follow-up round is still owed — while **committing already-approved bytes costs no round**, because identical content hashes identically.
 - Each release records the fingerprint it approved and advances the verdict window, so **one APPROVE covers one state, not the rest of the arming** — the next edit re-engages the gate, and the verdict that released this cycle cannot release the next.
 - The round cap bounds one cycle and is refilled only by a real release, so the cost stays bounded while the loop keeps running.
 

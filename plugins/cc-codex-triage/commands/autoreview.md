@@ -11,14 +11,15 @@ Two parts: (1) **on arming, if the branch already has code changes, run the revi
 
 **The unit is a cycle, not an arming.** A cycle opens when the code moves away from the last released state and closes on an APPROVE that covers the state actually in front of you. Then a new cycle can open. Two consequences worth knowing:
 
-- **Committing the fixes does not end the round.** The gate compares a fingerprint that includes `HEAD`, so a commit is a change, not a disappearance. Under the old dirty-tree test, committing made the tree clean and the turn was allowed to finish with the thread's last verdict still `REQUEST_CHANGES` — the follow-up round simply never happened.
+- **Committing the fixes does not end the round.** The gate compares a hash of the working-tree *content*, so a fix is still a difference after it is committed. Under the old dirty-tree test, committing made the tree clean and the turn was allowed to finish with the thread's last verdict still `REQUEST_CHANGES` — the follow-up round simply never happened.
+- **Committing already-approved work costs nothing.** Same reason, other direction: identical bytes hash identically, so approve → commit → carry on does not burn a round on code Codex just approved.
 - **One APPROVE does not cover later work.** Each release records the fingerprint it approved, so the next edit re-engages the gate instead of coasting on a verdict that was true an hour ago.
 
 Runaway-safe: the round cap is the hard terminator **per cycle** (counters are numeric-validated; malformed state fails OPEN), the APPROVE gate is the success release, and branch scoping keeps the gate out of unrelated work. Only a real release refills the budget, so a cycle that never earns an APPROVE still stops at `cap` blocks. The hook itself never calls Codex — it only routes you to the normal `/review` flow.
 
 **Arming on a dirty tree is fine now, but it costs a round.** The gate treats any non-state-dir difference from the arming fingerprint as unverified — pre-existing WIP, untracked `.env`, editor droppings included — so arming mid-change means the next turn blocks. Commit or stash first if you want the first block to be about *your* work.
 
-**Known blind spot:** the fingerprint sees untracked files by path *and content*, tracked files by diff, and commits by `HEAD`. It does not see changes to files git ignores. That is deliberate — a gate that fired on `.env` or build output would be unusable.
+**Known blind spot:** the fingerprint is the content of everything `git add -A` would stage — tracked and untracked alike. It does not see files git ignores. That is deliberate: a gate that fired on `.env` or build output would be unusable.
 
 ## Steps
 

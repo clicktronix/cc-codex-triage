@@ -28,10 +28,13 @@ full.
   release re-baselines the approved fingerprint, the verdict window and the
   round budget together. The fingerprint (new
   `scripts/gate-fingerprint.sh`, shared by the hook and both arming commands)
-  covers `HEAD`, the porcelain status, the tracked diff and **untracked file
-  content** — the last of those because a plan document is untracked for its
-  whole first life, and without it an autoplan gate released once and never
-  fired again however much the plan was rewritten.
+  is a hash of the **working-tree content** in scope — the worktree staged into
+  a throwaway index, then `git write-tree`. Content, not git bookkeeping,
+  because the gate needs both directions: a fix survives its own commit and
+  keeps the gate engaged, while committing already-approved bytes changes
+  nothing and costs no review round. Untracked files are covered by content, a
+  plan document being untracked for its whole first life; `.gitignore` is
+  honoured, so a gate never fires on `.env` or build output.
 
   Backwards compatible: an armed file with neither `fp_at_arming` nor
   `released_fp` is a pre-0.9 arming, and keeps the old dirty-tree behaviour
