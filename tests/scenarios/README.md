@@ -138,6 +138,19 @@ are unreproducible — capable agents already do the right thing, so those
 sections were kept narrow or demoted. This is the eval doing its job: it stopped
 hypotheses from masquerading as validated guidance.
 
+**Not covered by a scenario.** The `codex-second-opinion` skill (added
+2026-08-01) ships with **no baseline at all**, and this is the honest place to
+say so. It is an entry point rather than a behavioural claim — it exists because
+every command in the plugin is `disable-model-invocation`, so an agent that
+wanted a third opinion had to read a 100-line command file to get one. The
+claim it *would* need a RED for is narrower: "an agent stuck at a fork the
+repository cannot settle does not think to ask Codex, and instead picks one and
+proceeds." That is testable — a fixture with two defensible designs and no
+in-repo tiebreaker, measuring whether the agent flags the fork or silently
+resolves it — and has not been tested. Until it is, the skill's cost controls
+(announce before dispatching, one dispatch per fork, never the gate thread) are
+design caution, not measured guidance.
+
 **On production REDs.** Two of seven claims rest on observed production
 behaviour rather than a dispatched probe. That is weaker evidence about *what a
 fresh agent would do unaided* and stronger evidence about *what actually goes

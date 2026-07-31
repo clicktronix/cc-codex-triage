@@ -15,7 +15,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 | Intent | Command | Thread |
 |---|---|---|
-| Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
+| Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only), or `--thread <feature>` |
 | Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
 | Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
 | Reply back to something Codex said | `/reply [thread]` | named thread, default `review-<branch-slug>` (falls back to a legacy bare `review` if only that exists) |
@@ -27,9 +27,13 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
 
+**Every command above is `disable-model-invocation`** — each spends real money and minutes, so the user decides. The one exception is the sibling skill **`codex-second-opinion`**, which you may invoke yourself for a *single* bounded dispatch when you are genuinely stuck: a fork the repository does not settle, an irreversible change, two sources contradicting each other. It announces the cost before spending it and never targets a `review-<branch>` gate thread. Anything iterative still belongs to the user.
+
 **`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
 
 **One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — there is no main/master special-case) so each branch, and the matching `/autoreview` / `/autoplan` gate, stay on one isolated thread; the bare `review`/`plan` names are only via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
+
+**One feature = one thread, across commands.** The defaults above are per *command kind*, so a feature's context ends up split between `ask`, `plan-<branch>` and `debate-<slug>`, each holding a third of the story. When working a feature through, point `/ask`, `/plan` and `/debate` at ONE `--thread <feature>` and leave `/review` on its branch-scoped thread (the gate reads verdicts from that log, and mixing chatter in makes the audit trail unreadable). Two limits: the **sandbox is fixed at session creation** — `codex exec resume` takes `-m` and `--output-schema` but no `-s` — so a feature thread picks read-only or write once; and every resume re-feeds the history, so past ~10 rounds or ~100 KB (`/thread-list` shows both) start `<feature>-2` with a written handoff rather than resuming further.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
