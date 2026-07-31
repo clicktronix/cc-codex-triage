@@ -5,15 +5,31 @@
 # whether Claude may finish the turn, or must first run /review (or /plan) on
 # its own changes. The actual review runs through the normal commands/driver.
 #
+# The unit of work is a CYCLE, not an arming. A cycle opens when the code
+# differs from the last state this gate released, and closes when a verdict
+# earned inside that cycle releases it. Each release re-baselines all three
+# pieces of state at once (see record_release): the approved code fingerprint,
+# the verdict window, and the round counter.
+#
+# That shape exists because the previous "dirty tree + last verdict" model had
+# two holes, both reproducible:
+#   - committing the fixes made the tree clean, so the gate allowed the turn to
+#     end while the thread's last verdict was still REQUEST_CHANGES — the round
+#     that should have followed the fix never happened;
+#   - the first APPROVE stayed the last parsed verdict forever, so it released
+#     every later turn no matter how much new unreviewed code was written.
+#
 # Runaway protection (hard, independent of Claude Code internals):
-#   1. blocks counter vs cap in the armed file — the hard terminator. The
-#      counters are validated as numeric; ANY malformed value fails OPEN
-#      (allow), never closed.
-#   2. Success gates: autoreview releases on an APPROVE verdict appended to
-#      the thread log AFTER arming (byte-offset cut); autoplan releases once
-#      the thread log changed size since arming (a dispatch always appends).
-#   3. Scoping: armed branch must match the current branch and the tree must
-#      actually be dirty for that gate's file class.
+#   1. blocks counter vs cap in the armed file — the hard terminator, per
+#      cycle. The counters are validated as numeric; ANY malformed value fails
+#      OPEN (allow), never closed. Only a real release refills the budget, so
+#      a cycle that never earns one still terminates at `cap` blocks.
+#   2. Success gates: autoreview releases on an APPROVE verdict appended to the
+#      thread log after the cycle's byte-offset cut; autoplan releases once the
+#      thread log changed size within the cycle (a dispatch always appends).
+#   3. Scoping: the armed branch must match the current branch, and the code
+#      fingerprint for that gate's file class must differ from the released
+#      baseline.
 #   4. TTL: an armed file whose armed_at epoch is older than 14 days is
 #      removed by a pre-pass over BOTH files before either gate runs.
 #      Missing/malformed/future armed_at skips TTL for that file (fail-open —
@@ -21,17 +37,23 @@
 #
 # stop_hook_active is deliberately NOT an unconditional allow: honoring it
 # would cap the gate at one block per user turn and silently break the
-# advertised "until APPROVE or cap" contract. The numeric cap bounds total
-# cost instead (at most `cap` blocks per arming).
+# advertised "until APPROVE or cap" contract. The numeric cap bounds cost
+# instead (at most `cap` blocks per cycle).
 #
-# Armed state (written by /autoreview, /autoplan commands):
+# Armed state (written by /autoreview, /autoplan commands; released_fp and the
+# advanced log offset are written by THIS hook):
 #   .claude/codex-threads/autoreview.armed
 #   .claude/codex-threads/autoplan.armed
 #   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming,
-#   armed_at (0.8+, drives the TTL).
+#   armed_at (0.8+, drives the TTL), fp_at_arming (0.9+), released_fp (0.9+,
+#   hook-written).
 #   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open):
 #   autoreview parses verdicts only from log content appended after it;
-#   autoplan releases when the log size differs from it.
+#   autoplan releases when the log size differs from it. It is advanced on
+#   every release so one verdict cannot release two cycles.
+#   fp_at_arming / released_fp are OPTIONAL: an armed file with neither is a
+#   pre-0.9 arming and keeps the old dirty-tree behaviour, so upgrading
+#   mid-task never silently changes a live gate.
 #
 # Output contract: JSON {"decision":"block","reason":"..."} on stdout blocks
 # the stop; exit 0 with no JSON allows it. Never exit non-zero (fail-open).
@@ -139,6 +161,62 @@ dirty_plans() {
   ( set -f; git status --porcelain -uall -- $paths 2>/dev/null | grep -q . )
 }
 
+code_fingerprint() { # $1 = optional pathspec list (autoplan); empty = whole tree
+  # Delegates to the ONE canonical implementation, which the arming commands
+  # also call — a second copy that drifted by a single pathspec would make
+  # every gate read as permanently dirty. Empty output (script missing, not a
+  # repo, git failure) means "unknown" and the caller fails open.
+  local fpsh="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/gate-fingerprint.sh}"
+  [[ -n "$fpsh" && -f "$fpsh" ]] || {
+    echo "cc-codex-triage: gate-fingerprint.sh not found next to the hook — the gate falls back to the dirty-tree test for this turn." >&2
+    return 0
+  }
+  # shellcheck disable=SC2086
+  ( set -f; bash "$fpsh" ${1:-} 2>/dev/null )
+}
+
+gate_baseline() { # $1=armed file — the code state this gate last RELEASED,
+  # else the state captured at arming. Empty when neither is recorded, which
+  # means a pre-0.9 armed file: the caller then keeps the old dirty-only test
+  # so upgrading Claude Code mid-task never silently changes a live gate.
+  local v
+  v="$(raw_field "$1" released_fp)"
+  [[ -n "$v" ]] || v="$(raw_field "$1" fp_at_arming)"
+  printf '%s' "$v"
+}
+
+has_unreviewed_work() { # $1=baseline fp  $2=current fp  $3=legacy dirt predicate
+  [[ -n "$1" ]] || { "$3"; return; }   # pre-0.9 armed file → old behaviour
+  [[ -n "$2" ]] || return 1            # fingerprint unavailable → fail open
+  [[ "$1" != "$2" ]]
+}
+
+record_release() { # $1=armed file $2=fingerprint $3=thread — start a new cycle.
+  # Three things move together, and all three are required for the NEXT cycle
+  # to be evaluated honestly:
+  #   released_fp          the code state that was actually approved, so a
+  #                        later edit re-arms the gate instead of coasting on
+  #                        one APPROVE for the rest of the arming;
+  #   log_bytes_at_arming  advanced to the current log size, so the verdict
+  #                        that released THIS cycle cannot also release the
+  #                        next one (the same stale-APPROVE protection that
+  #                        arming applies, applied per cycle);
+  #   blocks=0             a fresh round budget per cycle. The cap still
+  #                        terminates any cycle that never earns an APPROVE,
+  #                        so this cannot run away — only a real release
+  #                        refills it.
+  # Returns non-zero if the rewrite failed; the caller releases anyway (a
+  # persisted counter is not worth withholding an earned APPROVE over).
+  local f="$1" fp="$2" size
+  [[ -n "$fp" ]] || return 1
+  size="$(log_size "$3")"
+  { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+    echo "released_fp=$fp"
+    echo "log_bytes_at_arming=$size"
+    echo "blocks=0"
+  } > "$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
 last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.
   # Standalone verdict line from REPLY sections ONLY, and only from log content
   # APPENDED AFTER ARMING. Two protections in one:
@@ -206,7 +284,8 @@ fi
 AR="$STATE_DIR/autoreview.armed"
 if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
   ar_branch="$(read_field "$AR" branch "")"
-  if [[ "$ar_branch" == "$BRANCH" ]] && dirty_code; then
+  ar_fp="$(code_fingerprint)"
+  if [[ "$ar_branch" == "$BRANCH" ]] && has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code; then
     thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
     is_thread "$thread" || thread="review-$BRANCH_SLUG"
     lens="$(read_field "$AR" lens correctness)"
@@ -229,7 +308,11 @@ if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
       # reset by /thread-new, so it can both fake a run (reset alone changes
       # it) and mask one (reset + one run collides with the snapshot).
       if [[ "$verdict" == "APPROVE" ]]; then
-        : # APPROVE earned since arming — release
+        # APPROVE earned this cycle — release, and record WHAT it approved.
+        # Without the record, this one verdict would keep releasing every
+        # later turn no matter how much new unreviewed code was written.
+        record_release "$AR" "$ar_fp" "$thread" \
+          || echo "autoreview: released on APPROVE but could not persist the release marker (state dir not writable?) — the next turn may re-block. Re-arm with /autoreview on." >&2
       elif [[ "$blocks" -ge "$cap" ]]; then
         echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
       elif n="$(bump_blocks "$AR" "$blocks")"; then
@@ -245,7 +328,8 @@ fi
 AP="$STATE_DIR/autoplan.armed"
 if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
   ap_branch="$(read_field "$AP" branch "")"
-  if [[ "$ap_branch" == "$BRANCH" ]] && dirty_plans; then
+  ap_fp="$(code_fingerprint "${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}")"
+  if [[ "$ap_branch" == "$BRANCH" ]] && has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans; then
     thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
     is_thread "$thread" || thread="plan-$BRANCH_SLUG"
     lens="$(read_field "$AP" lens stress-test)"
@@ -268,7 +352,11 @@ if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
     # snapshot reads as "no dispatch" — fails toward blocking, never toward a
     # false release, and the cap terminates it.
     elif [[ "$log_now" -ne "$log_off" ]]; then
-      : # at least one post-arming dispatch on the plan thread — release
+      # At least one dispatch on the plan thread this cycle — release, and
+      # record the plan state it covered plus the new log baseline, so the
+      # NEXT plan edit needs its OWN dispatch rather than coasting on this one.
+      record_release "$AP" "$ap_fp" "$thread" \
+        || echo "autoplan: released on a post-arming dispatch but could not persist the release marker (state dir not writable?) — the next turn may re-block. Re-arm with /autoplan on." >&2
     elif [[ "$blocks" -ge "$cap" ]]; then
       echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
     elif n="$(bump_blocks "$AP" "$blocks")"; then

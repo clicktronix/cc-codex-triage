@@ -310,6 +310,137 @@ chmod 755 "$SD"
 rm -f "$SD/autoreview.armed"
 rm -rf docs
 
+# ── Cycle model (0.9): fingerprint baseline, per-cycle release ───────────────
+# Everything above arms WITHOUT fp_at_arming, i.e. exercises the pre-0.9
+# compatibility path. These arm WITH it, which is what a 0.9 command writes.
+
+# Derived from $HOOK (already absolute) — $0 is relative to the ORIGINAL cwd
+# and the suite has long since cd'd into the fixture repo.
+FPSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/gate-fingerprint.sh"
+fp_now()  { bash "$FPSH" "$@"; }
+arm_review_fp() { # branch thread cap blocks log_bytes fp
+  mkdir -p "$SD"
+  printf 'branch=%s\nthread=%s\nlens=correctness\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoreview.armed"
+}
+reply_log() { printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"; }   # overwrite: one verdict, at offset 0
+
+echo "== fingerprint: identical state hashes identically, any change moves it =="
+git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null
+FP_A="$(fp_now)"
+[[ -n "$FP_A" ]] && ok "fingerprint is non-empty in a repo" || bad "empty fingerprint in a repo"
+[[ "$(fp_now)" == "$FP_A" ]] && ok "stable across calls with no change" || bad "unstable fingerprint"
+echo edit >> f.txt
+FP_DIRTY="$(fp_now)"
+[[ "$FP_DIRTY" != "$FP_A" ]] && ok "an uncommitted edit moves it" || bad "edit did not move the fingerprint"
+git add -A >/dev/null && git commit -qm "cycle-test commit"
+FP_COMMITTED="$(fp_now)"
+# THE property the old dirty-tree test lacked: committing is a CHANGE, not a
+# return to the pre-edit state. Without this, committing the fixes read as
+# "nothing to review" while the verdict was still REQUEST_CHANGES.
+[[ "$FP_COMMITTED" != "$FP_A" && "$FP_COMMITTED" != "$FP_DIRTY" ]] \
+  && ok "committing moves it too (never back to the pre-edit state)" || bad "commit collapsed the fingerprint (a: $FP_A dirty: $FP_DIRTY committed: $FP_COMMITTED)"
+# The gate's own bookkeeping must never count as reviewable work, or the gate
+# re-arms on the driver's writes until the cap.
+mkdir -p "$SD"; echo noise > "$SD/scratch.log"
+[[ "$(fp_now)" == "$FP_COMMITTED" ]] && ok "state-dir writes are excluded" || bad "state dir leaked into the fingerprint"
+rm -f "$SD/scratch.log"
+# Untracked CONTENT counts. A new plan doc or module is untracked for its whole
+# first life, and neither porcelain nor `git diff HEAD` moves while it is
+# edited — a gate blind to this releases once and never fires again.
+echo "v1" > newfile.txt
+FP_U1="$(fp_now)"
+[[ "$FP_U1" != "$FP_COMMITTED" ]] && ok "a new untracked file moves it" || bad "new untracked file invisible"
+echo "v2" >> newfile.txt
+[[ "$(fp_now)" != "$FP_U1" ]] && ok "EDITING an untracked file moves it" || bad "untracked edit invisible (porcelain-only blind spot)"
+rm -f newfile.txt
+
+echo "== hole 1: committing the fixes does NOT silence an open REQUEST_CHANGES =="
+BASE="$(fp_now)"
+arm_review_fp main review-main 3 0 0 "$BASE"
+reply_log REQUEST_CHANGES
+expect_allow "clean at the baseline -> allow"
+echo "risky" >> f.txt
+expect_block "uncommitted change + REQUEST_CHANGES -> block"
+git add -A >/dev/null && git commit -qm "address findings"
+expect_block "COMMITTED change + REQUEST_CHANGES still blocks (was: allow)"
+
+echo "== hole 2: one APPROVE does not open the gate for the rest of the arming =="
+BASE="$(fp_now)"
+arm_review_fp main review-main 3 0 0 "$BASE"
+echo "work" >> f.txt
+expect_block "new work -> block"
+reply_log APPROVE
+expect_allow "APPROVE releases the state it approved"
+REL="$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")"
+[[ "$REL" == "$(fp_now)" ]] && ok "released_fp records the approved state" || bad "released_fp not recorded (got '$REL')"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "0" ]] && ok "round budget refilled for the next cycle" || bad "blocks not reset on release"
+NEWOFF="$(sed -n 's/^log_bytes_at_arming=//p' "$SD/autoreview.armed")"
+[[ "$NEWOFF" == "$(logsize "$SD/review-main.log")" ]] && ok "verdict window advanced past the releasing APPROVE" || bad "log offset not advanced (got '$NEWOFF')"
+expect_allow "no further change -> still allow (idempotent)"
+echo "brand new unreviewed code" >> f.txt
+expect_block "NEW code after the APPROVE blocks again (was: allow forever)"
+
+echo "== the stale APPROVE that released cycle 1 cannot release cycle 2 =="
+# The log still ends in APPROVE, but it sits before the advanced offset.
+grep -q APPROVE "$SD/review-main.log" && ok "precondition: log still ends in APPROVE" || bad "precondition broken"
+expect_block "same APPROVE, new cycle -> still blocks"
+
+echo "== cap still terminates a cycle that never earns an APPROVE =="
+# Fresh arming so the budget is unambiguous: the refill on release means the
+# counter carried over from the cycles above is not a fixed number.
+git add -A >/dev/null && git commit -qm "settle before cap test"
+reply_log REQUEST_CHANGES                               # nothing in this cycle will release
+arm_review_fp main review-main 2 0 0 "$(fp_now)"
+echo "never approved" >> f.txt
+expect_block "cap block 1/2"
+expect_block "cap block 2/2"
+expect_allow "cap reached -> fail open"
+grep -q "round cap" "$ERR" && ok "cap warning on stderr" || bad "no cap warning"
+
+echo "== pre-0.9 armed file keeps the old dirty-tree behaviour (no silent change) =="
+git add -A >/dev/null && git commit -qm "settle"
+arm_review main review-main 3 0        # no fp_at_arming
+reply_log REQUEST_CHANGES
+expect_allow "clean tree + legacy armed file -> allow, exactly as before"
+echo legacy >> f.txt
+expect_block "dirty tree + legacy armed file -> block, exactly as before"
+git add -A >/dev/null && git commit -qm "legacy commit"
+expect_allow "legacy file: committing still releases (documented old behaviour)"
+rm -f "$SD/autoreview.armed"
+
+echo "== a missing fingerprint script fails OPEN, loudly =="
+BASE="$(fp_now)"
+arm_review_fp main review-main 3 0 0 "$BASE"
+echo unreviewed >> f.txt
+expect_block "precondition: blocks while the script is present"
+HOOK_DIR="$(dirname "$HOOK")"; mv "$HOOK_DIR/../scripts/gate-fingerprint.sh" "$T/fp.bak"
+expect_allow "no fingerprint script -> fail open"
+grep -q "gate-fingerprint.sh not found" "$ERR" && ok "loud warning names the missing script" || bad "silent fallback"
+mv "$T/fp.bak" "$HOOK_DIR/../scripts/gate-fingerprint.sh"
+rm -f "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm "settle 2"
+
+echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
+mkdir -p docs/plans
+arm_plan_fp() { # branch thread cap blocks log_bytes fp
+  mkdir -p "$SD"
+  printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
+}
+PFP="$(fp_now docs/plans docs/PLANS)"
+arm_plan_fp main plan-main 2 0 0 "$PFP"
+echo "# plan v1" > docs/plans/p.md
+expect_block "changed plan doc -> block"
+printf 'REPLY:\n  stress-tested\n' > "$SD/plan-main.log"      # a dispatch appended
+expect_allow "post-arming dispatch releases"
+[[ -n "$(sed -n 's/^released_fp=//p' "$SD/autoplan.armed")" ]] && ok "autoplan records released_fp" || bad "autoplan release not recorded"
+expect_allow "no further plan change -> still allow"
+echo "# plan v2 — new section" >> docs/plans/p.md
+expect_block "NEXT plan edit needs its own dispatch (was: allow forever)"
+rm -f "$SD/autoplan.armed"
+rm -rf docs; git add -A >/dev/null; git commit -qm "cleanup" >/dev/null 2>&1
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

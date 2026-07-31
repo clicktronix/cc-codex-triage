@@ -374,9 +374,15 @@ rm -rf "$SD"
 mkdir -p "$T/nosetsid"
 # Full PATH farm for a complete dispatch, minus setsid (exercises the python
 # isolator even on Linux CI where setsid exists).
-for tool in bash git python3 cat mktemp sed awk date wc tr mv rm mkdir rmdir stat touch tail grep diff sleep ls env dirname xcrun; do
+for tool in bash git cat mktemp sed awk date wc tr mv rm mkdir rmdir stat touch tail grep diff sleep ls env dirname xcrun; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/nosetsid/$tool"
 done
+# python3 is linked from its RESOLVED interpreter, not from `command -v`. Under
+# pyenv/asdf `command -v python3` is a shim that re-execs through its own
+# manager, which is not in this farm — the shim then exits 127 and the test
+# fails on the maintainer's own machine while the product path is fine.
+PY_REAL="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3 2>/dev/null || true)"
+[[ -n "$PY_REAL" ]] && ln -sf "$PY_REAL" "$T/nosetsid/python3"
 PATH="$T/bin:$T/nosetsid" run d4 --detach
 [[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "python-isolator handshake completed" || bad "python isolator rc=$RC out=$OUT err=$(cat "$T/err")"
 i=0; while ! grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
