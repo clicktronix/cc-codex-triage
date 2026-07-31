@@ -148,12 +148,12 @@ for kind in autoreview autoplan; do
   # Cycle state. Without this, /status reported a clean tree while the hook was
   # blocking on unreviewed committed work, and /status is exactly where someone
   # goes to understand a block they did not expect.
-  if [ -n "$(field "$f" released_fp)$(field "$f" fp_at_arming)" ]; then
+  if [ -n "$(gate_baseline "$f")" ]; then
     case "$base" in
       autoplan) fp_now="$( set -f; bash "$FP_SH" $plan_paths 2>/dev/null )" ;;
       *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
     esac
-    fp_base="$(field "$f" released_fp)"; [ -n "$fp_base" ] || fp_base="$(field "$f" fp_at_arming)"
+    fp_base="$(gate_baseline "$f")"
     if [ -z "$fp_now" ]; then
       echo "      cycle: UNKNOWN — the code fingerprint could not be computed; the gate falls back to its dirty-tree test"
     elif [ "$fp_now" = "$fp_base" ]; then

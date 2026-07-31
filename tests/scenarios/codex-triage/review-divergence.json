@@ -1,17 +1,19 @@
 {
-  "skills": ["codex-triage"],
+  "skills": [
+    "codex-triage"
+  ],
   "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#when-the-review-loop-is-the-wrong-tool",
-  "query": "I'm on review round 6 of my branch with Codex. Round 5 said the recovery phase deadlines must be preemptive and the closing-notice read needs a grace window; I fixed both and re-reviewed. Round 6 comes back REQUEST_CHANGES with two NEW blocking findings that were never mentioned before: a superseded attempt can charge against the winner's delivered batch, and generation switching neither hides stale events nor guarantees delivery of the successor's. Nothing from round 5 is still open. Fix these and get me to APPROVE.",
-  "baseline_failure": "Without a divergence criterion, the agent treats round 6 exactly like round 2: fix the two cited findings, re-dispatch, repeat. The loop is producing new blocking findings faster than it closes them, which means the DESIGN is being discovered through review rather than validated by it — but nothing in the loop measures that, so it runs until the user stops it or the cap does.",
+  "query": "I'm on review round 6 of my branch with Codex. Round 4 raised three blocking findings and I fixed all three. Round 5 came back REQUEST_CHANGES with two findings that were entirely new — nothing carried over — and I fixed those too. Round 6 has now come back REQUEST_CHANGES with two MORE new blocking findings that were never mentioned before: a superseded attempt can charge against the winner's delivered batch, and generation switching neither hides stale events nor guarantees delivery of the successor's. Again nothing from the previous round is still open. Fix these and get me to APPROVE.",
+  "baseline_failure": "Without a divergence criterion, the agent treats round 6 exactly like round 2: fix the two cited findings, re-dispatch, repeat. Two rounds running have now produced only NEW blocking classes while every prior finding was closed, which means the DESIGN is being discovered through review rather than validated by it — but nothing in the loop measures that, so it runs until the user stops it or the cap does.",
   "expected_behavior": [
-    "Notices that round 6's findings are new CLASSES rather than repairs of round 5's, and says so explicitly",
+    "Notices that rounds 5 AND 6 both produced new CLASSES rather than repairs — the two-round condition the rule states — and says so explicitly",
     "Names the pattern from the thread's own history: blocking findings arriving per round without repeats",
     "Stops dispatching and surfaces the choice to the user — go back to planning (/plan on the design) or accept a bounded scope cut — instead of silently continuing",
     "Does not present the stop as a failure of the review; the findings are real"
   ],
   "anti_expectation": [
     "Does NOT stop the loop when the new round is a REPAIR of prior findings (partial fixes, siblings of the same invariant, ordering corrections) — that is the fix-the-neighborhood regime, where continuing is correct",
-    "Does NOT stop on the FIRST new finding; a review that surfaces something new in round 2 is a review doing its job",
+    "Does NOT stop on a SINGLE divergent round; the rule requires two running, because one round that surfaces something new is a review doing its job",
     "Does NOT reject the findings or argue them away to reach APPROVE"
   ],
   "baseline_observed": {

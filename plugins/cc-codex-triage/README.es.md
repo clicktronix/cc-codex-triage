@@ -24,7 +24,7 @@ Hilos (threads) persistentes y con nombre de la CLI de Codex para triaje abierto
 
 Cada comando mantiene un hilo de Codex persistente por defecto; `--oneshot` convierte a cualquiera en desechable (`codex exec --ephemeral`, no guarda estado). **Una tarea = un hilo**: `/review` y `/plan` usan por defecto un hilo acotado a la rama (`review-<branch>` / `plan-<branch>`, p. ej. `review-main` en `main` — sin caso especial para main), así cada rama y su verja correspondiente quedan aisladas; pasa `--thread <topic>` para dividir más, o `--thread review` para uno compartido.
 
-**Una funcionalidad = un hilo, a través de los comandos.** Esos valores por defecto son por *tipo de comando*, así que el contexto de una funcionalidad se reparte entre `ask`, `plan-<branch>` y `debate-<slug>`. Apunta `/ask`, `/plan` y `/debate` a un único `--thread <feature>` y deja `/review` en su hilo de rama (la verja lee los veredictos de ahí). El sandbox queda fijado al crear la sesión de Codex — `codex exec resume` acepta `-m` y `--output-schema` pero no `-s` — así que un hilo de funcionalidad elige solo-lectura o escritura una sola vez, en el primer envío. Y como cada resume vuelve a alimentar el historial, divide el hilo pasadas unas 10 rondas o 100 KB (`/thread-list` muestra ambos) en lugar de reanudarlo indefinidamente.
+**Una funcionalidad = un hilo, a través de los comandos.** Esos valores por defecto son por *tipo de comando*, así que el contexto de una funcionalidad se reparte entre `ask`, `plan-<branch>` y `debate-<slug>`. Apunta `/ask`, `/plan` y `/debate` a un único `--thread <feature>` y deja `/review` en su hilo de rama (la verja lee los veredictos de ahí). El sandbox queda fijado al crear la sesión de Codex — `codex exec resume` acepta `-m` y `--output-schema` pero no `-s` — así que un hilo de funcionalidad elige solo-lectura o escritura una sola vez, en el primer envío. Y como cada resume vuelve a alimentar el historial, conviene dividir un hilo ya grande en lugar de reanudarlo indefinidamente; `/thread-list` muestra rondas y tamaño. Como calibración, no como umbral medido: los hilos de funcionalidad en producción llegan a ~130 KB en la ronda 9, y el más largo registrado (13 rondas) nunca convergió.
 
 ## En qué se diferencia de las alternativas
 
@@ -84,6 +84,17 @@ Los comandos del plugin están **espaciados por nombre** (namespaced) bajo el pl
 también funciona para nombres que no chocan con uno incorporado — pero `/review` y
 `/plan` ya los usan los comandos propios de Claude Code, así que usa la forma con namespace para
 esos dos.
+
+## Fuera de alcance
+
+**Una etapa de grooming / planificación previa** — los dos harnesses reuniendo
+contexto y debatiendo una tarea *antes* de someter al usuario a un cuestionario
+de requisitos — se consideró y se dejó fuera deliberadamente. Las piezas que
+necesitaría ya existen aquí (`/ask` sobre un hilo de funcionalidad, `/debate`,
+`/plan`), pero la etapa en sí vive por encima de este plugin, en aquello que
+conduce la tarea: debe ser dueña del cuestionario y decidir qué queda por
+preguntar. Construirla aquí significaría que el plugin invade un proceso del
+que solo es participante.
 
 ## Alcance: unidireccional (Claude Code → CLI de Codex)
 

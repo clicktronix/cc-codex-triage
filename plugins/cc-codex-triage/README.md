@@ -24,7 +24,7 @@ Persistent named Codex CLI threads for open-ended cross-agent triage in Claude C
 
 Every command keeps a persistent Codex thread by default; `--oneshot` makes any of them a throwaway (`codex exec --ephemeral`, no state kept). **One task = one thread**: `/review` and `/plan` default to a branch-scoped thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — no main special-case), so each branch and its matching gate stay isolated; pass `--thread <topic>` to split further, or `--thread review` for a shared one.
 
-**One feature = one thread, across commands.** Those defaults are per *command kind*, so a feature's context splits between `ask`, `plan-<branch>` and `debate-<slug>`. Point `/ask`, `/plan` and `/debate` at a single `--thread <feature>` and leave `/review` on its branch thread (the gate reads verdicts there). The sandbox is fixed when a Codex session is created — `codex exec resume` takes `-m` and `--output-schema` but no `-s` — so a feature thread picks read-only or write once, on the first dispatch. And since every resume re-feeds the history, split past ~10 rounds or ~100 KB (`/thread-list` shows both) rather than resuming indefinitely.
+**One feature = one thread, across commands.** Those defaults are per *command kind*, so a feature's context splits between `ask`, `plan-<branch>` and `debate-<slug>`. Point `/ask`, `/plan` and `/debate` at a single `--thread <feature>` and leave `/review` on its branch thread (the gate reads verdicts there). The sandbox is fixed when a Codex session is created — `codex exec resume` takes `-m` and `--output-schema` but no `-s` — so a feature thread picks read-only or write once, on the first dispatch. And since every resume re-feeds the history, a thread that has grown large is worth splitting rather than resumed indefinitely; `/thread-list` shows rounds and size. For calibration rather than as a tested threshold: production feature threads reach ~130 KB by round 9, and the longest on record (13 rounds) never converged.
 
 ## How it differs from the alternatives
 
@@ -95,6 +95,16 @@ Plugin commands are **namespaced** under the plugin. Invoke them as
 also works for names that don't collide with a built-in — but `/review` and
 `/plan` are taken by Claude Code's own commands, so use the namespaced form for
 those two.
+
+## Not in scope
+
+**A grooming / pre-planning stage** — the two harnesses gathering context and
+debating a task *before* the user is put through a requirements questionnaire —
+was considered and deliberately left out. The pieces it would need already
+exist here (`/ask` on a feature thread, `/debate`, `/plan`), but the stage
+itself belongs upstream of this plugin, in whatever drives the task: it has to
+own the questionnaire and decide what still needs asking. Building it here
+would mean this plugin reaching into a workflow it is a participant in.
 
 ## Scope: one-directional (Claude Code → Codex CLI)
 

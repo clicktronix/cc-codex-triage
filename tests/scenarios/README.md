@@ -142,14 +142,16 @@ hypotheses from masquerading as validated guidance.
 baseline at all**, and this is the honest place to say so.
 
 The **one-feature-one-thread** routing rule in `codex-triage` (point `/ask`,
-`/plan` and `/debate` at a single per-feature thread; split past ~10 rounds or
-~100 KB) is derived, not measured. The two constraints inside it are verified
-facts — `codex exec resume` takes no `-s`, and production feature threads reach
-~130 KB by round 9 — but the claim that an agent left to itself scatters a
-feature across three threads, and that doing so measurably costs something, was
-never tested. The thresholds in particular are round numbers, not findings. The
-RED would be: give an agent a multi-step feature task with the plugin available
-and see how many distinct threads it opens unprompted.
+`/plan` and `/debate` at a single per-feature thread) is derived, not measured.
+The constraints inside it are verified facts — `codex exec resume` takes no
+`-s`, and production feature threads reach ~130 KB by round 9 — but the claim
+that an agent left to itself scatters a feature across three threads, and that
+doing so measurably costs something, was never tested. An earlier draft also
+prescribed a "split past ~10 rounds or ~100 KB" threshold; those were round
+numbers rather than findings, so they now read as calibration alongside the
+observed sizes instead of as a rule. The RED would be: give an agent a
+multi-step feature task with the plugin available and see how many distinct
+threads it opens unprompted.
 
 The **`codex-second-opinion`** skill has no baseline either. It is an entry point rather than a behavioural claim — it exists because
 every command in the plugin is `disable-model-invocation`, so an agent that

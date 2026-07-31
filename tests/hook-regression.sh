@@ -388,6 +388,11 @@ ln -s /nonexistent/target aaa-dangling
 rm -f aaa-dangling
 chmod 000 zzz.txt
 [[ -z "$(fp_now)" ]] && ok "an unreadable file -> empty (caller fails open)" || bad "fabricated a hash for an unreadable file"
+# Degrading to the weaker dirty-tree test must be as loud as a missing script.
+arm_review_fp main review-main 3 0 0 "$FP_BEFORE"
+run_hook
+grep -q "fingerprint could not be computed" "$ERR" && ok "degraded mode announces itself on stderr" || bad "silent degradation"
+rm -f "$SD/autoreview.armed"
 chmod 644 zzz.txt
 [[ "$(fp_now)" == "$FP_BEFORE" ]] && ok "recovers to the same hash once readable" || bad "did not recover"
 rm -f zzz.txt
