@@ -132,38 +132,52 @@ log_size() { # $1=thread — current byte size of the thread log, 0 if absent
 # the single line `blocks=1`, with branch/thread/cap/fp_at_arming GONE. That is
 # not a lost update, it is a silently and permanently disarmed gate.
 #
-# A per-writer temp plus rename makes each rewrite all-or-nothing. Concurrent
-# writers can still lose an increment (last rename wins), which only makes the
-# cap arrive later — it cannot corrupt the file or bypass the cap.
-# Serialize the whole read-validate-rewrite. Atomic rename already stopped the
-# file being CORRUPTED, but concurrent hooks still lost increments (last rename
-# wins), so twenty parallel blocks counted as one and the cap arrived twenty
-# times later than it should.
+# A per-writer temp plus rename makes each rewrite all-or-nothing, but that
+# alone only stops CORRUPTION: concurrent hooks still lost increments (last
+# rename wins), so twenty parallel blocks counted as one and the cap arrived
+# twenty times later than it claimed. All three writers therefore serialize the
+# whole read-validate-rewrite here, and re-read inside the lock.
 #
 # mkdir is atomic on POSIX — the same primitive the driver's lease uses. The
-# hook must stay fast and fail OPEN, so this never waits long and never blocks
-# on a lock it cannot get: a handful of short retries, then give up and let the
-# caller proceed unserialized (the rename keeps that safe, just lossy).
+# hook must stay fast, so this never waits long: a handful of short retries,
+# then give up. Giving up means the caller does NOT write (each documents its
+# own fallback) — proceeding unserialized is what lost the increments.
 # A lock older than 30s is stale by construction — nothing here holds it for
 # more than a few file operations.
 armed_lock() { # $1=armed file → 0 if held
-  local d="$1.lock" i=0 age now
+  local d="$1.lock" i=0 now m1 m2
   while [ "$i" -lt 25 ]; do
     if mkdir "$d" 2>/dev/null; then return 0; fi
     now="$(date +%s 2>/dev/null)" || return 1
-    age="$(_lock_age "$d" "$now")"
-    if [ -n "$age" ] && [ "$age" -gt 30 ]; then rm -rf "$d" 2>/dev/null; continue; fi
+    m1="$(_lock_mtime "$d")"
+    if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
+      # Steal only the lock we JUST measured as stale. A blind `rm -rf` removed
+      # whatever was there, so a writer preempted between the age check and the
+      # removal came back and deleted the REPLACEMENT owner's fresh lock,
+      # leaving two writers convinced they held it. A replacement is >30s newer
+      # by construction, so an unchanged mtime identifies the same lock; the
+      # `mv` then makes the removal itself single-winner.
+      m2="$(_lock_mtime "$d")"
+      if [ "$m1" = "$m2" ] && mv "$d" "$d.stale.$$" 2>/dev/null; then
+        rm -rf "$d.stale.$$" 2>/dev/null
+      fi
+      # Counted like any other attempt: the previous version looped forever
+      # here whenever the removal could not succeed (a read-only state dir),
+      # and this runs inside a Stop hook.
+      i=$((i+1))
+      continue
+    fi
     sleep 0.05 2>/dev/null || sleep 1
     i=$((i+1))
   done
   return 1
 }
 armed_unlock() { rm -rf "$1.lock" 2>/dev/null; }
-_lock_age() { # $1=lock dir $2=now — GNU first, per the stat-probe rule above
+_lock_mtime() { # $1=lock dir — GNU first, per the stat-probe rule above
   local m
   m="$(stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null)" || return 1
   case "$m" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$(( $2 - m ))"
+  printf '%s' "$m"
 }
 
 armed_rewrite() { # $1=armed file; body on stdin
@@ -180,8 +194,12 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # counter would bypass the cap into unlimited blocking.
   # Re-read the counter INSIDE the lock: the value the caller validated may be
   # stale by now, and incrementing a stale value is exactly the lost update.
-  local f="$1" b cur locked=false
-  armed_lock "$f" && locked=true
+  # No lock, no write. Writing unserialized kept the FILE valid (the rename sees
+  # to that) but lost increments, and a lost increment is a cap that does not
+  # bound what it claims to. Failing to acquire is therefore treated like any
+  # other unpersistable counter: return non-zero and let the caller fail open.
+  local f="$1" b cur
+  armed_lock "$f" || return 1
   cur="$(raw_field "$f" blocks)"
   is_bounded_num "$cur" || cur="$2"
   b=$(( cur + 1 ))
@@ -190,8 +208,8 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # below, and the raw one is the confusing half.
   { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
-  } | armed_rewrite "$f" || { $locked && armed_unlock "$f"; return 1; }
-  $locked && armed_unlock "$f"
+  } | armed_rewrite "$f" || { armed_unlock "$f"; return 1; }
+  armed_unlock "$f"
   printf '%s' "$b"
 }
 
@@ -318,15 +336,22 @@ consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
   # dirty-tree predicate still governs them, as documented), but an APPROVE that
   # arrived while clean would otherwise sit past the cut and release the next
   # dirty state — the banking hole, in the compatibility path.
+  # Serialized like every other rewrite, and the offset is re-read INSIDE the
+  # lock: a full-file rewrite racing a concurrent one drops whatever the other
+  # had just written — here the advanced cut, elsewhere released_fp. Without the
+  # lock, skip: advancing the cut is an optimisation, and not advancing it costs
+  # at most one extra blocked turn.
   local f="$1" t="$3" now off
   has_field "$f" log_bytes_at_arming || return 0
-  off="$(raw_field "$f" log_bytes_at_arming)"
-  is_bounded_num "$off" || return 0
   now="$(log_size "$t")"
-  [[ "$now" -ne "$off" ]] || return 0
-  { grep -v -e '^log_bytes_at_arming=' "$f" 2>/dev/null
-    echo "log_bytes_at_arming=$now"
-  } | armed_rewrite "$f" || true
+  armed_lock "$f" || return 0
+  off="$(raw_field "$f" log_bytes_at_arming)"
+  if is_bounded_num "$off" && [[ "$now" -ne "$off" ]]; then
+    { grep -v -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+      echo "log_bytes_at_arming=$now"
+    } | armed_rewrite "$f" || true
+  fi
+  armed_unlock "$f"
   return 0
 }
 
@@ -346,14 +371,23 @@ rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cy
     return 1
   fi
   size="$(log_size "$3")"
+  # Under the same lock as the other two writers: all three rewrite the WHOLE
+  # file, so an unserialized release could be dropped by a concurrent block, or
+  # drop that block's counter itself.
+  if ! armed_lock "$f"; then
+    echo "cc-codex-triage: released, but the armed-state lock could not be acquired so the release was not recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
   if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' "$f" 2>/dev/null
          echo "released_fp=$fp"
          echo "log_bytes_at_arming=$size"
          echo "blocks=0"
        } | armed_rewrite "$f"; then
+    armed_unlock "$f"
     echo "cc-codex-triage: released, but could not write $f (state dir not writable?) — the next turn may re-block. Re-arm to continue." >&2
     return 1
   fi
+  armed_unlock "$f"
 }
 
 # Resolved once. A missing parser means the gate cannot evaluate at all, and it

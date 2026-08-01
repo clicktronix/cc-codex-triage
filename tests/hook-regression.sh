@@ -830,6 +830,57 @@ RACED="$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")"
 rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+echo "== all THREE armed-state writers refuse to write without the lock =="
+# The 20-way race above only exercises bump_blocks. Idle consumption and the
+# cycle rebaseline rewrite the WHOLE file too, so an unserialized one drops
+# whatever a concurrent writer had just written — the advanced cut, or
+# released_fp. Holding the lock from outside is the deterministic version of
+# that race: each writer must then decline rather than write anyway.
+# The lock is fresh, so the stale-steal path (>30s) is not involved.
+git add -A >/dev/null && git commit -qm "settle before lock test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work needing review" >> f.txt
+mkdir -p "$SD/autoreview.armed.lock"
+expect_allow "a block whose counter cannot be locked fails open"
+grep -q "could not persist the blocks counter" "$ERR" && ok "and says the counter was not persisted" || bad "no counter diagnostic"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "0" ]] \
+  && ok "bump_blocks wrote nothing while locked out" || bad "blocks advanced without the lock"
+
+# The release path, locked out: nothing recorded, and it says so.
+printf '[t1] mode=initial thread=review-main round=1 fp=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$(fp_now)" > "$SD/review-main.log"
+expect_allow "an APPROVE still ends the turn when the lock is unavailable"
+grep -q "lock could not be acquired" "$ERR" && ok "and the unrecorded release is reported" || bad "release lock failure was silent"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "rebaseline_cycle wrote nothing while locked out" || bad "released_fp written without the lock"
+
+# Idle consumption, locked out: the cut must not move.
+rm -f "$SD/autoreview.armed"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+mkdir -p "$SD/autoreview.armed.lock"
+printf 'REPLY:\n  APPROVE\n---\n' >> "$SD/review-main.log"     # growth with no cycle open
+expect_allow "an idle turn allows regardless"
+[[ "$(sed -n 's/^log_bytes_at_arming=//p' "$SD/autoreview.armed")" == "0" ]] \
+  && ok "idle consumption wrote nothing while locked out" || bad "the cut advanced without the lock"
+rm -rf "$SD/autoreview.armed.lock"
+rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== a stale lock is stolen, but only the one that was measured stale =="
+# A blind `rm -rf` deleted whatever was there, so a writer preempted between the
+# age check and the removal came back and deleted the REPLACEMENT owner's fresh
+# lock. An unchanged mtime is what identifies the same lock.
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work for the stale-lock test" >> f.txt
+mkdir -p "$SD/autoreview.armed.lock"
+touch -t 200001010000 "$SD/autoreview.armed.lock" 2>/dev/null || touch -d '2000-01-01' "$SD/autoreview.armed.lock" 2>/dev/null
+expect_block "a lock older than 30s is stolen and the block proceeds"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "1" ]] \
+  && ok "and the increment landed" || bad "stale lock was not reclaimed"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== counters too large for shell arithmetic fail OPEN =="
 # There must be WORK, or the gate allows for the ordinary reason and the
 # assertion cannot fail. bash wraps silently here: 0 -ge 99999999999999999999
