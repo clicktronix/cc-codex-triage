@@ -396,6 +396,62 @@ FAKE_CODEX_EXIT=3 run tl5 --topic "label from a run that failed" || true
 run tl5 --topic "the real subject"
 [[ "$(cat "$SD/tl5.topic" 2>/dev/null)" == "the real subject" ]] && ok "the successful retry sets the label" || bad "retry label wrong: $(cat "$SD/tl5.topic" 2>/dev/null)"
 
+echo "== dispatch.sh: short answers in-turn, long ones hand off alive =="
+# Detach is about PROCESS SURVIVAL, not response delivery. Separating the two
+# keeps the short case identical to a direct call while removing the cliff that
+# killed two dispatches in one session.
+DISPATCH="$(dirname "$DRIVER")/dispatch.sh"
+rm -rf "$SD"
+OUT="$(cd "$REPO" && printf 'hi' | bash "$DISPATCH" d-short 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$OUT" | grep -q FAKE_REPLY; } \
+  && ok "a short dispatch returns the reply in-turn" || bad "short dispatch rc=$rc out=$OUT"
+[[ -s "$SD/d-short.id" ]] && ok "and the thread persists exactly as a direct call" || bad "no thread state after dispatch.sh"
+
+rm -rf "$SD"
+SLOWBIN2="$T/slowbin2"; mkdir -p "$SLOWBIN2"
+printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN2/codex"
+chmod +x "$SLOWBIN2/codex"
+OUT="$(cd "$REPO" && PATH="$SLOWBIN2:$PATH" CC_DISPATCH_WAIT=3 bash "$DISPATCH" d-long <<< "hi" 2>&1)"; rc=$?
+[[ "$rc" -eq 3 ]] && ok "outrunning the wait window exits 3 (handoff, not failure)" || bad "handoff rc=$rc out=$OUT"
+printf '%s' "$OUT" | grep -q 'detach-watch.sh' && ok "and names the watcher that delivers it" || bad "no handoff instruction"
+W="$(pgrep -f "$SLOWBIN2/codex" | head -1)"
+[[ -n "$W" ]] && kill -0 "$W" 2>/dev/null && ok "the worker is UNAFFECTED by the handoff" || bad "worker died with the wait window"
+pkill -f "$SLOWBIN2/codex" 2>/dev/null; rm -rf "$SLOWBIN2" "$SD"
+
+echo "== a TERM mid-dispatch is actionable: child killed, lease freed, trace left =="
+# bash defers a trap until the current FOREGROUND child finishes, so with a plain
+# `codex …` call a TERM arriving mid-dispatch did NOTHING: cleanup never ran, the
+# lease was left behind, and codex kept running to finish a paid reply that went
+# nowhere. The dispatch runs in the background with `wait` for exactly this.
+rm -rf "$SD"
+SLOWBIN="$T/slowbin"; mkdir -p "$SLOWBIN"
+# The fake must forward TERM itself, or the probe measures the fixture rather
+# than the driver — a naive `sleep 300` leaves the SLEEP orphaned and looks like
+# a driver bug.
+printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN/codex"
+chmod +x "$SLOWBIN/codex"
+( cd "$REPO" && PATH="$SLOWBIN:$PATH" bash "$DRIVER" abrt <<< "hi" >/dev/null 2>&1 ) &
+i=0; while [ ! -f "$SD/abrt.active" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+# The DRIVER's pid, not the subshell's: `( … ) &` makes $! the subshell, and
+# signalling that leaves the driver untouched — the probe would then measure
+# nothing. The lease names the driver, which is exactly what we need to signal.
+DRVPID="$(cat "$SD/abrt.active" 2>/dev/null | tr -cd '0-9')"
+CODEXPID="$(pgrep -f "$SLOWBIN/codex" | head -1)"
+[[ -n "$DRVPID" ]] && ok "the lease names the dispatching driver" || bad "no lease to read the driver pid from"
+[[ -n "$CODEXPID" ]] && ok "codex child is running under the driver" || bad "no codex child to interrupt"
+kill -TERM "$DRVPID" 2>/dev/null
+i=0; while kill -0 "$DRVPID" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)); done
+sleep 0.5
+[[ -n "$CODEXPID" ]] && ! kill -0 "$CODEXPID" 2>/dev/null \
+  && ok "the codex child was killed, not left finishing a paid run" || bad "codex child survived the driver"
+[[ ! -e "$SD/abrt.active" ]] && ok "lease released" || bad "lease left behind: $(cat "$SD/abrt.active" 2>/dev/null)"
+grep -q '^signal=TERM' "$SD/abrt.last-abort" 2>/dev/null && ok "the abort left a trace" || bad "no trace of the killed dispatch"
+# The trace must NOT be in the log: autoplan releases on log growth, so an abort
+# recorded there would satisfy a plan gate with nothing behind it.
+[[ ! -e "$SD/abrt.log" ]] && ok "and nothing was appended to the thread log" || bad "abort grew the log — autoplan would release on it"
+pkill -f "$SLOWBIN/codex" 2>/dev/null
+rm -rf "$SLOWBIN" "$SD"
+
 echo "== dispatch-fp is written on SUCCESS, and scoped for the plan gate =="
 rm -rf "$SD"
 FAKE_CODEX_EXIT=3 run dfp || true

@@ -1,4 +1,12 @@
----
+--
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 3 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   dispatch is still running and is already paid for.
+-
 description: Ask OpenAI Codex CLI an informational question in a persistent thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique. Pass --thread to keep a feature's questions with the rest of that feature's context.
 argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] <question>'
 allowed-tools: Bash
@@ -29,15 +37,15 @@ This is the **informational** command — collaborative, not adversarial. For cr
    <the question>
    ```
 
-3. Run via Bash (timeout 600000). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. It is a resume when `.claude/codex-threads/<THREAD>.id` exists.
+3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. It is a resume when `.claude/codex-threads/<THREAD>.id` exists.
 
    ```bash
    # initial dispatch (no .id yet):
    CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
-     bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
 
    # resume — the thread keeps the sandbox it was created with:
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> <<< "$QUESTION"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> <<< "$QUESTION"
    ```
 
 4. Show Codex's reply verbatim.

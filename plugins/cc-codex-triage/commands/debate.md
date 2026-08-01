@@ -19,15 +19,23 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
 
 2. **Commit to your position first.** Investigate as needed (read code/docs), then state YOUR position with evidence — visibly, to the user — BEFORE dispatching anything to Codex. This is the commitment device against capitulation.
 
-3. Open the debate (round 1). Send via Bash (timeout 600000):
+3. Open the debate (round 1). Send via Bash (timeout 600000 — the caller's ceiling, not the dispatch's):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
    ```
 
    `$OPENING` template:
 
    ```
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 3 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   dispatch is still running and is already paid for.
+
    We are having a structured debate. Topic:
    <topic>
 

@@ -20,7 +20,7 @@
 #                           thread file-sets — id, log, log.1, rounds,
 #                           findings.jsonl, scope, approved, last-error.jsonl,
 #                           detach-output, detach-stderr, detach-status,
-#                           dispatch-fp, dispatch-fp-plan, topic,
+#                           dispatch-fp, dispatch-fp-plan, topic, last-abort,
 #                           active — whose NEWEST member is
 #                           older than N days. Listed on dry run, moved
 #                           wholesale on --apply.
@@ -98,7 +98,7 @@ NOW="$(date +%s)"
 # Every known per-thread state file (deduplicated — the extensions are
 # distinct). Kept in ONE place so the dormant file-set and the mtime scan can
 # never drift apart.
-THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status dispatch-fp dispatch-fp-plan topic active"
+THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status dispatch-fp dispatch-fp-plan topic last-abort active"
 
 # Existing member paths of a thread's file-set, one per line.  $1=thread
 thread_files() {

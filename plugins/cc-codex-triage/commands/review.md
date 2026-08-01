@@ -38,10 +38,10 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 
    **If `--background`:** launch the driver detached — run the SAME command below with the driver's `--detach` flag added, as a normal FOREGROUND Bash call: it prints `DETACHED pid=<pid> output=<THREAD>.detach-output log-offset=<B>` and returns instantly, while the dispatch keeps running in its own session (immune to harness process-reaping). **Then wire up completion delivery — the detached worker alone cannot notify you** (and a post-READY failure appends NO new `round=` header, so log polling would never fire): parse `<pid>` and `<B>` from the DETACHED line and launch the bundled watcher as a Claude-managed background task, `Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detach-watch.sh" <THREAD> <pid> <B>, run_in_background: true)` — its completion notification carries the reply plus any worker warnings from `<THREAD>.detach-stderr` (exit 0), the failure diagnostics — worker rc, `<THREAD>.last-error.jsonl`, `detach-stderr`, `detach-output` tails (exit 1), a still-running timeout notice (exit 3), or an UNKNOWN outcome when no status record matches the worker PID (exit 4 — treat as failure until verified). The watcher is disposable: if the harness reaps it the worker is unaffected — fall back to polling `.claude/codex-threads/<THREAD>.log` for the next `round=` header (raw child output: `<THREAD>.detach-output`, latest run only). Tell the user: "Codex review started in the background — the watcher will surface the result." Fallback if `--detach` exits 8 (neither `setsid` nor `python3` on PATH): `Bash(..., run_in_background: true)` on the plain command — with the caveat that the harness may reap the process group before Codex finishes. Do NOT enter the iterate loop (step 9) and do NOT poll this turn.
 
-   Otherwise, run via Bash (timeout 600000 — reviews take minutes):
+   Otherwise, run via Bash (the 600000 ms ceiling still applies to THIS call, not to the dispatch):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
    ```
 
    If `--json`: also pass `--schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json"` to the driver.
@@ -68,7 +68,15 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 The ledger lets `--continue` and `/review-dispute|accept|defer` work from state instead of prose. If `jq` is absent, skip it — the review still works.
 
 - **Record findings** as you validate them (step 8; for `--json`, step 6.3 records each finding directly from the parsed reply, with `--confidence`). Let the helper allocate the id:
-  ```bash
+  ```
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 3 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   dispatch is still running and is already paid for.
+bash
   id=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" create <THREAD> --file F --line L --severity blocking|non-blocking --label issue --title "short title" [--confidence C])
   ```
   When you resolve/reject/defer a finding from a prior round, append a status event by its id:

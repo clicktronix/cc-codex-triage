@@ -29,6 +29,11 @@
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
+#   <thread>.last-abort       written when a signal kills a dispatch before it
+#                             replies (usually a caller timeout). Cleared by the
+#                             next successful dispatch. NOT in .log: autoplan
+#                             releases on log growth, so an abort recorded there
+#                             would release a plan gate with nothing behind it.
 #   <thread>.topic            one-line label of what the thread is about, set
 #                             by --topic on the dispatch that creates it and
 #                             never overwritten after (cleared by --new). Read
@@ -586,6 +591,8 @@ cleanup() {
     rm -f "$CC_CODEX_PROMPT_TMPFILE"
   fi
 }
+trap 'abort_dispatch INT;  cleanup; trap - EXIT; exit 130' INT
+trap 'abort_dispatch TERM; cleanup; trap - EXIT; exit 143' TERM
 trap cleanup EXIT
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -803,19 +810,56 @@ if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
   printf '%s' "$$" > "$CC_CODEX_READY_FILE"
 fi
 
+# ── interruptible dispatch ────────────────────────────────────────────────
+# Runs codex in the BACKGROUND and waits. That is not a style choice: bash defers
+# a trap until the current FOREGROUND child finishes, so with a plain `codex …`
+# call a TERM arriving mid-dispatch (the common case being a caller timeout, and
+# the Bash tool caps a foreground call at 10 minutes) did nothing at all —
+# cleanup never ran, the lease was left behind, and the codex child was orphaned,
+# finishing a paid run whose reply went nowhere. `wait` IS interruptible, so the
+# trap below can kill the child, release the lease and leave a trace.
+#
+# Verified: `sleep 30` direct → trap does not fire; `sleep 30 & wait` → it does.
+CODEX_PID=""
+run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by the caller
+  "$@" &
+  CODEX_PID=$!
+  local rc=0
+  wait "$CODEX_PID" || rc=$?
+  CODEX_PID=""
+  return "$rc"
+}
+
+# A signal-killed dispatch used to leave NOTHING: no log entry (the driver writes
+# one only on success), no .id, no diagnostic. The round simply vanished, which
+# is why a timed-out review looks like nothing happened.
+#
+# The marker is a SIDECAR, never <thread>.log — the autoplan gate releases on log
+# growth, so an abort recorded there would satisfy a plan gate with no
+# stress-test behind it.
+abort_dispatch() { # $1=signal name
+  [[ -n "$CODEX_PID" ]] && kill -TERM "$CODEX_PID" 2>/dev/null
+  if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
+    printf 'signal=%s\nthread=%s\nmode=%s\nat=%s\nnote=%s\n' \
+      "$1" "$THREAD" "${MODE:-unresolved}" "$(date -u +%FT%TZ)" \
+      "dispatch killed before a reply; the thread is intact - resume it, and use --detach for anything that may outlive the caller timeout" \
+      > "$STATE_DIR/${THREAD}.last-abort" 2>/dev/null || true
+  fi
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
   MODE="oneshot"
   # Throwaway: no thread tracking, no rollout persisted on the Codex side.
   # codex exec resume cannot continue an --ephemeral session — that is the point.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
   # last-error means the LAST error: a successful dispatch clears the diag.
-  rm -f "$DIAG_FILE"
+  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
   # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
@@ -825,7 +869,7 @@ elif [[ -n "$SID" ]]; then
   if [[ -n "$MODEL$EFFORT" ]]; then
     echo "WARN: --model/--effort are ignored on resume (kept stable across the thread). Use --new to change them." >&2
   fi
-  if ! codex exec resume --json "$SID" \
+  if ! run_codex codex exec resume --json "$SID" \
         ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
@@ -834,12 +878,12 @@ elif [[ -n "$SID" ]]; then
       "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
   fi
   # last-error means the LAST error: a successful dispatch clears the diag.
-  rm -f "$DIAG_FILE"
+  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
@@ -848,7 +892,7 @@ else
   # diag is stale — remove it NOW, BEFORE UUID extraction, so the deliberate
   # diag write on a UUID-extraction failure below lands in a clean slot and is
   # never erased by its own dispatch.
-  rm -f "$DIAG_FILE"
+  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
   # Extract the session UUID from the JSONL stream. First event carrying a
   # thread_id / session_id / conversation_id wins. Two-step: match the whole
   # key:value pair (whitespace-tolerant), then strip down to the value — no
