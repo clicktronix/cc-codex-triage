@@ -472,9 +472,55 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
   echo untracked > vendor/new.txt
   [[ "$(fp_now)" != "$S_CLEAN" ]] && ok "an untracked file inside a submodule counts too" || bad "untracked submodule content invisible"
   rm -f vendor/new.txt
+
+  # Detection failure must yield NO fingerprint. Through a pipeline the script
+  # reported the PARSER's status, so a broken `git submodule status` returned
+  # the same confident hash before and after a dirty child edit — a fabricated
+  # answer, which is worse than the gate degrading to the dirty-tree predicate.
+  REALGIT="$(command -v git)"
+  STUBG="$T/stub-git"; mkdir -p "$STUBG"
+  { echo '#!/usr/bin/env bash'
+    echo 'if [ "${1:-}" = "submodule" ] && [ "${2:-}" = "status" ]; then exit 128; fi'
+    echo "exec \"$REALGIT\" \"\$@\""
+  } > "$STUBG/git"
+  chmod +x "$STUBG/git"
+  BROKEN="$(PATH="$STUBG:$PATH" bash "$FPSH")"
+  [[ -z "$BROKEN" ]] && ok "a failing submodule probe yields no fingerprint (fail open)" || bad "fabricated a hash despite a failed probe: $BROKEN"
+
   git submodule deinit -qf vendor >/dev/null 2>&1; git rm -qf vendor >/dev/null 2>&1
   rm -rf .gitmodules .git/modules/vendor
   git add -A >/dev/null 2>&1; git commit -qm "drop submodule" >/dev/null 2>&1
+
+  # A path with a space was word-split by the old `-- $SUB_PATHS` and silently
+  # dropped, so edits inside it were invisible while the fingerprint stayed
+  # confidently non-empty.
+  if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" 'vendor lib' ) >/dev/null 2>&1; then
+    git commit -qm "add spaced submodule" >/dev/null 2>&1
+    W_CLEAN="$(fp_now)"
+    echo "edited" >> 'vendor lib/lib.txt'
+    [[ "$(fp_now)" != "$W_CLEAN" ]] && ok "a submodule path containing a space is still seen" || bad "spaced submodule path dropped by word-splitting"
+    git submodule deinit -qf 'vendor lib' >/dev/null 2>&1; git rm -qf 'vendor lib' >/dev/null 2>&1
+    rm -rf .gitmodules ".git/modules/vendor lib"
+    git add -A >/dev/null 2>&1; git commit -qm "drop spaced submodule" >/dev/null 2>&1
+  else
+    ok "spaced-path submodule fixture unavailable (skipped)"
+  fi
+
+  # Scoped (autoplan) mode used to skip submodules entirely, so a plan document
+  # living in a submodule under docs/plans could never open a plan cycle.
+  mkdir -p docs
+  if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" docs/plans ) >/dev/null 2>&1; then
+    git commit -qm "add plan submodule" >/dev/null 2>&1
+    P_CLEAN="$(fp_now docs/plans docs/PLANS)"
+    echo "plan edit" >> docs/plans/lib.txt
+    [[ "$(fp_now docs/plans docs/PLANS)" != "$P_CLEAN" ]] && ok "a dirty submodule inside the plan scope moves the scoped fingerprint" || bad "scoped mode still blind to submodule content"
+    git submodule deinit -qf docs/plans >/dev/null 2>&1; git rm -qf docs/plans >/dev/null 2>&1
+    rm -rf .gitmodules .git/modules/docs
+    git add -A >/dev/null 2>&1; git commit -qm "drop plan submodule" >/dev/null 2>&1
+  else
+    ok "scoped submodule fixture unavailable (skipped)"
+  fi
+  rm -rf docs
 else
   ok "submodule fixture unavailable in this environment (skipped)"
 fi

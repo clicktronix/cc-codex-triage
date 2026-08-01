@@ -20,9 +20,11 @@
 # Every git call is status-checked: a silenced failure produced a confident but
 # fabricated hash, the one outcome this script promises never to produce.
 #
-# Two known bounds. `write-tree` records a submodule as a gitlink, so uncommitted
-# changes INSIDE a submodule do not move the fingerprint (the old porcelain check
-# saw them). And each run rehashes the worktree from an empty index with no stat
+# `write-tree` records a submodule as a gitlink, so edits inside one would leave
+# the fingerprint identical; dirty submodules are detected and folded in
+# separately (below) for exactly that reason.
+#
+# One known cost: each run rehashes the worktree from an empty index with no stat
 # cache — sub-second at this repo's scale, but it is the hook's main cost on a
 # monorepo, and it leaves a few unreferenced loose objects per content change.
 set -u
@@ -49,17 +51,66 @@ cd "$ROOT" 2>/dev/null || exit 0
 # so only dirty initialised ones are recursed into. A repository without
 # submodules pays one `git submodule status` and nothing more.
 #
-# Scoped (autoplan) mode skips this: plan paths are documentation directories,
-# a submodule under one is not a real configuration, and this runs at every
-# turn end.
+# Every git call here is status-checked on its own, NOT through a pipeline: a
+# pipeline reports the LAST command's status, so `git … | awk` returned awk's 0
+# and a forced `git submodule status` failure produced the same confident hash
+# before and after a dirty child edit — the fabricated-hash outcome this script
+# promises never to produce.
+#
+# Paths are carried one per line and never word-split: a submodule at
+# `vendor lib` was silently dropped by the previous `-- $SUB_PATHS`.
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+SUB_RAW="$(git submodule status --recursive 2>/dev/null)" || exit 0
 DIRTY_SUBS=""
-if [ "$#" -eq 0 ]; then
-  SUB_PATHS="$(git submodule status --recursive 2>/dev/null | awk '{print $2}')" || SUB_PATHS=""
-  if [ -n "$SUB_PATHS" ]; then
-    # shellcheck disable=SC2086 — one pathspec per submodule is intended
-    DIRTY_SUBS="$( set -f; git status --porcelain -- $SUB_PATHS 2>/dev/null | sed -n 's/^.[MD] //p; s/^[MD]. //p' )" || exit 0
-  fi
+if [ -n "$SUB_RAW" ]; then
+  # ` <sha> <path> (<describe>)`, where the leading column is the status flag and
+  # the describe suffix is absent for uninitialised entries. Stripping the ends
+  # keeps whatever is between them, spaces included — awk's $2 could not.
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _sub="$(printf '%s' "$_line" | sed -e 's/^.//' -e 's/^[0-9a-f][0-9a-f]* //' -e 's/ ([^)]*)$//')"
+    [ -n "$_sub" ] || continue
+    _st="$(git status --porcelain -- "$_sub" 2>/dev/null)" || exit 0
+    [ -n "$_st" ] || continue
+    DIRTY_SUBS="$DIRTY_SUBS$_sub
+"
+  done <<EOF
+$SUB_RAW
+EOF
+fi
+
+# Scoped (autoplan) mode: keep the dirty submodules that intersect the scope.
+# Skipping submodules here entirely left a dirty `docs/plans` submodule
+# invisible to the plan gate — the one place where a plan document living in a
+# submodule is not exotic at all.
+#
+# The test is a path-prefix one in both directions (a submodule under a scoped
+# directory, or a scoped path inside a submodule), which is what the pathspecs
+# this runs with actually are: directory names from CC_CODEX_PLAN_PATHS.
+if [ "$#" -gt 0 ] && [ -n "$DIRTY_SUBS" ]; then
+  _keep=""
+  set -f
+  OLD_IFS="$IFS"; IFS='
+'
+  for _s in $DIRTY_SUBS; do
+    IFS="$OLD_IFS"
+    for _spec in "$@"; do
+      _spec="${_spec%/}"
+      case "$_s" in
+        "$_spec"|"$_spec"/*) _keep="$_keep$_s
+"; break ;;
+      esac
+      case "$_spec" in
+        "$_s"/*) _keep="$_keep$_s
+"; break ;;
+      esac
+    done
+    IFS='
+'
+  done
+  IFS="$OLD_IFS"
+  set +f
+  DIRTY_SUBS="$_keep"
 fi
 
 IDX="$(mktemp "${TMPDIR:-/tmp}/cc-gate-idx.XXXXXX")" || exit 0
