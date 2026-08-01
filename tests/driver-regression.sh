@@ -259,6 +259,15 @@ FAKE_CODEX_NOUUID=1 run a8
 [[ -f "$SD/a8.last-error.jsonl" ]] && ok "fresh diag exists after the dispatch" || bad "diag missing — deletion ran after extraction"
 grep -q 'no_id_here' "$SD/a8.last-error.jsonl" 2>/dev/null && ok "diag holds the fresh stream, not the stale one" || bad "diag content stale"
 [[ ! -e "$SD/a8.id" ]] && ok "no .id persisted without a UUID" || bad ".id persisted without UUID"
+# The dispatch was PAID FOR, so the reply and its audit record must survive the
+# thread failing to persist. Asserting only "exit 0 + a diag exists" let a
+# regression through where the log header expanded an unset ROUND under `set
+# -u`: the script died after the paid call, leaving a zero-byte log and no
+# reply on stdout — while still exiting 0.
+[[ "$OUT" == "FAKE_REPLY" ]] && ok "the paid reply still reaches stdout" || bad "reply lost on the no-UUID path (out='$OUT')"
+[[ -s "$SD/a8.log" ]] && ok "audit record written despite no .id" || bad "log is empty/missing on the no-UUID path"
+grep -q 'round=0' "$SD/a8.log" 2>/dev/null && ok "logged as round=0 (paid, but belongs to no resumable thread)" || bad "round marker: $(sed -n 1p "$SD/a8.log" 2>/dev/null)"
+grep -q '^  FAKE_REPLY$' "$SD/a8.log" 2>/dev/null && ok "the reply body is in the audit record" || bad "reply body missing from the log"
 
 echo "== lease: .active holds the dispatching PID during dispatch, gone after =="
 rm -rf "$SD"

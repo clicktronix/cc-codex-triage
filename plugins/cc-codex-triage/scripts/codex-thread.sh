@@ -976,6 +976,14 @@ if ! $ONESHOT; then
   # Round = number of successful dispatches on this PERSISTED thread. Skip the
   # bump when the thread failed to persist (no .id) — otherwise a never-resumed
   # thread accumulates rounds invisible to /thread-list, which iterates *.id.
+  #
+  # round=0 means EXACTLY that: codex succeeded and was paid for, but the reply
+  # belongs to no resumable thread. The default is not cosmetic — restructuring
+  # this block once dropped the `else ROUND=0` arm, and the unset expansion in
+  # the log header below then aborted under `set -u` AFTER the paid call: a
+  # zero-byte log, the reply never printed, and exit 0 telling the caller it
+  # had all worked.
+  ROUND=0
   if [[ -s "$ID_FILE" ]]; then
     # Validate before arithmetic: a corrupted/CRLF .rounds would otherwise be
     # an arithmetic error under set -e — killing the script AFTER the paid
