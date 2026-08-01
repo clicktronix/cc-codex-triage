@@ -60,6 +60,7 @@ tests/
   driver-regression.sh                # driver suite with a stubbed codex CLI
   ledger-regression.sh                # findings-ledger suite (jq required)
   cleanup-regression.sh               # /cleanup suite — detection classes + safety rails
+  manifest-lint.sh                    # command/skill frontmatter + code-fence structure
 CHANGELOG.md
 LICENSE                               # MIT
 ```

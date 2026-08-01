@@ -44,6 +44,13 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
    ```
 
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 3 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   dispatch is still running and is already paid for.
+
    If `--json`: also pass `--schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json"` to the driver.
 
 6. **If `--json`:** a single structured pass (implies `--once`). **On a `--json` resume, DO re-send `<json_output_contract>` in the prompt** — an explicit exception to the normal "resume doesn't re-paste the lens contract" rule, because earlier rounds on this thread were text-mode and never saw the JSON contract. Codex's reply is JSON — do NOT show it raw:
@@ -68,15 +75,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 The ledger lets `--continue` and `/review-dispute|accept|defer` work from state instead of prose. If `jq` is absent, skip it — the review still works.
 
 - **Record findings** as you validate them (step 8; for `--json`, step 6.3 records each finding directly from the parsed reply, with `--confidence`). Let the helper allocate the id:
-  ```
-
-   `dispatch.sh` detaches the worker and then waits for it here, bounded below
-   the caller's ceiling. A short dispatch returns the reply in this turn exactly
-   as a direct call would; one that outruns the window **exits 3 and hands off**
-   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
-   as a background task delivers the reply. Never treat exit 3 as a failure: the
-   dispatch is still running and is already paid for.
-bash
+  ```bash
   id=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" create <THREAD> --file F --line L --severity blocking|non-blocking --label issue --title "short title" [--confidence C])
   ```
   When you resolve/reject/defer a finding from a prior round, append a status event by its id:

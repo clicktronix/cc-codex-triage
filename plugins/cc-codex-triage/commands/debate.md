@@ -25,10 +25,6 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
    ```
 
-   `$OPENING` template:
-
-   ```
-
    `dispatch.sh` detaches the worker and then waits for it here, bounded below
    the caller's ceiling. A short dispatch returns the reply in this turn exactly
    as a direct call would; one that outruns the window **exits 3 and hands off**
@@ -36,6 +32,9 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
    as a background task delivers the reply. Never treat exit 3 as a failure: the
    dispatch is still running and is already paid for.
 
+   `$OPENING` template:
+
+   ```
    We are having a structured debate. Topic:
    <topic>
 

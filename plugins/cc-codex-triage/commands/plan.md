@@ -1,12 +1,4 @@
---
-
-   `dispatch.sh` detaches the worker and then waits for it here, bounded below
-   the caller's ceiling. A short dispatch returns the reply in this turn exactly
-   as a direct call would; one that outruns the window **exits 3 and hands off**
-   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
-   as a background task delivers the reply. Never treat exit 3 as a failure: the
-   dispatch is still running and is already paid for.
--
+---
 description: Send a plan, design doc, or architecture question to a persistent Codex plan thread to stress-test it. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or architecture question>"
 allowed-tools: Bash
@@ -44,6 +36,13 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] <<< "$PROMPT_BODY"
    ```
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 3 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   dispatch is still running and is already paid for.
 
 5. Show Codex's reply verbatim. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.
 
