@@ -39,9 +39,9 @@ Forwards a planning prompt to a Codex plan thread and **iterates to APPROVE by d
 
    `dispatch.sh` detaches the worker and then waits for it here, bounded below
    the caller's ceiling. A short dispatch returns the reply in this turn exactly
-   as a direct call would; one that outruns the window **exits 3 and hands off**
+   as a direct call would; one that outruns the window **exits 20 and hands off**
    — the worker is untouched, and re-running the `detach-watch.sh` line it prints
-   as a background task delivers the reply. Never treat exit 3 as a failure: the
+   as a background task delivers the reply. Never treat exit 20 as a failure: the
    dispatch is still running and is already paid for.
 
 5. Show Codex's reply verbatim. Exit code 4 (resume failed) → ask the user before `--new`. Exit code 5 → surface the diff.

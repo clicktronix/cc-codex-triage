@@ -18,9 +18,23 @@
 # log growth alone is never read as success; 7 not a git repo. Watch state
 # is read-only: this script writes nothing.
 #
+# CC_WATCH_PORCELAIN=1 switches to the MACHINE contract, for a caller that
+# forwards this output as if it were the driver's own (dispatch.sh):
+#   - stdout is byte-identical to the reply, nothing else. The default mode
+#     prefixes a `DONE:` line, which is right for a notification a human or an
+#     agent reads but breaks `/review --json`, whose next step is `jq`.
+#   - the exit status is the WORKER's, so 3/4/5 survive instead of collapsing
+#     into 1 and losing the caller's ability to recover per cause. The two
+#     outcomes that are the watcher's own get codes outside the driver's range:
+#     20 timeout (handoff — the worker is alive), 21 unconfirmed.
+#
 # Portability: macOS bash 3.2 + Linux. No jq.
 
 set -u
+PORCELAIN="${CC_WATCH_PORCELAIN:-0}"
+# fd 3 is the real stdout. In porcelain mode everything printed normally lands
+# on stderr, so only the explicit `>&3` writes — the reply — reach stdout.
+if [ "$PORCELAIN" = "1" ]; then exec 3>&1 1>&2; else exec 3>&1; fi
 
 THREAD="${1:-}"
 PID="${2:-}"
@@ -49,7 +63,12 @@ ERRS="$STATE_DIR/$THREAD.detach-stderr"
 if [ -n "$OFFSET" ]; then
   BASE_BYTES="$OFFSET"
 else
-  BASE_BYTES="$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')"
+  # `2>/dev/null` BEFORE the input redirection: redirections are applied left to
+  # right, so with `< "$LOG" 2>/dev/null` the shell reports the missing file on
+  # the real stderr before the silencer is in place. A dispatch that fails
+  # before its first log write then emits a raw "No such file" next to the
+  # explanation, and the raw half is the confusing one.
+  BASE_BYTES="$(wc -c 2>/dev/null < "$LOG" | tr -d ' ')"
   BASE_BYTES="${BASE_BYTES:-0}"
   case "$BASE_BYTES" in *[!0-9]*) BASE_BYTES=0 ;; esac
 fi
@@ -64,6 +83,7 @@ WAITED=0
 while kill -0 "$PID" 2>/dev/null; do
   if [ "$WAITED" -ge "$TIMEOUT" ]; then
     echo "TIMEOUT: detached dispatch (thread $THREAD, pid $PID) still running after ${TIMEOUT}s — it keeps running; re-watch or poll $LOG manually."
+    [ "$PORCELAIN" = "1" ] && exit 20
     exit 3
   fi
   sleep 2
@@ -71,7 +91,7 @@ while kill -0 "$PID" 2>/dev/null; do
 done
 
 # Worker is gone. Current log size for the delta prints below.
-CUR_BYTES="$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')"
+CUR_BYTES="$(wc -c 2>/dev/null < "$LOG" | tr -d ' ')"
 CUR_BYTES="${CUR_BYTES:-0}"
 case "$CUR_BYTES" in *[!0-9]*) CUR_BYTES=0 ;; esac
 
@@ -117,7 +137,7 @@ if [ "$S_PID" = "$PID" ]; then
   case "$S_RC" in
     0)
       echo "DONE: detached dispatch on thread $THREAD finished (worker rc=0) — reply captured in $SIDE:"
-      cat "$SIDE" 2>/dev/null || true
+      cat "$SIDE" 2>/dev/null >&3 || true
       print_warnings
       exit 0 ;;
     [0-9]*)
@@ -127,6 +147,9 @@ if [ "$S_PID" = "$PID" ]; then
         print_delta
       fi
       print_diags
+      # The worker's own status, so a caller can still tell a resume failure
+      # from a mutation refusal; 1 for the human-facing default.
+      [ "$PORCELAIN" = "1" ] && exit "$S_RC"
       exit 1 ;;
   esac
 fi
@@ -145,4 +168,5 @@ fi
 # the canonical sidecars below belong to that newer launch, not to pid $PID.
 echo "note: the sidecar tails below are the thread's LATEST launch state and may not belong to pid $PID:"
 print_diags
+[ "$PORCELAIN" = "1" ] && exit 21
 exit 4

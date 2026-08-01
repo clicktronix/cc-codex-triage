@@ -7,6 +7,18 @@
 # codes — with one difference: the dispatch is detached first, so a caller
 # timeout can no longer kill it.
 #
+# That contract is exact, not approximate. stdout carries the reply and nothing
+# else (`/review --json` pipes it straight into `jq`), every status line goes to
+# stderr, and the driver's own exit codes survive so a caller can still tell a
+# resume failure from a mutation refusal. The two outcomes belonging to this
+# wrapper rather than to the driver get codes outside the driver's range:
+#
+#   20  handoff — the wait window elapsed and the worker is STILL RUNNING.
+#   21  the worker's outcome could not be confirmed.
+#
+# Neither reuses 3: that is the driver's "codex exec failed", and overloading it
+# would make a live dispatch indistinguishable from a dead one.
+#
 # WHY THIS EXISTS. The Bash tool caps a foreground call at 600 s; that is its
 # maximum, not a setting. A branch review routinely runs longer, and when the
 # cap hit, the dispatch died: the round vanished, the paid Codex run finished
@@ -24,7 +36,7 @@
 # reply comes back in the same turn. Only a dispatch that would previously have
 # been killed changes behaviour — it becomes a handoff instead of a loss.
 #
-# On handoff (exit 3) the worker is still running: re-run the watcher named in
+# On handoff (exit 20) the worker is still running: re-run the watcher named in
 # the message as a background task and its completion notification delivers the
 # reply. The thread is untouched either way.
 #
@@ -74,8 +86,8 @@ PID="$(printf '%s' "$LAUNCH" | sed -n 's/^DETACHED pid=\([0-9][0-9]*\).*/\1/p' |
 OFF="$(printf '%s' "$LAUNCH" | sed -n 's/.*log-offset=\([0-9][0-9]*\).*/\1/p' | head -1)"
 [ -n "$OFF" ] || OFF=0
 
-CC_DETACH_WATCH_TIMEOUT="$WAIT" bash "$WATCHER" "$THREAD" "$PID" "$OFF"; wrc=$?
-if [ "$wrc" -eq 3 ]; then
+CC_WATCH_PORCELAIN=1 CC_DETACH_WATCH_TIMEOUT="$WAIT" bash "$WATCHER" "$THREAD" "$PID" "$OFF"; wrc=$?
+if [ "$wrc" -eq 20 ]; then
   echo "dispatch.sh: still running after ${WAIT}s — the worker is UNAFFECTED. Deliver it with:" >&2
   echo "  bash '$WATCHER' $THREAD $PID $OFF     (as a background task)" >&2
 fi

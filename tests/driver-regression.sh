@@ -435,18 +435,45 @@ echo "== dispatch.sh: short answers in-turn, long ones hand off alive =="
 # killed two dispatches in one session.
 DISPATCH="$(dirname "$DRIVER")/dispatch.sh"
 rm -rf "$SD"
-OUT="$(cd "$REPO" && printf 'hi' | bash "$DISPATCH" d-short 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$OUT" | grep -q FAKE_REPLY; } \
-  && ok "a short dispatch returns the reply in-turn" || bad "short dispatch rc=$rc out=$OUT"
+# stdout is compared EXACTLY, and stderr is captured separately. Grepping the
+# two streams merged accepted any amount of surrounding chatter — which is what
+# it was doing while the watcher printed a `DONE:` banner ahead of the reply,
+# enough to break the `jq` that /review --json pipes this into.
+OUT="$(cd "$REPO" && printf 'hi' | bash "$DISPATCH" d-short 2>"$T/derr")"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "a short dispatch returns in-turn with the driver's own status" || bad "short dispatch rc=$rc"
+[[ "$OUT" == "FAKE_REPLY" ]] && ok "and stdout is byte-identical to the reply" || bad "stdout polluted: [$OUT]"
 [[ -s "$SD/d-short.id" ]] && ok "and the thread persists exactly as a direct call" || bad "no thread state after dispatch.sh"
+# The same reply as JSON must survive the trip as parseable JSON.
+rm -rf "$SD"
+JOUT="$(cd "$REPO" && FAKE_CODEX_REPLY='{"verdict":"APPROVE","findings":[]}' bash "$DISPATCH" d-json <<< "hi" 2>/dev/null)"
+if command -v jq >/dev/null 2>&1; then
+  printf '%s' "$JOUT" | jq -e '.verdict == "APPROVE"' >/dev/null 2>&1 \
+    && ok "a JSON reply survives the wrapper intact (jq parses it)" || bad "JSON reply not parseable: [$JOUT]"
+else
+  [[ "$JOUT" == '{"verdict":"APPROVE","findings":[]}' ]] \
+    && ok "a JSON reply survives the wrapper intact (byte compare; jq absent)" || bad "JSON reply altered: [$JOUT]"
+fi
+
+# Each worker failure class must survive as ITSELF. Collapsing them into 1 cost
+# the caller the difference between "resume this thread" and "inspect the tree".
+rm -rf "$SD"
+printf 'seed' | bash "$DISPATCH" d-fail >/dev/null 2>&1          # create the thread
+FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail <<< "hi" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 4 ]] && ok "a resume failure reaches the caller as 4, not 1" || bad "resume failure collapsed to rc=$rc"
+rm -rf "$SD"
+FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail2 <<< "hi" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "an exec failure reaches the caller as 3" || bad "exec failure became rc=$rc"
 
 rm -rf "$SD"
 SLOWBIN2="$T/slowbin2"; mkdir -p "$SLOWBIN2"
 printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN2/codex"
 chmod +x "$SLOWBIN2/codex"
-OUT="$(cd "$REPO" && PATH="$SLOWBIN2:$PATH" CC_DISPATCH_WAIT=3 bash "$DISPATCH" d-long <<< "hi" 2>&1)"; rc=$?
-[[ "$rc" -eq 3 ]] && ok "outrunning the wait window exits 3 (handoff, not failure)" || bad "handoff rc=$rc out=$OUT"
-printf '%s' "$OUT" | grep -q 'detach-watch.sh' && ok "and names the watcher that delivers it" || bad "no handoff instruction"
+OUT="$(cd "$REPO" && PATH="$SLOWBIN2:$PATH" CC_DISPATCH_WAIT=3 bash "$DISPATCH" d-long 2>"$T/derr" <<< "hi")"; rc=$?
+# 20, not 3: 3 is the driver's "codex exec failed", and overloading it makes a
+# LIVE dispatch indistinguishable from a dead one.
+[[ "$rc" -eq 20 ]] && ok "outrunning the wait window exits 20 (handoff, not failure)" || bad "handoff rc=$rc"
+[[ -z "$OUT" ]] && ok "and the handoff writes nothing to stdout" || bad "handoff polluted stdout: [$OUT]"
+grep -q 'detach-watch.sh' "$T/derr" && ok "and names the watcher that delivers it, on stderr" || bad "no handoff instruction on stderr"
 W="$(pgrep -f "$SLOWBIN2/codex" | head -1)"
 [[ -n "$W" ]] && kill -0 "$W" 2>/dev/null && ok "the worker is UNAFFECTED by the handoff" || bad "worker died with the wait window"
 pkill -f "$SLOWBIN2/codex" 2>/dev/null; rm -rf "$SLOWBIN2" "$SD"
