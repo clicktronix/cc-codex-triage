@@ -7,50 +7,40 @@ allowed-tools: Bash
 
 # Codex second opinion
 
-Every other command in this plugin is `disable-model-invocation` — deliberately, because each one spends real money and minutes and the user should be the one deciding to. This skill is the exception: a single bounded dispatch you may reach for on your own when you are stuck in a way the repository cannot resolve.
+Every slash command in this plugin is `disable-model-invocation`, because each spends real money and minutes and the user should decide. This skill is the exception: **one** bounded dispatch you may reach for yourself. It is not the review loop — for that, read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps.
 
-It is narrow on purpose. It gets one question answered. It is **not** the review loop — for that, read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps.
-
-## When this is the right call
+## Use it when
 
 All of these share one property: more reading will not settle it.
 
-- **A fork with no local evidence.** Two designs are both defensible and the codebase does not prefer either. (If the codebase *does* prefer one, that is your answer — use it.)
-- **About to do something irreversible.** A destructive migration, a deletion, a rewrite whose old version will not be recoverable.
-- **The repository contradicts itself.** A doc, a comment or a test says one thing and the code does another, and which is authoritative changes what you write.
-- **A finding you cannot verify.** You need a runtime trace, prod data or a file you do not have — per the skill `codex-triage` rule, say so rather than applying on faith. Codex running with `-C <repo>` may be able to reach what you cannot.
+- **A fork with no local evidence** — two designs both defensible, the codebase preferring neither. (If it does prefer one, that is your answer.)
+- **An irreversible change** — a destructive migration, a deletion, a rewrite whose old version will not be recoverable.
+- **The repository contradicts itself** — a doc, comment or test says one thing and the code another, and which is authoritative changes what you write.
+- **A finding you cannot verify** — you need a runtime trace, prod data, a file you do not have. Codex runs with `-C <repo>` and may reach what you cannot.
 
-## When it is not
+## Not when
 
-- **The code answers it.** Read the code. This costs minutes and money; grep costs neither.
-- **You want a critique of a diff or a plan.** That is `/review` or `/plan`, and they belong to the user.
-- **You already asked about this fork.** One dispatch per fork. A second means you are running a review loop without saying so — go to the user instead.
-- **You are stuck on something the user can answer in one line.** Ask them. It is faster and free.
+- **The code answers it.** Grep is free; this is not.
+- **You want a critique of a diff or plan.** That is `/review` or `/plan`, and they belong to the user.
+- **You already asked about this fork.** One dispatch per fork — a second is a review loop you did not declare. Go to the user.
+- **The user could answer in one line.** Ask them.
 
-## How to run it
+## How
 
-**1. Announce before spending.** One line, before the call, saying what you are asking and why the repo does not settle it. The user can stop you; after the dispatch they cannot.
+**1. Announce before spending.** One line saying what you are asking and why the repo does not settle it. The user can stop you before the dispatch, not after.
 
-**2. Pick the thread.**
+**2. Pick the thread.** A feature thread if one exists (Codex already has the context); otherwise `--thread <topic-slug>`; `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log.
 
-- A feature thread already exists for this work → use it; Codex has the context and you pay less to establish it.
-- Otherwise `--thread <topic-slug>` — a fresh named thread.
-- Genuinely one-off, no follow-up conceivable → add `--oneshot` for an ephemeral run that leaves no state.
-
-Never target `review-<branch>`: the `/autoreview` gate parses verdicts from that log, and an unrelated question in it is noise in the audit trail at best.
-
-**3. Send intent, not context.** Codex is an agent — it reads files, runs `git diff`, greps and runs tests on its own. It does not have your *intent*, your *scope*, or what you have already ruled out. Send those; do not paste the codebase.
+**3. Send intent, not context.** Codex reads files, runs `git diff`, greps and runs tests itself. What it lacks is your intent, your scope, and what you have already ruled out.
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] <<< "$QUESTION"
 ```
 
-Prompt shape:
-
 ```
 I need a second opinion on one decision. Do not review the branch; answer this.
 
-Decision: <the fork, stated as a choice between named options>
+Decision: <the fork, as a choice between named options>
 What I already checked: <files, tests, docs — and what they did NOT settle>
 What would change my mind: <the evidence that would decide it>
 
@@ -58,20 +48,18 @@ Give your recommendation and the evidence for it, with file:line where it is in
 the repo. Say explicitly if the question is underdetermined by the code.
 ```
 
-**4. Show the reply verbatim.** Do not paraphrase Codex.
+**4. Show the reply verbatim.**
 
-**5. Treat it as a claim, not an order.** The skill `codex-triage` rule applies in full: read the cited site *and its consumers*, check for a reason the current code stands, confirm the suggested direction does not regress something. A second opinion you cannot verify is still a second opinion, not a decision.
+**5. Treat it as a claim, not an order.** The skill `codex-triage` validation rule applies in full: read the cited site and its consumers, check for a reason the current code stands, confirm the suggested direction does not regress something.
 
-**6. One dispatch.** If the reply does not settle it, that is information — take it to the user with both positions. Do not open a round 2.
+**6. One dispatch.** If the reply does not settle it, take both positions to the user. Do not open a round 2.
 
-## Exit codes
-
-Handle these per skill `codex-triage`: 3 = dispatch failed, 4 = resume failed (**ask the user before `--new`** — never auto-reset a thread), 5 = tracked-file mutation under strict mode, 7 = not a git repo, 10 = thread busy. On any of them, report the failure honestly rather than guessing what Codex would have said.
+Exit codes per skill `codex-triage`: 3 = dispatch failed, 4 = resume failed (**ask before `--new`**), 5 = tracked-file mutation, 7 = not a git repo, 10 = thread busy. Report failures honestly rather than guessing what Codex would have said.
 
 ## Verification gate
 
-- [ ] The cost was announced before the dispatch, not after.
-- [ ] The thread is not a `review-<branch>` gate thread.
-- [ ] Codex's reply was shown verbatim.
-- [ ] The recommendation was checked against the code before being acted on.
-- [ ] Exactly one dispatch was spent.
+- [ ] Cost announced before the dispatch.
+- [ ] Thread is not a `review-<branch>` gate thread.
+- [ ] Codex's reply shown verbatim.
+- [ ] The recommendation checked against the code before acting on it.
+- [ ] Exactly one dispatch spent.

@@ -9,17 +9,15 @@ disable-model-invocation: true
 
 Two parts: (1) **on arming, if the branch already has code changes, run the review immediately** — so existing work gets reviewed right away without you typing `/review`; (2) arms a Stop hook that blocks the end of every future turn in which the code differs from the last state this gate released, pointing Claude at the `/review` command file to follow with `--thread review-<branch>` and address blocking findings. Blocking ends when the review thread's last verdict is an **APPROVE earned inside the current cycle** (a stale APPROVE from an earlier cycle or arming does not count — the hook only parses verdicts from log content appended after the cycle's byte-offset cut), when the round cap is hit (each block consumes one of `cap` rounds, within or across turns), or on `/autoreview off`.
 
-**The unit is a cycle, not an arming.** A cycle opens when the code moves away from the last released state and closes on an APPROVE that covers the state actually in front of you. Then a new cycle can open. Two consequences worth knowing:
+**The unit is a cycle, not an arming.** It opens when the code differs from the last released state and closes on an APPROVE covering the state in front of you. Because the fingerprint hashes working-tree *content*:
 
-- **Committing the fixes does not end the round.** The gate compares a hash of the working-tree *content*, so a fix is still a difference after it is committed. Under the old dirty-tree test, committing made the tree clean and the turn was allowed to finish with the thread's last verdict still `REQUEST_CHANGES` — the follow-up round simply never happened.
-- **Committing already-approved work costs nothing.** Same reason, other direction: identical bytes hash identically, so approve → commit → carry on does not burn a round on code Codex just approved.
-- **One APPROVE does not cover later work.** Each release records the fingerprint it approved, so the next edit re-engages the gate instead of coasting on a verdict that was true an hour ago.
+- **committing the fixes keeps the gate engaged** — a fix is still a difference after it is committed, where the old dirty-tree test went quiet exactly when the follow-up round was owed;
+- **committing already-approved bytes costs nothing** — identical content hashes identically;
+- **one APPROVE covers one state** — each release records what it approved, so the next edit re-engages the gate.
 
-Runaway-safe: the round cap is the hard terminator **per cycle** (counters are numeric-validated; malformed state fails OPEN), the APPROVE gate is the success release, and branch scoping keeps the gate out of unrelated work. Only a real release refills the budget, so a cycle that never earns an APPROVE still stops at `cap` blocks. The hook itself never calls Codex — it only routes you to the normal `/review` flow.
+Runaway-safe: the cap terminates each cycle (counters numeric-validated, malformed state fails OPEN) and only a real release refills it. The hook never calls Codex — it routes you to the normal `/review` flow.
 
-**Arming on a dirty tree is fine now, but it costs a round.** The gate treats any non-state-dir difference from the arming fingerprint as unverified — pre-existing WIP, untracked `.env`, editor droppings included — so arming mid-change means the next turn blocks. Commit or stash first if you want the first block to be about *your* work.
-
-**Known blind spot:** the fingerprint is the content of everything `git add -A` would stage — tracked and untracked alike. It does not see files git ignores. That is deliberate: a gate that fired on `.env` or build output would be unusable.
+**Arming mid-change costs a round:** any non-state-dir difference from the arming fingerprint counts as unverified, WIP and editor droppings included. Gitignored files never count — a gate firing on `.env` would be unusable.
 
 ## Steps
 
@@ -68,7 +66,7 @@ Runaway-safe: the round cap is the hard terminator **per cycle** (counters are n
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoreview.armed`. Branch-scoped — switching branches disengages it until you re-arm (or switch back).
-- Fields: `branch`, `thread`, `lens`, `cap`, `blocks`, `log_bytes_at_arming`, `armed_at`, `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook on each release). An armed file with neither fingerprint field is a pre-0.9 arming: it keeps the old dirty-tree behaviour **until its first release**, at which point the hook writes `released_fp` and it follows the cycle model from then on. So an upgrade never changes a gate mid-cycle, and an old gate still picks up the fix instead of carrying the holes until you happen to re-arm.
+- Fields: `branch`, `thread`, `lens`, `cap`, `blocks`, `log_bytes_at_arming`, `armed_at`, plus `fp_at_arming` (written here) and `released_fp` (written by the hook on each release). With neither fingerprint field the file is a pre-0.9 arming: dirty-tree behaviour until its first release, cycle model after it.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
-- Each blocked round is a full Codex dispatch when you run `/review` — cap defaults to 3 and bounds ONE cycle; a cycle that reaches APPROVE gets a fresh budget for the next one.
+- Each blocked round is a full Codex dispatch. cap defaults to 3 and bounds ONE cycle; reaching APPROVE grants a fresh budget.
 - Pairs with `/autoplan` (same hook, plan-document gate).

@@ -5,25 +5,18 @@
 # whether Claude may finish the turn, or must first run /review (or /plan) on
 # its own changes. The actual review runs through the normal commands/driver.
 #
-# The unit of work is a CYCLE, not an arming. A cycle opens when the code
-# differs from the last state this gate released, and closes when a verdict
-# earned inside that cycle releases it. Each release re-baselines all three
-# pieces of state at once (see rebaseline_cycle): the approved code fingerprint,
-# the verdict window, and the round counter.
-#
-# That shape exists because the previous "dirty tree + last verdict" model had
-# two holes, both reproducible:
-#   - committing the fixes made the tree clean, so the gate allowed the turn to
-#     end while the thread's last verdict was still REQUEST_CHANGES — the round
-#     that should have followed the fix never happened;
-#   - the first APPROVE stayed the last parsed verdict forever, so it released
-#     every later turn no matter how much new unreviewed code was written.
+# The unit of work is a CYCLE, not an arming: it opens when the code differs
+# from the last state this gate released and closes on a verdict earned inside
+# it. Each release re-baselines the approved fingerprint, the verdict window and
+# the round counter together (see rebaseline_cycle). The previous "dirty tree +
+# last verdict" model had two reproducible holes — committing the fixes went
+# quiet while the verdict was still REQUEST_CHANGES, and the first APPROVE
+# released every later turn for the rest of the arming.
 #
 # Runaway protection (hard, independent of Claude Code internals):
-#   1. blocks counter vs cap in the armed file — the hard terminator, per
-#      cycle. The counters are validated as numeric; ANY malformed value fails
-#      OPEN (allow), never closed. Only a real release refills the budget, so
-#      a cycle that never earns one still terminates at `cap` blocks.
+#   1. blocks counter vs cap, per cycle — the hard terminator. Counters are
+#      numeric-validated; ANY malformed value fails OPEN. Only a real release
+#      refills the budget, so a cycle that never earns one stops at `cap`.
 #   2. Success gates: autoreview releases on an APPROVE verdict appended to the
 #      thread log after the cycle's byte-offset cut; autoplan releases once the
 #      thread log changed size within the cycle (a dispatch always appends).
@@ -47,15 +40,12 @@
 #   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming,
 #   armed_at (0.8+, drives the TTL), fp_at_arming (0.9+), released_fp (0.9+,
 #   hook-written).
-#   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open):
-#   autoreview parses verdicts only from log content appended after it;
-#   autoplan releases when the log size differs from it. It is advanced on
-#   every release so one verdict cannot release two cycles.
-#   fp_at_arming / released_fp are OPTIONAL: an armed file with neither is a
-#   pre-0.9 arming and keeps the old dirty-tree behaviour UNTIL ITS FIRST
-#   RELEASE, at which point this hook writes released_fp and it follows the
-#   cycle model from then on. So an upgrade never changes a gate mid-cycle, and
-#   an old gate still picks up the fix rather than carrying the holes forever.
+#   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open). It
+#   is the cycle's verdict cut, advanced on every release so one verdict cannot
+#   release two cycles. fp_at_arming / released_fp are OPTIONAL: with neither,
+#   the file is a pre-0.9 arming and keeps the dirty-tree test until its first
+#   release, then follows the cycle model — so an upgrade never changes a gate
+#   mid-cycle, and an old gate still picks up the fix.
 #
 # Output contract: JSON {"decision":"block","reason":"..."} on stdout blocks
 # the stop; exit 0 with no JSON allows it. Never exit non-zero (fail-open).
@@ -168,10 +158,8 @@ dirty_plans() {
 }
 
 code_fingerprint() { # $1 = optional pathspec list (autoplan); empty = whole tree
-  # Delegates to the ONE canonical implementation, which the arming commands
-  # also call — a second copy that drifted by a single pathspec would make
-  # every gate read as permanently dirty. Empty output (script missing, not a
-  # repo, git failure) means "unknown" and the caller fails open.
+  # The ONE canonical implementation, shared with the arming commands: a copy
+  # that drifted by a pathspec would make every gate read as permanently dirty.
   local fpsh="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/gate-fingerprint.sh}"
   [[ -n "$fpsh" && -f "$fpsh" ]] || {
     echo "cc-codex-triage: gate-fingerprint.sh not found next to the hook — the gate falls back to the dirty-tree test for this turn." >&2
@@ -180,18 +168,15 @@ code_fingerprint() { # $1 = optional pathspec list (autoplan); empty = whole tre
   local fp
   # shellcheck disable=SC2086
   fp="$( set -f; bash "$fpsh" ${1:-} 2>/dev/null )"
-  # An empty result means the script ran and could not compute — an unreadable
-  # file, a git failure. The gate then degrades to the dirty-tree test, which
-  # is a weaker guarantee and must not happen silently: the missing-script path
-  # says so, and this one used to not.
+  # Empty means it ran and could not compute. The gate then degrades to the
+  # dirty-tree test — weaker, so it must not be silent.
   [[ -n "$fp" ]] || echo "cc-codex-triage: the code fingerprint could not be computed (unreadable file? git error?) — the gate falls back to the dirty-tree test for this turn." >&2
   printf '%s' "$fp"
 }
 
-# Mirrored in scripts/lib.sh for /status and /cleanup. The copy is deliberate:
-# lib.sh's own header records that this hook does not source it, so that it
-# stays dependency-free and can fail open without any external file being
-# present. Change both together.
+# Mirrored in scripts/lib.sh for /status and /cleanup. The copy is deliberate —
+# lib.sh's header records that this hook does not source it, so it stays
+# dependency-free. Change both together.
 gate_baseline() { # $1=armed file — the code state this gate last RELEASED,
   # else the state captured at arming. Empty when neither is recorded, which
   # means a pre-0.9 armed file: the caller then keeps the old dirty-only test
@@ -203,30 +188,23 @@ gate_baseline() { # $1=armed file — the code state this gate last RELEASED,
 }
 
 has_unreviewed_work() { # $1=baseline fp  $2=current fp  $3=legacy dirt predicate
-  # Two ways to have no fingerprint to compare: a pre-0.9 armed file (no
-  # baseline recorded) or a fingerprint that could not be computed (script
-  # missing, git failure). BOTH fall back to the dirty-tree predicate. The
-  # second case used to disable the gate outright while the stderr note said
-  # it had fallen back — the note is now true, and a weakened gate beats none.
+  # No baseline (pre-0.9 file) or no current fingerprint (script missing, git
+  # failure) both fall back to the dirty-tree predicate. The second case used to
+  # disable the gate while the stderr note claimed a fallback; a weakened gate
+  # beats none, and the note is now true.
   { [[ -n "$1" && -n "$2" ]]; } || { "$3"; return; }
   [[ "$1" != "$2" ]]
 }
 
 reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked at.
-  # The driver snapshots the code state when it dispatches, into
-  # <thread>.dispatch-fp. Releasing against THAT rather than the worktree at
-  # turn-end matters: code written after the verdict arrived but before the
-  # turn ended was never reviewed, and stamping it approved is precisely the
-  # leak this gate exists to prevent.
+  # The driver snapshots the state it dispatched against, in
+  # <thread>.dispatch-fp. Releasing against that rather than the worktree at
+  # turn-end keeps code written after the verdict from being stamped approved.
+  # A stale file describes an EARLIER state, so the next turn blocks — safe.
+  # Absent or malformed falls back to the caller's fingerprint.
   #
-  # A stale file (from an older dispatch on the same thread) is safe — it
-  # describes an EARLIER state, so the next turn sees a difference and blocks.
-  # Absent or malformed falls back to the caller's fingerprint, i.e. exactly
-  # the previous behaviour.
-  #
-  # WHOLE-TREE ONLY. The driver has no idea what pathspec a gate is scoped to,
-  # so it snapshots the whole tree — usable by autoreview, never by autoplan,
-  # whose fingerprint covers only the plan paths and would never compare equal.
+  # WHOLE-TREE ONLY: the driver cannot know a gate's pathspec, so autoplan must
+  # not use this — its plan-scoped fingerprint would never compare equal.
   local v
   v="$(head -1 "$STATE_DIR/$1.dispatch-fp" 2>/dev/null | tr -d '[:space:]')"
   [[ "$v" =~ ^[0-9a-f]{40}$ ]] || v="$2"
@@ -234,20 +212,14 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
 }
 
 consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
-  # No cycle is open, so anything appended to the thread log since the last cut
-  # answers a question nobody asked. Leaving it there BANKS it: the next
-  # cycle's first evaluation finds that APPROVE already sitting past the offset
-  # and releases without a review.
+  # With no cycle open, a verdict appended since the last cut answers nothing —
+  # and left in place it BANKS: the next cycle finds that APPROVE already past
+  # the offset and releases without a review. /autoreview's own arming produces
+  # exactly that (it writes fp_at_arming, then reviews existing work), which
+  # shipped the first change after arming ungated.
   #
-  # Not hypothetical — it is what /autoreview's own arming flow produces. The
-  # command writes fp_at_arming and then reviews existing work immediately, so
-  # that APPROVE lands while the fingerprint still equals fp_at_arming. No
-  # cycle is open to consume it, and the first genuinely new code after arming
-  # shipped ungated.
-  #
-  # Only 0.9 armed files are touched: a pre-0.9 file keeps 0.8 semantics
-  # entirely until its first release, which is what its documentation promises.
-  # Writes only when the log actually grew, so an idle turn costs one wc -c.
+  # 0.9 files only — a pre-0.9 file keeps 0.8 semantics until its first release.
+  # Writes only when the log grew, so an idle turn costs one wc -c.
   local f="$1" fp="$2" t="$3" now off
   [[ -n "$fp" ]] || return 0                      # unknown state → change nothing
   [[ -n "$(gate_baseline "$f")" ]] || return 0    # pre-0.9 file → leave alone
@@ -260,23 +232,15 @@ consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
 }
 
 rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cycle.
-  # Three things move together, and all three are required for the NEXT cycle
-  # to be evaluated honestly:
-  #   released_fp          the code state that was actually approved, so a
-  #                        later edit re-arms the gate instead of coasting on
-  #                        one APPROVE for the rest of the arming;
-  #   log_bytes_at_arming  advanced to the current log size, so the verdict
-  #                        that released THIS cycle cannot also release the
-  #                        next one (the same stale-APPROVE protection that
-  #                        arming applies, applied per cycle);
-  #   blocks=0             a fresh round budget per cycle. The cap still
-  #                        terminates any cycle that never earns an APPROVE,
-  #                        so this cannot run away — only a real release
-  #                        refills it.
-  # Diagnoses its own failure, because the two ways to fail need different
-  # advice and a single "could not persist (state dir not writable?)" was wrong
-  # half the time. Returns non-zero either way; the caller releases anyway (a
-  # persisted marker is not worth withholding an earned APPROVE over).
+  # All three move together or the next cycle is evaluated on stale state:
+  #   released_fp          what was approved, so a later edit re-arms the gate;
+  #   log_bytes_at_arming  advanced, so this cycle's verdict cannot release the
+  #                        next one;
+  #   blocks=0             a fresh budget — refilled only by a real release, so
+  #                        a cycle that never earns one still stops at `cap`.
+  # Diagnoses its own failure (the two causes need different advice) and returns
+  # non-zero; the caller releases anyway — a persisted marker is not worth
+  # withholding an earned APPROVE over.
   local f="$1" fp="$2" size
   if [[ -z "$fp" ]]; then
     echo "cc-codex-triage: released, but the code fingerprint is unavailable so the release could not be recorded — the next turn re-evaluates from the previous baseline." >&2

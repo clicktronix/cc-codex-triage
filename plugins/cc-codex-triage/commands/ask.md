@@ -16,9 +16,7 @@ This is the **informational** command — collaborative, not adversarial. For cr
 1. Parse `$ARGUMENTS`:
    - `--thread <name>` → target thread (must match `[a-zA-Z0-9_.-]+`). **Default: `ask`**, a single repo-wide thread for one-off questions.
    - `--oneshot` → strip it and pass `--oneshot` to the driver.
-   The rest is the question.
-
-   **When to pass `--thread`.** The default `ask` thread is repo-wide, which is right for "is there already a helper for X" and wrong for anything belonging to a feature you are working through. Questions about a feature belong on that feature's thread, where Codex already has the context — see **One feature, one thread** below.
+   The rest is the question. See **Thread choice** below for which thread to target.
 
 2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts:
 
@@ -30,16 +28,14 @@ This is the **informational** command — collaborative, not adversarial. For cr
    <the question>
    ```
 
-3. Pick the sandbox, then run via Bash (timeout 600000). Default to read-only — you are asking, not asking Codex to change anything — and respect a user-set `CC_CODEX_FLAGS`.
-
-   **On an EXISTING thread, do not pass a sandbox flag.** The sandbox is fixed when a Codex session is created and `codex exec resume` does not accept `-s`, so a flag on a resume is silently ignored — setting it would only tell the user something untrue. Detect it the usual way: `.claude/codex-threads/<THREAD>.id` exists means resume.
+3. Run via Bash (timeout 600000). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. It is a resume when `.claude/codex-threads/<THREAD>.id` exists.
 
    ```bash
-   # initial dispatch on this thread (no .id yet) — the read-only default applies:
+   # initial dispatch (no .id yet):
    CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
      bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] <<< "$QUESTION"
 
-   # resume (.id exists) — the thread keeps the sandbox it was created with:
+   # resume — the thread keeps the sandbox it was created with:
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> <<< "$QUESTION"
    ```
 
@@ -47,14 +43,9 @@ This is the **informational** command — collaborative, not adversarial. For cr
 
 5. Handle driver exit code 4 (resume failed) per skill `codex-triage` — ask the user before `--new`, do not auto-reset.
 
-## One feature, one thread
+## Thread choice
 
-Threads default to one per *command kind* — `ask`, `review-<branch>`, `plan-<branch>`, `debate-<slug>` — so a single feature's context ends up split across three or four Codex sessions that each know a third of the story. When you are working a feature through, point `/ask`, `/plan` and `/debate` at ONE thread named for it (`--thread feat-391`), and leave `/review` on its own branch-scoped thread so the gate's verdict parsing stays clean.
-
-Two things bound how far that goes:
-
-- **The sandbox is fixed at session creation.** `codex exec resume` accepts `-m` and `--output-schema` but no `-s`, so a feature thread chooses its sandbox once, on the first dispatch. (The CLI does still take `-c sandbox_mode=…` on a resume; the driver deliberately never forwards `-c` there, to keep a thread's execution environment stable across rounds — so within this plugin the choice really is made once.) Read-only is usually right for a thread that answers and critiques — it is also the only setting under which Codex can never trip the tracked-file mutation guard.
-- **A thread is not free to grow.** Every resume re-feeds the history, so a large thread is worth splitting into `--thread <feature>-2` with a short written handoff rather than resumed indefinitely. `/thread-list` shows rounds and log size. For calibration rather than as a tested threshold: production feature threads reach ~130 KB by round 9, and the longest on record (13 rounds, ~135 KB) never converged.
+The default `ask` thread is repo-wide — right for "is there already a helper for X", wrong for anything belonging to a feature you are working through. Point those at that feature's thread with `--thread <feature>`, so Codex answers with the context it already has. Full convention and its limits: skill `codex-triage`, "One feature = one thread".
 
 ## Notes
 

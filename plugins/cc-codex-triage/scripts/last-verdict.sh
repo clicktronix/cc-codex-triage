@@ -3,34 +3,26 @@
 #
 # usage: last-verdict.sh <log-file> [byte-offset]
 #
-# Prints APPROVE | REQUEST_CHANGES | COMMENT, or nothing. One implementation,
-# two callers — the Stop hook (which decides whether a turn may end) and
-# /status (which reports the same fact to a human). They disagreeing would mean
-# /status telling you the gate should have released while the gate blocks.
+# Prints APPROVE | REQUEST_CHANGES | COMMENT, or nothing. Shared by the Stop
+# hook and /status — two copies disagreeing would mean /status reporting an
+# APPROVE the gate refuses, which reads as the gate being broken.
 #
-# Two protections, both load-bearing:
+# Section tracking: the driver writes column-0 markers and indents body lines,
+# so a verdict quoted inside a PROMPT (a /reply saying "earlier you said
+# APPROVE") cannot release the gate. `tail -c` may start mid-section, so lines
+# are ignored until a column-0 REPLY: marker is seen — that blocks toward the
+# cap, never falsely releases.
 #
-#   Section tracking. The driver writes column-0 markers (PROMPT: / REPLY: /
-#   --- / [timestamp]) and indents body lines by two spaces, so a verdict
-#   literal inside a logged PROMPT — a /reply quoting "earlier you said
-#   APPROVE" — can never release the gate. `tail -c` may start mid-line or
-#   mid-section: until a column-0 REPLY: marker is seen, lines are ignored.
-#   That blocks toward the cap, never toward a false release.
+# The offset is the cycle's cut: only content appended after it is parsed, so
+# the verdict that released the previous cycle cannot release this one. A log
+# SMALLER than the offset was rotated or reset, so all of it is post-cut.
 #
-#   The byte offset. Only content appended after the current cycle's cut is
-#   parsed, so the APPROVE that released the previous cycle cannot release this
-#   one. A log SMALLER than the offset was rotated or reset, and everything
-#   left is post-cut, so the whole file is parsed.
-#
-# Matching normalizes, then compares exactly. The contract asks for a verdict
-# alone on its own line, but Codex legitimately writes `## APPROVE`,
-# `**APPROVE**` and `Verdict: APPROVE.` — a production thread went five rounds
-# where NOT ONE reply matched the old strict pattern, so the gate could never
-# release and burned its whole cap on an approved branch. Stripping emphasis
-# and heading marks before an EXACT comparison accepts those forms while still
-# refusing every line that carries other words: "not quite APPROVE" and "I
-# would not give APPROVE here" do not reduce to the bare token, so they cannot
-# release anything.
+# Matching normalizes, then compares EXACTLY. The contract asks for a bare
+# verdict line, but Codex writes `## APPROVE` and `**APPROVE**` — one production
+# thread went five rounds with none matching the old strict pattern, so an
+# approved branch could never release the gate. Trimming decoration and then
+# demanding equality accepts those forms while still refusing every line
+# carrying other words: "not quite APPROVE" does not reduce to the token.
 set -u
 LOG="${1:?usage: last-verdict.sh <log-file> [byte-offset]}"
 OFF="${2:-0}"
@@ -45,19 +37,14 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk '
   /^REPLY:/            { r = 1; next }
   /^(PROMPT:|---$|\[)/ { r = 0; next }
   r {
-    # Trim from the ENDS only — never a global strip. A global gsub of "_"
-    # turns REQUEST_CHANGES into REQUESTCHANGES and silently stops every
-    # change request from being seen.
+    # Trim from the ENDS only: a global strip of "_" turns REQUEST_CHANGES into
+    # REQUESTCHANGES and silently stops every change request being seen.
     line = $0
-    # Leading set also covers list bullets and blockquotes ("- APPROVE",
-    # "> APPROVE"): the trailing set already tolerated a dash, so rejecting a
-    # leading one was an accident rather than a decision.
-    sub(/^[[:space:]*_#`>-]+/, "", line)           # heading marks, emphasis, bullets, quotes, indent
-    sub(/[-.:;!,*_`[:space:]]+$/, "", line)        # trailing punctuation, plus the --- reply terminator
-    # Spelled out per character because awk has no portable case-insensitive
-    # flag, and "VERDICT: APPROVE" in a heading is entirely plausible.
+    sub(/^[[:space:]*_#`>-]+/, "", line)      # headings, emphasis, bullets, quotes, indent
+    sub(/[-.:;!,*_`[:space:]]+$/, "", line)   # punctuation, plus the --- reply terminator
+    # Spelled per character: awk has no portable case-insensitive flag.
     sub(/^[Vv][Ee][Rr][Dd][Ii][Cc][Tt][[:space:]]*:[[:space:]]*/, "", line)
-    sub(/^[[:space:]*_`>]+/, "", line)             # emphasis that opened after "Verdict:"
+    sub(/^[[:space:]*_`>]+/, "", line)
     if (line == "APPROVE" || line == "REQUEST_CHANGES" || line == "COMMENT") v = line
   }
   END { if (v != "") print v }

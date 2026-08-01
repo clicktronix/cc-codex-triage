@@ -1,5 +1,5 @@
 ---
-description: One-screen status of cc-codex-triage in this repo — current branch, dirty tree, armed /autoreview /autoplan gates (with stale-branch / pre-0.5 / missing-target warnings), last verdict per thread, gitignore status, and the Codex CLI version. Read-only.
+description: One-screen status of cc-codex-triage in this repo — current branch, working tree, armed /autoreview /autoplan gates with their cycle state and stale-branch / pre-0.5 / missing-target warnings, last verdict per thread, gitignore status, and the Codex CLI version. Read-only.
 allowed-tools: Bash
 disable-model-invocation: true
 ---
