@@ -1,6 +1,6 @@
 ---
 description: Send code, a diff, a PR, or another agent's findings to a persistent Codex review thread for critique. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
-argument-hint: '[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] [--json] <paste or "review my branch">'
+argument-hint: '[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] [--json] <paste or "review my branch">'
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -15,6 +15,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - `--lens <name>` → one of: `correctness` (default), `security`, `performance`, `architecture`, `ux`, `quick`.
    - `--thread <name>` → target thread. **Default: `review-<branch-slug>`** (e.g. `review-main` on `main` — no main/master special-case; the bare `review` thread only via an explicit `--thread`). `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` — the SAME slug rule the hook and `/autoreview` use, so a manual review and the gate share one thread. Per-task threads keep one task per thread; mixing tasks inflates every later resume.
    - `--once` → a single dispatch, no iterate-loop (you decide after one round).
+   - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
    - `--oneshot` → throwaway ephemeral run (no thread kept). Implies `--once`.
    - `--cap N` → max review rounds in the loop (default 5).
    - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
@@ -40,7 +41,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    Otherwise, run via Bash (timeout 600000 — reviews take minutes):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
    ```
 
    If `--json`: also pass `--schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json"` to the driver.

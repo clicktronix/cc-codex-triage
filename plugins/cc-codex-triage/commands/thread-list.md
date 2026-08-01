@@ -13,24 +13,8 @@ Lists threads under `.claude/codex-threads/` in the current repo.
 1. Run via Bash tool:
 
    ```bash
-   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 0   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; read-only, so outside a repo just report nothing
-   STATE_DIR=".claude/codex-threads"
-   if [ ! -d "$STATE_DIR" ]; then
-     echo "No active threads in this repo."
-     exit 0
-   fi
-   printf '%-26s  %-38s  %-7s  %-9s  %s\n' THREAD SESSION_UUID ROUNDS LOG_SIZE LAST_ACTIVITY
-   for f in "$STATE_DIR"/*.id; do
-     [ -f "$f" ] || continue
-     name="$(basename "$f" .id)"
-     sid="$(cat "$f")"
-     rounds="$(cat "$STATE_DIR/$name.rounds" 2>/dev/null || echo 0)"
-     logsz="$(wc -c < "$STATE_DIR/$name.log" 2>/dev/null | tr -d ' ' || echo 0)"
-     mtime="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null || stat -c '%y' "$f" 2>/dev/null | cut -d. -f1)"
-     printf '%-26s  %-38s  %-7s  %-9s  %s\n' "$name" "$sid" "$rounds" "${logsz:-0}" "$mtime"
-   done
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh"
    ```
 
-2. Show output verbatim.
+2. Show output verbatim. Columns: thread, rounds, log size, last activity, topic. A `[busy]` marker means a dispatch is in flight on that thread — targeting it now would be refused (exit 10).
 
-3. If any thread has `LAST_ACTIVITY` older than 24h, add a note: "thread `<name>` has not been used for >24h — Codex still remembers it, but the codebase may have drifted from when the conversation started."

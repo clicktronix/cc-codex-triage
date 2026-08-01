@@ -1,6 +1,6 @@
 ---
 description: Send a message to an arbitrarily-named Codex thread; creates it on first use. For triage topics that don't fit the default review/plan threads.
-argument-hint: "[--oneshot] <thread-name> <message>"
+argument-hint: "[--topic <text>] [--oneshot] <thread-name> <message>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -25,7 +25,7 @@ Arbitrary named-thread variant of `/review` and `/plan` — a plain passthrough 
 4. Run via Bash tool (timeout 600000):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <NAME> [--oneshot] <<< "<PROMPT_BODY>"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <NAME> [--topic "<text>"] [--oneshot] <<< "<PROMPT_BODY>"
    ```
 
 5. Show Codex's reply verbatim. Handle exit code 4 (resume failure) and code 5 (file mutation) the same way as `/review`.

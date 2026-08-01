@@ -15,6 +15,9 @@
 #                           exclusive with --new.
 #       --require-existing  fail (exit 6) instead of creating a new thread when
 #                           none exists. Used by /reply.
+#       --topic <text>      one-line label for a NEW thread, ignored if the
+#                           thread already has one. Makes the thread findable
+#                           by subject rather than by name alone.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
 #                           reaping); prints `DETACHED pid=<pid>
@@ -26,6 +29,11 @@
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
+#   <thread>.topic            one-line label of what the thread is about, set
+#                             by --topic on the dispatch that creates it and
+#                             never overwritten after (cleared by --new). Read
+#                             by thread-index.sh so an agent can pick an
+#                             existing thread instead of opening a new one.
 #   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure
 #                             (removed on the next successful dispatch; every
 #                             write is capped to the LAST 64 KB of the stream).
@@ -115,6 +123,7 @@ THREAD=""
 MODEL=""
 EFFORT=""
 SCHEMA=""
+TOPIC=""
 # Args a --detach launcher forwards to its re-exec'd child: everything except
 # --detach itself (the child is an ordinary foreground invocation).
 CHILD_ARGS=()
@@ -128,6 +137,7 @@ while (( $# )); do
     --model)  [[ $# -ge 2 ]] || { echo "--model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
     --effort) [[ $# -ge 2 ]] || { echo "--effort needs a value" >&2; exit 1; }; EFFORT="$2"; shift 2 ;;
     --schema) [[ $# -ge 2 ]] || { echo "--schema needs a value" >&2; exit 1; }; SCHEMA="$2"; shift 2 ;;
+    --topic)  [[ $# -ge 2 ]] || { echo "--topic needs a value" >&2; exit 1; }; TOPIC="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -727,7 +737,7 @@ if $FORCE_NEW; then
   # the previous task's findings ledger / scope / approval baseline. Runs
   # while HOLDING the lease — a busy thread was refused above with every
   # sidecar intact.
-  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE"
+  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" "$STATE_DIR/${THREAD}.topic"
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is
@@ -751,6 +761,18 @@ porcelain() {
 # ── tracked-file mutation guard (pre) ─────────────────────────────────────
 REPO_ROOT="$(git -C . rev-parse --show-toplevel 2>/dev/null || true)"
 PRE_PORCELAIN="$(porcelain)"
+
+# ── thread topic label ────────────────────────────────────────────────────
+# One line saying what this thread is about, so a later agent can pick the
+# right existing thread instead of opening a new one. Written only when absent:
+# it describes what the thread was CREATED for, and a later dispatch must not
+# rewrite that. --new clears it along with the rest of the thread's state.
+if ! $ONESHOT && [[ -n "$TOPIC" && -n "$REPO_ROOT" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  # Single line, bounded: this is read into a listing, not a document.
+  printf '%s\n' "$TOPIC" | tr -d '\n\r' | cut -c1-120 > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
+  printf '\n' >> "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
+fi
 
 # ── code state at dispatch time (for the /autoreview gate) ────────────────
 # This is the state Codex is about to look at. The Stop hook records it as the

@@ -29,12 +29,18 @@ All of these share one property: more reading will not settle it.
 
 **1. Announce before spending.** One line saying what you are asking and why the repo does not settle it. The user can stop you before the dispatch, not after.
 
-**2. Pick the thread.** A feature thread if one exists (Codex already has the context); otherwise `--thread <topic-slug>`; `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log.
+**2. Pick the thread — look first.** Reusing a thread that already holds the context is cheaper and better-informed than opening a new one, so list what exists (a local read, no dispatch):
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh"
+```
+
+Reuse a thread whose topic covers this question. Otherwise open one with `--thread <slug> --topic "<what it is about>"`, so the next agent can make the same judgement. `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log. A `[busy]` thread has a dispatch in flight and would refuse yours (exit 10).
 
 **3. Send intent, not context.** Codex reads files, runs `git diff`, greps and runs tests itself. What it lacks is your intent, your scope, and what you have already ruled out.
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] <<< "$QUESTION"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
 ```
 
 ```
@@ -59,7 +65,8 @@ Exit codes per skill `codex-triage`: 3 = dispatch failed, 4 = resume failed (**a
 ## Verification gate
 
 - [ ] Cost announced before the dispatch.
-- [ ] Thread is not a `review-<branch>` gate thread.
+- [ ] Existing threads were listed before opening a new one.
+- [ ] Thread is not a `review-<branch>` gate thread; a new one carries a `--topic`.
 - [ ] Codex's reply shown verbatim.
 - [ ] The recommendation checked against the code before acting on it.
 - [ ] Exactly one dispatch spent.

@@ -355,6 +355,24 @@ kill -TERM -"$WPID" 2>/dev/null || true
 i=0; while ! grep -q FAKE_REPLY "$SD/d2.log" 2>/dev/null && [[ $i -lt 150 ]]; do sleep 0.1; i=$((i+1)); done
 grep -q FAKE_REPLY "$SD/d2.log" 2>/dev/null && ok "reply landed despite the wrapper-pgid kill" || bad "reply lost after group kill"
 
+echo "== --topic labels a NEW thread, is never overwritten, and --new clears it =="
+rm -rf "$SD"
+run tl --topic "auth rewrite, session store"
+[[ "$(cat "$SD/tl.topic" 2>/dev/null)" == "auth rewrite, session store" ]] && ok "topic written on creation" || bad "topic not written: $(cat "$SD/tl.topic" 2>/dev/null)"
+run tl --topic "something else entirely"
+[[ "$(cat "$SD/tl.topic" 2>/dev/null)" == "auth rewrite, session store" ]] && ok "a later dispatch does not rewrite it" || bad "topic overwritten on resume"
+run tl --new --topic "fresh subject"
+[[ "$(cat "$SD/tl.topic" 2>/dev/null)" == "fresh subject" ]] && ok "--new clears it so the thread can be relabelled" || bad "--new did not reset the topic"
+# A newline in the label would break the one-record-per-line index format.
+run tl2 --topic "$(printf 'line one\nline two')"
+[[ "$(wc -l < "$SD/tl2.topic" | tr -d ' ')" == "1" ]] && ok "multi-line topic collapsed to one line" || bad "topic is not one line"
+# --oneshot keeps no state at all, topic included.
+rm -f "$SD/tl3.topic"; run tl3 --oneshot --topic "throwaway"
+[[ ! -e "$SD/tl3.topic" ]] && ok "--oneshot writes no topic" || bad "oneshot left a topic file"
+# tl was relabelled by --new above, so assert against its CURRENT label.
+IDX="$(bash "$(dirname "$DRIVER")/thread-index.sh" --tsv 2>/dev/null)"
+printf '%s' "$IDX" | grep -q "^tl$(printf '\t')fresh subject" && ok "thread-index lists the label" || bad "thread-index did not surface the topic: $(printf '%s' "$IDX" | head -3)"
+
 echo "== detach: no setsid AND no python3 -> exit 8, ZERO state =="
 rm -rf "$SD"
 mkdir -p "$T/isolbin" "$T/dtmp3"

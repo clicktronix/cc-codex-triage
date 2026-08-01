@@ -102,6 +102,16 @@ full.
   `tests/scenarios/README.md` records both that fact and the RED that would
   test it.
 
+- **Threads are findable, not just resumable.** `--topic "<text>"` on the driver
+  records one line about what a thread holds, set when it is created and never
+  overwritten (cleared by `--new`). New `scripts/thread-index.sh` lists every
+  thread with its rounds, size, last activity, topic and a `[busy]` marker;
+  `/thread-list` now prints it. It is a local read with no Codex dispatch, so
+  the `codex-second-opinion` skill runs it to **reuse an existing thread rather
+  than open a new one** — until now every listing surface was
+  `disable-model-invocation`, so an agent told to reuse a feature's thread had
+  no way to see which threads existed or what they held.
+
 - **The one-feature-one-thread convention.** Thread defaults are per *command
   kind*, so a feature's context splits across three or four Codex sessions that
   each know a third of the story. Documented with its two real limits: the

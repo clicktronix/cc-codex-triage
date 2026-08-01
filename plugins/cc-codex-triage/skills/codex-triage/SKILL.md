@@ -47,11 +47,14 @@ State files live in `.claude/codex-threads/` in the current repo (git-ignore thi
 - `<name>.detach-output` — raw STDOUT of the LATEST `--detach` child (truncated per launch by the lease-owning child; the reply itself still lands in the `.log` as usual).
 - `<name>.detach-stderr` — the latest detach child's STDERR — warnings a successful run emits (invalid saved ID discarded, ignored resume overrides, porcelain guard notes); the watcher surfaces it on every outcome.
 - `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on; no matching record → the watcher reports UNKNOWN (exit 4), never success-from-log-growth.
+- `<name>.topic` — one-line label of what the thread is about, set by `--topic` when it is created. `thread-index.sh` lists it so an agent can reuse the right thread instead of opening a new one.
 - `<name>.dispatch-fp` — code fingerprint at the moment of the last dispatch; the `/autoreview` gate releases against this, so work added after the verdict stays gated.
 - `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
 - `<name>.active.lock` — transient acquisition mutex directory (with an owner-PID token inside) held only while a dispatch claims the lease. Stale recovery is automatic: a lock whose owner PID is dead, or an ownerless lock older than 60s, is reclaimed by the next dispatch; a lock with a live owner is never stolen.
 
-List with `/thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/thread-new <name>`.
+List with `/thread-list`, which prints `scripts/thread-index.sh` — name, rounds, size, last activity, topic, and a `[busy]` marker for a thread with a dispatch in flight. That script is a local read with no Codex dispatch, so `codex-second-opinion` may run it directly to **pick an existing thread rather than open a new one**. Force-reset (drop saved UUID and the topic, next dispatch starts fresh) with `/thread-new <name>`.
+
+**Name and label a thread when you create it.** The name is the handle (`feat-391`, `review-<branch>`); `--topic "what it is about"` is what makes it findable later. A thread called `review-391-a` with no topic tells the next agent nothing.
 
 The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral` and writes **no** `.id`, `.log`, or rollout — a true throwaway.
 
