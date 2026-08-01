@@ -27,7 +27,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
 
-**Every command above is `disable-model-invocation`** — each spends real money and minutes, so the user decides. The one exception is the sibling skill **`codex-second-opinion`**, which you may invoke yourself for a *single* bounded dispatch when you are genuinely stuck: a fork the repository does not settle, an irreversible change, two sources contradicting each other. It announces the cost before spending it and never targets a `review-<branch>` gate thread. Anything iterative still belongs to the user.
+**Every command above is `disable-model-invocation`** — each spends real money and minutes, so the user decides. The one exception is the sibling skill **`codex-second-opinion`**, which you may invoke yourself for a *single* bounded dispatch when you are genuinely stuck: a fork the repository does not settle, an irreversible change, two sources contradicting each other. It announces the cost before spending it and never targets a gate thread — `review-<branch>` or `plan-<branch>`, since /autoplan releases on ANY growth of its log. Anything iterative still belongs to the user.
 
 **`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
 

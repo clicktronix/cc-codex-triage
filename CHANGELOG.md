@@ -98,7 +98,7 @@ full.
   one. This is a single bounded dispatch for a fork the repository cannot
   settle, an irreversible change, or two sources that contradict each other. It
   announces the cost before spending it, spends exactly one dispatch, and never
-  targets a `review-<branch>` gate thread. It ships with **no baseline**, and
+  targets a gate thread (`review-<branch>` or `plan-<branch>`). It ships with **no baseline**, and
   `tests/scenarios/README.md` records both that fact and the RED that would
   test it.
 

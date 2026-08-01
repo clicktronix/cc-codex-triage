@@ -674,6 +674,28 @@ expect_block "the banked APPROVE cannot release the next dirty state"
 rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+echo "== concurrent hooks cannot corrupt the armed file =="
+# Every writer used a shared "$f.tmp", so one hook truncated it while another's
+# `grep -v` was still reading. Twenty parallel hooks left the file as the single
+# line `blocks=1` — branch, thread and cap GONE, i.e. a silently and permanently
+# disarmed gate. A lost increment only delays the cap; corruption removes it.
+git add -A >/dev/null && git commit -qm "settle before race test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 30 0 0 "$(fp_now)"
+echo "concurrent work" >> f.txt
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  ( printf '%s' "$DEFAULT_INPUT" | bash "$HOOK" >/dev/null 2>&1 ) &
+done
+wait
+for k in branch thread lens cap blocks log_bytes_at_arming fp_at_arming; do
+  grep -q "^$k=" "$SD/autoreview.armed" || { bad "field '$k' lost to the race"; break; }
+done
+grep -q '^branch=' "$SD/autoreview.armed" && grep -q '^cap=' "$SD/autoreview.armed" && grep -q '^fp_at_arming=' "$SD/autoreview.armed" \
+  && ok "the armed file survives 20 concurrent hooks intact" || bad "armed file corrupted by concurrent hooks"
+[[ -z "$(ls "$SD"/autoreview.armed.* 2>/dev/null)" ]] && ok "no temp files left behind" || bad "leftover rewrite temp files"
+rm -f "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== counters too large for shell arithmetic fail OPEN =="
 # There must be WORK, or the gate allows for the ordinary reason and the
 # assertion cannot fail. bash wraps silently here: 0 -ge 99999999999999999999
@@ -712,6 +734,29 @@ expect_block "turn 2: the new plan doc still needs its OWN dispatch"
 # and a log left behind here would read as "already dispatched" and release it.
 rm -f "$SD/autoreview.armed" "$SD/autoplan.armed" "$SD/plan-main.log" "$SD/review-main.log"; rm -rf docs
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== autoplan releases against the PLAN-scoped snapshot, not the whole tree =="
+# The driver writes both sidecars; the hook must pick the plan one. Comparing a
+# whole-tree hash against a pathspec hash can never be equal, so the gate
+# re-blocked immediately after every release, all the way to the cap. The
+# earlier tests wrote NO sidecar and so only exercised the fallback.
+git add -A >/dev/null && git commit -qm "settle before plan-scope test" >/dev/null 2>&1
+rm -rf docs; mkdir -p docs/plans; echo "# p" > docs/plans/p.md
+: > "$SD/plan-main.log"
+arm_plan_fp main plan-main 3 0 0 "$(fp_now docs/plans docs/PLANS)"
+echo "# edited" >> docs/plans/p.md
+expect_block "plan edit opens the cycle"
+printf '%s\n' "$(fp_now)"                        > "$SD/plan-main.dispatch-fp"       # whole tree
+printf '%s\n' "$(fp_now docs/plans docs/PLANS)"  > "$SD/plan-main.dispatch-fp-plan"  # plan scope
+printf 'REPLY:\n  stress-tested\n' > "$SD/plan-main.log"
+expect_allow "the dispatch released the plan state it saw"
+[[ "$(sed -n 's/^released_fp=//p' "$SD/autoplan.armed")" == "$(fp_now docs/plans docs/PLANS)" ]] \
+  && ok "released_fp is the PLAN-scoped hash" || bad "released_fp is not the plan hash — the whole-tree one leaked in"
+expect_allow "and it stays released while the plan is unchanged"
+echo "# edited again after the dispatch" >> docs/plans/p.md
+expect_block "a plan edit made after the dispatch is not covered by it"
+rm -f "$SD/autoplan.armed" "$SD/plan-main.dispatch-fp" "$SD/plan-main.dispatch-fp-plan" "$SD/plan-main.log"
+rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
 mkdir -p docs/plans

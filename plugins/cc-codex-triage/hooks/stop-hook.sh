@@ -125,6 +125,24 @@ log_size() { # $1=thread — current byte size of the thread log, 0 if absent
   printf '%s' "$s"
 }
 
+# Rewrite an armed file atomically. Every writer used a shared, predictable
+# "$f.tmp": two concurrent hooks then had one truncating the temp file while the
+# other's `grep -v` was still reading it, and the survivor kept only its own
+# appended line. Reproduced with 20 parallel hooks — the armed file came out as
+# the single line `blocks=1`, with branch/thread/cap/fp_at_arming GONE. That is
+# not a lost update, it is a silently and permanently disarmed gate.
+#
+# A per-writer temp plus rename makes each rewrite all-or-nothing. Concurrent
+# writers can still lose an increment (last rename wins), which only makes the
+# cap arrive later — it cannot corrupt the file or bypass the cap.
+armed_rewrite() { # $1=armed file; body on stdin
+  local f="$1" tmp
+  tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 1
+  if cat > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then return 0; fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
 bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # Returns non-zero if the increment could NOT be persisted (e.g. read-only
   # state dir). The caller must then fail OPEN: blocking without a persisted
@@ -135,7 +153,7 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # below, and the raw one is the confusing half.
   { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
-  } > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || { rm -f "$f.tmp" 2>/dev/null; return 1; }
+  } | armed_rewrite "$f" || return 1
   printf '%s' "$b"
 }
 
@@ -213,10 +231,14 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # it; closing it needs the snapshot tied to the log position of the verdict.
   # Absent or malformed falls back to the caller's fingerprint.
   #
-  # WHOLE-TREE ONLY: the driver cannot know a gate's pathspec, so autoplan must
-  # not use this — its plan-scoped fingerprint would never compare equal.
-  local v
-  v="$(head -1 "$STATE_DIR/$1.dispatch-fp" 2>/dev/null | tr -d '[:space:]')"
+  # $3="plan" selects the PLAN-SCOPED snapshot the driver writes for the thread
+  # the autoplan gate watches. Without it the whole-tree hash is compared against
+  # a pathspec hash, which can never be equal — so every autoplan release
+  # immediately re-blocked, to the cap. The tests missed it because they wrote no
+  # sidecar at all and so only ever exercised the fallback.
+  local v f="$STATE_DIR/$1.dispatch-fp"
+  [[ "${3:-}" == "plan" ]] && f="$STATE_DIR/$1.dispatch-fp-plan"
+  v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
   [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="$2"   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
 }
@@ -247,7 +269,7 @@ consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
   [[ "$now" -ne "$off" ]] || return 0
   { grep -v -e '^log_bytes_at_arming=' "$f" 2>/dev/null
     echo "log_bytes_at_arming=$now"
-  } > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null
+  } | armed_rewrite "$f" || true
   return 0
 }
 
@@ -271,8 +293,7 @@ rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cy
          echo "released_fp=$fp"
          echo "log_bytes_at_arming=$size"
          echo "blocks=0"
-       } > "$f.tmp" 2>/dev/null || ! mv -f "$f.tmp" "$f" 2>/dev/null; then
-    rm -f "$f.tmp" 2>/dev/null
+       } | armed_rewrite "$f"; then
     echo "cc-codex-triage: released, but could not write $f (state dir not writable?) — the next turn may re-block. Re-arm to continue." >&2
     return 1
   fi
