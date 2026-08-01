@@ -762,18 +762,6 @@ porcelain() {
 REPO_ROOT="$(git -C . rev-parse --show-toplevel 2>/dev/null || true)"
 PRE_PORCELAIN="$(porcelain)"
 
-# ── thread topic label ────────────────────────────────────────────────────
-# One line saying what this thread is about, so a later agent can pick the
-# right existing thread instead of opening a new one. Written only when absent:
-# it describes what the thread was CREATED for, and a later dispatch must not
-# rewrite that. --new clears it along with the rest of the thread's state.
-if ! $ONESHOT && [[ -n "$TOPIC" && -n "$REPO_ROOT" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  # Single line, bounded: this is read into a listing, not a document.
-  printf '%s\n' "$TOPIC" | tr -d '\n\r' | cut -c1-120 > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
-  printf '\n' >> "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
-fi
-
 # ── code state at dispatch time (for the /autoreview gate) ────────────────
 # This is the state Codex is about to look at. The Stop hook records it as the
 # released fingerprint when this thread's verdict releases a cycle, instead of
@@ -932,6 +920,19 @@ if ! $ONESHOT; then
     [[ "$PREV_ROUNDS" =~ ^(0|[1-9][0-9]*)$ ]] || PREV_ROUNDS=0
     ROUND=$(( PREV_ROUNDS + 1 ))
     echo "$ROUND" > "$ROUNDS_FILE"
+    # Topic label, written HERE and not before the dispatch: a failed run would
+    # otherwise leave its label on a thread it never created, and the
+    # never-overwrite rule would then pin that wrong label forever.
+    # Written only when absent — it describes what the thread was CREATED for.
+    # --new clears it with the rest of the thread's state.
+    if [[ -n "$TOPIC" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
+      # Bash parameter expansion rather than `cut`: GNU cut terminates its
+      # output with a newline and BSD cut does not, so building the line with
+      # an external command produced a two-line file on Linux and a one-line
+      # file on macOS. This is also one less process on a hot path.
+      _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
+      printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
+    fi
   else
     ROUND=0
   fi

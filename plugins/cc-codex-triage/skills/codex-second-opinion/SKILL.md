@@ -35,7 +35,7 @@ All of these share one property: more reading will not settle it.
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh"
 ```
 
-Reuse a thread whose topic covers this question. Otherwise open one with `--thread <slug> --topic "<what it is about>"`, so the next agent can make the same judgement. `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log. A `[busy]` thread has a dispatch in flight and would refuse yours (exit 10).
+Reuse a thread whose topic covers this question. Otherwise open one by passing a new name — the driver takes it positionally — plus `--topic "<what it is about>"`, so the next agent can make the same judgement. `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log. A `[busy]` thread has a dispatch in flight and would refuse yours (exit 10).
 
 **3. Send intent, not context.** Codex reads files, runs `git diff`, greps and runs tests itself. What it lacks is your intent, your scope, and what you have already ruled out.
 

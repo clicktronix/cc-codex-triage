@@ -1,5 +1,5 @@
 ---
-description: List active named Codex threads in the current repo with their session UUIDs, round counts, log sizes, and last-activity timestamps.
+description: List active named Codex threads in the current repo with rounds, log size, last activity, topic, and a busy marker for a thread with a dispatch in flight.
 allowed-tools: Bash
 disable-model-invocation: true
 ---

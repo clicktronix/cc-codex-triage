@@ -19,6 +19,12 @@
 #
 # Every git call is status-checked: a silenced failure produced a confident but
 # fabricated hash, the one outcome this script promises never to produce.
+#
+# Two known bounds. `write-tree` records a submodule as a gitlink, so uncommitted
+# changes INSIDE a submodule do not move the fingerprint (the old porcelain check
+# saw them). And each run rehashes the worktree from an empty index with no stat
+# cache — sub-second at this repo's scale, but it is the hook's main cost on a
+# monorepo, and it leaves a few unreferenced loose objects per content change.
 set -u
 STATE_DIR=".claude/codex-threads"
 
@@ -48,7 +54,10 @@ else
   # exit 1, and the state dir is meant to be gitignored. Drop it afterwards
   # instead, which also covers repos that never ignored it.
   git add -A -- . >/dev/null 2>&1 || exit 0
-  git rm -r --cached --ignore-unmatch -q -- "$STATE_DIR" >/dev/null 2>&1 || true
+  # Status-checked like the rest: if this fails for a reason --ignore-unmatch
+  # does not cover, the tree would include the state dir and the gate would
+  # re-arm on the driver's own writes until the cap.
+  git rm -r --cached --ignore-unmatch -q -- "$STATE_DIR" >/dev/null 2>&1 || exit 0
 fi
 
 git write-tree 2>/dev/null || exit 0

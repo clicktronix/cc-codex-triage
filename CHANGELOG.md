@@ -116,8 +116,8 @@ full.
   kind*, so a feature's context splits across three or four Codex sessions that
   each know a third of the story. Documented with its two real limits: the
   sandbox is fixed at session creation (verified against codex-cli 0.146), and
-  a thread should be split past ~10 rounds or ~100 KB rather than resumed
-  indefinitely.
+  a large thread is worth splitting rather than resumed indefinitely (production
+  threads reach ~130 KB by round 9 — calibration, not a tested threshold).
 
 ### Note on versioning
 

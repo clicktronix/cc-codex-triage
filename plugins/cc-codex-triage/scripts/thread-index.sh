@@ -15,6 +15,9 @@
 # Threads are listed by their `.id` file, so a name with state but no session
 # (a failed first dispatch) is deliberately absent: there is nothing to resume.
 set -u
+# Shared helpers rather than private copies: the inline mtime this script used
+# to carry inherited a Linux bug from the same pattern in lib.sh.
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "Not inside a git repository."; exit 0; }
 cd "$ROOT" || exit 0
 STATE_DIR=".claude/codex-threads"
@@ -31,14 +34,21 @@ for f in "$@"; do
   [ -f "$f" ] || continue
   name="$(basename "$f" .id)"
   rounds="$(cat "$STATE_DIR/$name.rounds" 2>/dev/null | tr -cd '0-9')"; rounds="${rounds:-0}"
-  logsz="$(wc -c < "$STATE_DIR/$name.log" 2>/dev/null | tr -d ' ')"; logsz="${logsz:-0}"
-  mtime="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null || { stat -c '%y' "$f" 2>/dev/null | cut -d. -f1; })"
+  logsz="$(wc -c 2>/dev/null < "$STATE_DIR/$name.log" | tr -d ' ')"; logsz="${logsz:-0}"
+  # The LOG, not the .id: the driver writes .id once, on the dispatch that
+  # creates the thread, and never again — so stat'ing it reports creation time
+  # under a "last activity" heading. The log is appended every round.
+  act="$STATE_DIR/$name.log"; [ -f "$act" ] || act="$f"
+  mtime="$(_mtime "$act")"
   topic="$(head -1 "$STATE_DIR/$name.topic" 2>/dev/null | tr -d '\t\r')"
   # A live lease means a dispatch is in flight; targeting it would be refused
   # with exit 10, so a caller choosing a thread needs to know before it tries.
   busy=""
   if [ -f "$STATE_DIR/$name.active" ]; then
     pid="$(tr -cd '0-9' < "$STATE_DIR/$name.active" 2>/dev/null)"
+    # Strictly positive, mirroring the driver: `kill -0 0` signals the whole
+    # process group and would report every thread busy.
+    case "$pid" in ''|0|*[!0-9]*) pid="" ;; esac
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && busy="busy"
   fi
   if $TSV; then

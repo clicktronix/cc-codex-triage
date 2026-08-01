@@ -363,15 +363,65 @@ run tl --topic "something else entirely"
 [[ "$(cat "$SD/tl.topic" 2>/dev/null)" == "auth rewrite, session store" ]] && ok "a later dispatch does not rewrite it" || bad "topic overwritten on resume"
 run tl --new --topic "fresh subject"
 [[ "$(cat "$SD/tl.topic" 2>/dev/null)" == "fresh subject" ]] && ok "--new clears it so the thread can be relabelled" || bad "--new did not reset the topic"
-# A newline in the label would break the one-record-per-line index format.
-run tl2 --topic "$(printf 'line one\nline two')"
+# A newline or tab in the label would break the one-record-per-line TSV index.
+run tl2 --topic "$(printf 'line one\nline two\tand a tab')"
 [[ "$(wc -l < "$SD/tl2.topic" | tr -d ' ')" == "1" ]] && ok "multi-line topic collapsed to one line" || bad "topic is not one line"
+# Exactly one trailing newline, on BSD and GNU alike. An earlier version built
+# the line with `cut`, which terminates its output with a newline on GNU but
+# not on BSD, so a separate printf produced TWO lines on Linux only — i.e. a
+# green suite on macOS and a red one on the other supported platform.
+[[ "$(od -An -c "$SD/tl2.topic" | tr -s ' ' | grep -c '\\n  \\n')" == "0" ]] \
+  && ok "exactly one trailing newline (no BSD/GNU divergence)" || bad "double newline in the topic file"
+printf '%s' "$(cat "$SD/tl2.topic")" | grep -q "$(printf '\t')" \
+  && bad "tab survived into the label" || ok "tabs stripped (TSV index stays parseable)"
+# A label longer than the cap must still be one line, not one-plus-a-blank.
+run tl4 --topic "$(python3 -c 'print("y"*400)' 2>/dev/null || printf 'yyyy')"
+[[ "$(wc -l < "$SD/tl4.topic" | tr -d ' ')" == "1" ]] && ok "over-long topic stays one line" || bad "over-long topic split"
 # --oneshot keeps no state at all, topic included.
 rm -f "$SD/tl3.topic"; run tl3 --oneshot --topic "throwaway"
 [[ ! -e "$SD/tl3.topic" ]] && ok "--oneshot writes no topic" || bad "oneshot left a topic file"
 # tl was relabelled by --new above, so assert against its CURRENT label.
 IDX="$(bash "$(dirname "$DRIVER")/thread-index.sh" --tsv 2>/dev/null)"
 printf '%s' "$IDX" | grep -q "^tl$(printf '\t')fresh subject" && ok "thread-index lists the label" || bad "thread-index did not surface the topic: $(printf '%s' "$IDX" | head -3)"
+# A dispatch that FAILS must not leave a label: the never-overwrite rule would
+# then pin the wrong subject on the thread a later successful run creates.
+rm -rf "$SD"
+FAKE_CODEX_EXIT=3 run tl5 --topic "label from a run that failed" || true
+[[ ! -e "$SD/tl5.topic" ]] && ok "a failed dispatch writes no label" || bad "failed dispatch left a label: $(cat "$SD/tl5.topic")"
+run tl5 --topic "the real subject"
+[[ "$(cat "$SD/tl5.topic" 2>/dev/null)" == "the real subject" ]] && ok "the successful retry sets the label" || bad "retry label wrong: $(cat "$SD/tl5.topic" 2>/dev/null)"
+
+echo "== thread-index: the surface a skill runs unprompted =="
+IDXSH="$(dirname "$DRIVER")/thread-index.sh"
+rm -rf "$SD"
+# No state dir at all, and a state dir with no .id — the glob must not leak a
+# literal "*.id" row into a listing an agent parses.
+OUT="$(bash "$IDXSH" 2>&1)"
+[[ "$OUT" == *"No active threads"* ]] && ok "no state dir -> plain message" || bad "no-state-dir output: $OUT"
+mkdir -p "$SD"; : > "$SD/orphan.log"
+OUT="$(bash "$IDXSH" 2>&1)"
+{ [[ "$OUT" == *"No active threads"* ]] && [[ "$OUT" != *'*.id'* ]]; } \
+  && ok "state dir with no threads -> no unmatched-glob row" || bad "glob leaked: $OUT"
+[[ -z "$(bash "$IDXSH" --tsv 2>&1)" ]] && ok "--tsv prints nothing when there is nothing" || bad "--tsv emitted a row for no threads"
+rm -f "$SD/orphan.log"
+# LAST_ACTIVITY must track the LOG, not the .id: the driver writes .id once, on
+# the dispatch that creates the thread, so stat'ing it reports creation time
+# under a "last activity" heading.
+run ix --topic "index probe"
+touch -t 202001010000 "$SD/ix.id"
+printf '%s\t' "$(bash "$IDXSH" --tsv | awk -F'\t' '$1=="ix"{print $5}')" | grep -q '^2020' \
+  && bad "LAST_ACTIVITY still reads the .id mtime" || ok "LAST_ACTIVITY tracks the log, not thread creation"
+# A live lease is what makes a dispatch refuse with exit 10; a caller choosing a
+# thread has to see it. PID 0 must NOT read as live — kill -0 0 hits the group.
+echo $$ > "$SD/ix.active"
+bash "$IDXSH" --tsv | awk -F'\t' '$1=="ix"{print $6}' | grep -q busy && ok "a live lease shows busy" || bad "live lease not reported"
+echo 0 > "$SD/ix.active"
+bash "$IDXSH" --tsv | awk -F'\t' '$1=="ix"{print $6}' | grep -q busy && bad "pid 0 reported busy (kill -0 0 signals the group)" || ok "pid 0 is not a live owner"
+rm -f "$SD/ix.active"
+# The human table must carry the topic, and one record per line either way.
+bash "$IDXSH" | grep -q 'index probe' && ok "human table shows the topic" || bad "topic missing from the table"
+[[ "$(bash "$IDXSH" --tsv | wc -l | tr -d ' ')" == "1" ]] && ok "one TSV record per thread" || bad "TSV record count wrong"
+rm -rf "$SD"
 
 echo "== detach: no setsid AND no python3 -> exit 8, ZERO state =="
 rm -rf "$SD"

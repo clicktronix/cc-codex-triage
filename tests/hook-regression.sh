@@ -329,6 +329,11 @@ arm_review_fp() { # branch thread cap blocks log_bytes fp
   printf 'branch=%s\nthread=%s\nlens=correctness\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoreview.armed"
 }
+arm_plan_fp() { # branch thread cap blocks log_bytes fp
+  mkdir -p "$SD"
+  printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
+}
 reply_log() { printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"; }   # overwrite: one verdict, at offset 0
 
 echo "== verdict parser: the formats Codex actually writes =="
@@ -610,13 +615,33 @@ expect_block "and it now gates new code like a 0.9 gate"
 rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
 
+echo "== BOTH gates armed: a block on one must not bank the other's verdicts =="
+# emit_block and allow exit the whole hook, so a block on autoreview used to
+# skip autoplan entirely — including its idle-verdict consumption. Plan-thread
+# growth during the blocked turn then banked and released the next plan cycle
+# free. Nothing tested the two gates together, which is why it survived.
+git add -A >/dev/null && git commit -qm "settle before two-gate test" >/dev/null 2>&1
+rm -rf docs; mkdir -p docs/plans
+: > "$SD/review-main.log"; : > "$SD/plan-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+arm_plan_fp   main plan-main   2 0 0 "$(fp_now docs/plans docs/PLANS)"
+echo "code" >> f.txt                                   # opens the autoreview cycle only
+printf 'REPLY:\n  chatter, not a stress-test\n' > "$SD/plan-main.log"   # plan thread grows
+expect_block "turn 1: autoreview blocks (plans untouched)"
+AP_OFF="$(sed -n 's/^log_bytes_at_arming=//p' "$SD/autoplan.armed")"
+[[ "$AP_OFF" == "$(logsize "$SD/plan-main.log")" ]] \
+  && ok "autoplan consumed its idle growth despite the autoreview block" \
+  || bad "autoplan growth banked while the other gate blocked (off=$AP_OFF log=$(logsize "$SD/plan-main.log"))"
+reply_log APPROVE                                       # release autoreview
+echo "# brand new, never stress-tested" > docs/plans/new.md
+expect_block "turn 2: the new plan doc still needs its OWN dispatch"
+# Remove the thread logs too: the next block arms with log_bytes_at_arming=0,
+# and a log left behind here would read as "already dispatched" and release it.
+rm -f "$SD/autoreview.armed" "$SD/autoplan.armed" "$SD/plan-main.log" "$SD/review-main.log"; rm -rf docs
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
 mkdir -p docs/plans
-arm_plan_fp() { # branch thread cap blocks log_bytes fp
-  mkdir -p "$SD"
-  printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
-}
 PFP="$(fp_now docs/plans docs/PLANS)"
 arm_plan_fp main plan-main 2 0 0 "$PFP"
 echo "# plan v1" > docs/plans/p.md

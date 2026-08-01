@@ -201,6 +201,11 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # <thread>.dispatch-fp. Releasing against that rather than the worktree at
   # turn-end keeps code written after the verdict from being stamped approved.
   # A stale file describes an EARLIER state, so the next turn blocks — safe.
+  # NOT airtight in the other direction: a later successful dispatch on the same
+  # thread overwrites the snapshot, and an APPROVE still inside the cycle window
+  # then releases against that newer state. This narrows the original hole
+  # (which released whatever the worktree held at turn-end) rather than closing
+  # it; closing it needs the snapshot tied to the log position of the verdict.
   # Absent or malformed falls back to the caller's fingerprint.
   #
   # WHOLE-TREE ONLY: the driver cannot know a gate's pathspec, so autoplan must
@@ -305,16 +310,42 @@ if is_num "${NOW:-}"; then
   done
 fi
 
-# ── /autoreview ─────────────────────────────────────────────────────────────
+# ── gate scope ──────────────────────────────────────────────────────────────
+# Both gates are resolved BEFORE either is evaluated, because emit_block and
+# allow exit the whole hook: a block on autoreview used to skip autoplan
+# entirely, including its idle-verdict consumption, so plan-thread growth
+# during a blocked turn banked and released the next plan cycle for free.
+# The fingerprint runs only after the branch check — it walks the worktree, and
+# an armed gate on another branch should cost nothing.
 AR="$STATE_DIR/autoreview.armed"
-if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 ]]; then
-  ar_branch="$(read_field "$AR" branch "")"
-  # Fingerprint only AFTER the branch check — it walks the worktree, and an
-  # armed gate on another branch should cost nothing.
-  if [[ "$ar_branch" == "$BRANCH" ]]; then
-    thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="review-$BRANCH_SLUG"
-    ar_fp="$(code_fingerprint)"
+AP="$STATE_DIR/autoplan.armed"
+AR_LIVE=0; AP_LIVE=0; ar_fp=""; ap_fp=""; ar_thread=""; ap_thread=""
+
+if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 \
+      && "$(read_field "$AR" branch "")" == "$BRANCH" ]]; then
+  AR_LIVE=1
+  ar_thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
+  is_thread "$ar_thread" || ar_thread="review-$BRANCH_SLUG"
+  ar_fp="$(code_fingerprint)"
+fi
+if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 && "$(read_field "$AP" branch "")" == "$BRANCH" ]]; then
+  AP_LIVE=1
+  ap_thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
+  is_thread "$ap_thread" || ap_thread="plan-$BRANCH_SLUG"
+  ap_fp="$(code_fingerprint "$PLAN_PATHS")"
+fi
+
+# Idle-verdict pre-pass over BOTH gates, for the reason above.
+if [[ "$AR_LIVE" -eq 1 ]] && ! has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code; then
+  consume_idle_verdicts "$AR" "$ar_fp" "$ar_thread"
+fi
+if [[ "$AP_LIVE" -eq 1 ]] && ! has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans; then
+  consume_idle_verdicts "$AP" "$ap_fp" "$ap_thread"
+fi
+
+# ── /autoreview ─────────────────────────────────────────────────────────────
+if [[ "$AR_LIVE" -eq 1 ]]; then
+  thread="$ar_thread"
     if has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code; then
       lens="$(read_field "$AR" lens correctness)"
       is_review_lens "$lens" || lens=correctness
@@ -351,20 +382,12 @@ if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 ]]; then
           echo "autoreview: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
         fi
       fi
-    else
-      consume_idle_verdicts "$AR" "$ar_fp" "$thread"
     fi
-  fi
 fi
 
 # ── /autoplan ───────────────────────────────────────────────────────────────
-AP="$STATE_DIR/autoplan.armed"
-if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
-  ap_branch="$(read_field "$AP" branch "")"
-  if [[ "$ap_branch" == "$BRANCH" ]]; then
-    thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="plan-$BRANCH_SLUG"
-    ap_fp="$(code_fingerprint "$PLAN_PATHS")"
+if [[ "$AP_LIVE" -eq 1 ]]; then
+  thread="$ap_thread"
     if has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans; then
       lens="$(read_field "$AP" lens stress-test)"
       is_plan_lens "$lens" || lens=stress-test
@@ -400,10 +423,7 @@ if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
       else
         echo "autoplan: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
       fi
-    else
-      consume_idle_verdicts "$AP" "$ap_fp" "$thread"
     fi
-  fi
 fi
 
 allow

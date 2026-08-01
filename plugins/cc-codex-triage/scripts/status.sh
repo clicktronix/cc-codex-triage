@@ -149,7 +149,10 @@ for kind in autoreview autoplan; do
   # blocking on unreviewed committed work, and /status is exactly where someone
   # goes to understand a block they did not expect.
   if [ -n "$(gate_baseline "$f")" ]; then
-    case "$base" in
+    # $kind, not $base: base is already stripped to review/plan, so matching
+    # "autoplan" here never fired and every gate was reported against the
+    # whole-tree fingerprint — a false "cycle: OPEN" on autoplan.
+    case "$kind" in
       autoplan) fp_now="$( set -f; bash "$FP_SH" $plan_paths 2>/dev/null )" ;;
       *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
     esac
