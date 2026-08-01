@@ -262,32 +262,39 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # <thread>.dispatch-fp. Releasing against that rather than the worktree at
   # turn-end keeps code written after the verdict from being stamped approved.
   # A stale file describes an EARLIER state, so the next turn blocks — safe.
-  # NOT airtight in the other direction: a later successful dispatch on the same
-  # thread overwrites the snapshot, and an APPROVE still inside the cycle window
-  # then releases against that newer state. This narrows the original hole
-  # (which released whatever the worktree held at turn-end) rather than closing
-  # it; closing it needs the snapshot tied to the log position of the verdict.
-  # Absent or malformed falls back to the caller's fingerprint.
   #
   # $3="plan" selects the PLAN-SCOPED snapshot the driver writes for the thread
   # the autoplan gate watches. Without it the whole-tree hash is compared against
   # a pathspec hash, which can never be equal — so every autoplan release
   # immediately re-blocked, to the cap. The tests missed it because they wrote no
   # sidecar at all and so only ever exercised the fallback.
+  #
   # Preference order, strongest first:
   #   1. the fingerprint stamped into the log record that CONTAINED the selected
   #      verdict — the only source that is guaranteed to describe the state that
-  #      verdict judged;
+  #      verdict judged (for the plan gate, the LATEST record instead: that gate
+  #      releases on log growth, so the releasing dispatch is the last one);
   #   2. the sidecar, i.e. the LATEST successful dispatch on this thread. Right
   #      whenever that dispatch is the one that produced the verdict, which is
-  #      the ordinary case, but a later verdict-less dispatch overwrites it;
+  #      the ordinary case;
   #   3. the caller's Stop-time fingerprint.
-  # Records written before the header carried `fp=` fall through to 2, so an
-  # existing thread keeps working and simply does not gain the guarantee until
-  # its next dispatch.
+  # A record predating `fp=` falls through to 2 — sound while it is the last
+  # record, and an existing thread keeps working. Once a LATER dispatch has
+  # overwritten the sidecar, 2 describes that dispatch rather than the verdict,
+  # and no source can pair them: the parser answers AMBIGUOUS and this returns it
+  # verbatim so the caller refuses to release.
   local v f="$STATE_DIR/$1.dispatch-fp" flag="--fp"
-  if [[ "${3:-}" == "plan" ]]; then f="$STATE_DIR/$1.dispatch-fp-plan"; flag="--fp-plan"; fi
+  # The plan gate releases on log GROWTH, not on a verdict, so the dispatch that
+  # releases it is the LATEST one. Asking for the verdict's record here released
+  # the state an older APPROVE covered and re-blocked the current one.
+  if [[ "${3:-}" == "plan" ]]; then f="$STATE_DIR/$1.dispatch-fp-plan"; flag="--fp-plan-latest"; fi
   v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${4:-0}" "$flag" 2>/dev/null | tr -d '[:space:]')"
+  # A markerless verdict with a later record behind it: the sidecar now belongs
+  # to that later dispatch, so nothing here can say what the verdict judged.
+  # Passed through verbatim — substituting the caller's fallback would release
+  # the newest state on the strength of an older verdict, which is the very hole
+  # the log markers exist to close.
+  [[ "$v" == "AMBIGUOUS" ]] && { printf 'AMBIGUOUS'; return 0; }
   [[ -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
   [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="$2"   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
@@ -457,11 +464,22 @@ if [[ "$AR_LIVE" -eq 1 ]]; then
         # post-arming round ran. No .rounds-based second check — that counter is
         # reset by /thread-new, so it can both fake a run (reset alone changes
         # it) and mask one (reset + one run collides with the snapshot).
+        # An APPROVE whose record carries no fingerprint AND has a later dispatch
+        # behind it cannot be tied to any state: the sidecar describes that later
+        # dispatch. Releasing anyway would stamp the newest bytes approved on the
+        # strength of an older verdict. Demote it to no-verdict so the gate keeps
+        # blocking — the next dispatch stamps its own record and settles it.
+        if [[ "$verdict" == "APPROVE" ]]; then
+          ar_released="$(reviewed_fingerprint "$thread" "$ar_fp" "" "$log_off")"
+          if [[ "$ar_released" == "AMBIGUOUS" ]]; then
+            echo "autoreview: the APPROVE on thread $thread predates fingerprint records and a later dispatch has replaced the snapshot, so what it approved cannot be established — not releasing. Re-review to settle it." >&2
+            verdict="UNATTRIBUTABLE_APPROVE"
+          fi
+        fi
         if [[ "$verdict" == "APPROVE" ]]; then
           # APPROVE earned this cycle — release, and record WHAT it approved.
           # Without the record, this one verdict would keep releasing every
           # later turn no matter how much new unreviewed code was written.
-          ar_released="$(reviewed_fingerprint "$thread" "$ar_fp" "" "$log_off")"
           rebaseline_cycle "$AR" "$ar_released" "$thread" || true   # diagnoses itself
           # The approval covers the state Codex saw. If the worktree has moved
           # past it — code written after the verdict arrived, in this same turn

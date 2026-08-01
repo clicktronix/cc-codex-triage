@@ -689,6 +689,27 @@ expect_allow "a pre-fp= record still releases via the sidecar"
 rm -f "$SD/autoreview.armed" "$SD/review-main.dispatch-fp"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+# …but that fallback is only sound while the legacy record is the LAST one. Put
+# a later dispatch behind it and the sidecar describes THAT dispatch, so the
+# APPROVE cannot be attributed to any state. The gate previously released the
+# newest bytes on the strength of the older verdict — the original hole, wearing
+# legacy clothing. The test above covers only the legacy-record-is-latest case,
+# which is why this survived it.
+: > "$SD/review-main.log"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "legacy-era change" >> f.txt
+printf '[t1] mode=initial thread=review-main round=1\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' > "$SD/review-main.log"
+echo "written after, reviewed by nobody" >> f.txt
+printf '[t2] mode=resume thread=review-main round=2 fp=%s\nPROMPT:\n  p\nREPLY:\n  prose, no verdict\n---\n' "$(fp_now)" >> "$SD/review-main.log"
+printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"   # overwritten by that later dispatch
+expect_block "an unattributable legacy APPROVE does not release"
+grep -q "cannot be established" "$ERR" && ok "and says why it refused" || bad "no explanation for the refusal"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "and records no release" || bad "released_fp written for an unattributable APPROVE"
+rm -f "$SD/autoreview.armed" "$SD/review-main.dispatch-fp" "$SD/review-main.log"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== release records what CODEX saw, not the tree at turn-end =="
 # Code written after the verdict arrives but before the turn ends was never
 # reviewed. Releasing against the driver's dispatch-time snapshot keeps it
@@ -869,6 +890,30 @@ expect_allow "and it stays released while the plan is unchanged"
 echo "# edited again after the dispatch" >> docs/plans/p.md
 expect_block "a plan edit made after the dispatch is not covered by it"
 rm -f "$SD/autoplan.armed" "$SD/plan-main.dispatch-fp" "$SD/plan-main.dispatch-fp-plan" "$SD/plan-main.log"
+rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== autoplan releases the LATEST dispatch's plan state, not the verdict's =="
+# The plan gate releases on log GROWTH, so the dispatch that releases it is the
+# most recent one — which need not carry a verdict at all. Selecting the
+# fingerprint from the record containing the last VERDICT released the older
+# state that verdict judged and then immediately re-blocked the current plan,
+# every turn, to the cap.
+git add -A >/dev/null && git commit -qm "settle before latest-plan test" >/dev/null 2>&1
+rm -rf docs; mkdir -p docs/plans; echo "# p" > docs/plans/p.md
+: > "$SD/plan-main.log"
+arm_plan_fp main plan-main 3 0 0 "$(fp_now docs/plans docs/PLANS)"
+echo "# edited" >> docs/plans/p.md
+expect_block "plan edit opens the cycle"
+PLAN_A="$(fp_now docs/plans docs/PLANS)"
+printf '[t1] mode=initial thread=plan-main round=1 fp-plan=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$PLAN_A" > "$SD/plan-main.log"
+echo "# edited again, then dispatched again without a verdict" >> docs/plans/p.md
+PLAN_B="$(fp_now docs/plans docs/PLANS)"
+printf '[t2] mode=resume thread=plan-main round=2 fp-plan=%s\nPROMPT:\n  p\nREPLY:\n  further objections, no verdict line\n---\n' "$PLAN_B" >> "$SD/plan-main.log"
+expect_allow "the latest dispatch releases the plan state IT saw"
+[[ "$(sed -n 's/^released_fp=//p' "$SD/autoplan.armed")" == "$PLAN_B" ]] \
+  && ok "released_fp is the latest dispatch's plan hash" || bad "released_fp came from the APPROVE's older record"
+expect_allow "and the released plan stays released"
+rm -f "$SD/autoplan.armed" "$SD/plan-main.log"
 rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
