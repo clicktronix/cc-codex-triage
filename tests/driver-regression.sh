@@ -30,7 +30,10 @@ done
 printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
 # append one line per invocation so tests can COUNT dispatches (race tests)
 [[ -n "${FAKE_CODEX_CALLS:-}" ]] && echo "$$" >> "$FAKE_CODEX_CALLS"
-cat >/dev/null
+# The prompt is the whole point of a dispatch, so KEEP it when a test asks:
+# discarding stdin unconditionally is what let a background-job stdin bug
+# ("No prompt provided via stdin") pass 216 green tests and fail in production.
+cat > "${FAKE_CODEX_STDIN:-/dev/null}"
 # FAKE_CODEX_MUTATE=<path>: append to a tracked file mid-dispatch (strict-mode tests)
 [[ -n "${FAKE_CODEX_MUTATE:-}" ]] && echo mutated >> "$FAKE_CODEX_MUTATE"
 [[ "${FAKE_CODEX_SLEEP:-0}" != "0" ]] && sleep "$FAKE_CODEX_SLEEP"
@@ -82,6 +85,27 @@ run t1
 [[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "reply echoed" || bad "reply (rc=$RC out=$OUT)"
 [[ "$(cat "$SD/t1.id" 2>/dev/null)" == "$UUID" ]] && ok "UUID persisted" || bad "UUID not persisted"
 [[ "$(cat "$SD/t1.rounds" 2>/dev/null)" == "1" ]] && ok "rounds=1" || bad "rounds wrong: $(cat "$SD/t1.rounds" 2>/dev/null)"
+
+echo "== the prompt actually reaches codex on stdin (all three dispatch paths) =="
+# Backgrounding codex so a TERM stays actionable silently cost it its stdin:
+# POSIX assigns an async list's stdin to /dev/null, so codex saw an empty
+# prompt and EVERY real dispatch failed — while the suite stayed green,
+# because the stub discarded stdin instead of checking it. Each path builds
+# its own herestring, so each is asserted separately.
+stdin_reached() { # $1=label, $2..=driver args
+  local label="$1"; shift
+  local cap="$T/stdin-$label"
+  rm -f "$cap"
+  FAKE_CODEX_STDIN="$cap" bash "$DRIVER" "$@" >/dev/null 2>&1 <<< "PROMPT-$label"
+  [[ "$(cat "$cap" 2>/dev/null)" == "PROMPT-$label" ]] \
+    && ok "$label: codex received the prompt on stdin" \
+    || bad "$label: codex stdin was '$(cat "$cap" 2>/dev/null)', expected PROMPT-$label"
+}
+stdin_reached resume t1                      # .id exists from the dispatch above
+rm -rf "$SD"
+stdin_reached initial t1
+stdin_reached oneshot t1x --oneshot
+rm -rf "$SD"; run t1 >/dev/null 2>&1         # restore the t1 thread for later tests
 
 echo "== --new + --require-existing refused BEFORE destroying the thread =="
 run t1 --new --require-existing

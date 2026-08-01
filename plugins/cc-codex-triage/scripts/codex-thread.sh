@@ -848,7 +848,13 @@ fi
 # Verified: `sleep 30` direct → trap does not fire; `sleep 30 & wait` → it does.
 CODEX_PID=""
 run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by the caller
-  "$@" &
+  # `<&0` is NOT redundant. POSIX assigns an asynchronous list's stdin to
+  # /dev/null before any explicit redirection, so the caller's `<<< "$PROMPT"`
+  # reached this function and then died at the `&` — codex read an empty stdin
+  # and every real dispatch failed with "No prompt provided via stdin." An
+  # explicit fd-0 dup overrides that default. (Proven: `f(){ cat & wait; }`
+  # prints nothing; `f(){ cat <&0 & wait; }` prints the herestring.)
+  "$@" <&0 &
   CODEX_PID=$!
   local rc=0
   wait "$CODEX_PID" || rc=$?
