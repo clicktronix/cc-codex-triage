@@ -32,6 +32,36 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -n "$ROOT" ] || exit 0
 cd "$ROOT" 2>/dev/null || exit 0
 
+# Dirty submodules, detected against the REAL index and therefore BEFORE the
+# throwaway one is swapped in — afterwards everything is staged and nothing
+# reads as modified.
+#
+# `write-tree` records a submodule as a GITLINK, the commit it points at, so
+# edits inside one leave the superproject tree identical and no cycle ever
+# opens. Worse than a blind spot: the fingerprint is still non-empty, so the
+# caller does not fall back to the dirty-tree predicate either.
+#
+# `git submodule status` is the WRONG probe here — its `+` marks a differing
+# COMMIT, not a dirty worktree, and a plain content edit leaves it unchanged
+# (verified). `git status --porcelain` on the submodule paths is the signal.
+#
+# Lazy: clean and uninitialised submodules are fully described by their gitlink,
+# so only dirty initialised ones are recursed into. A repository without
+# submodules pays one `git submodule status` and nothing more.
+#
+# Scoped (autoplan) mode skips this: plan paths are documentation directories,
+# a submodule under one is not a real configuration, and this runs at every
+# turn end.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+DIRTY_SUBS=""
+if [ "$#" -eq 0 ]; then
+  SUB_PATHS="$(git submodule status --recursive 2>/dev/null | awk '{print $2}')" || SUB_PATHS=""
+  if [ -n "$SUB_PATHS" ]; then
+    # shellcheck disable=SC2086 — one pathspec per submodule is intended
+    DIRTY_SUBS="$( set -f; git status --porcelain -- $SUB_PATHS 2>/dev/null | sed -n 's/^.[MD] //p; s/^[MD]. //p' )" || exit 0
+  fi
+fi
+
 IDX="$(mktemp "${TMPDIR:-/tmp}/cc-gate-idx.XXXXXX")" || exit 0
 rm -f "$IDX"                        # git needs to create it; a 0-byte file is not a valid index
 trap 'rm -f "$IDX" "$IDX.lock"' EXIT
@@ -65,4 +95,25 @@ else
   git rm -r --cached --ignore-unmatch -q -- "$STATE_DIR" >/dev/null 2>&1 || exit 0
 fi
 
-git write-tree 2>/dev/null || exit 0
+TREE="$(git write-tree 2>/dev/null)" || exit 0
+[ -n "$TREE" ] || exit 0
+
+# Fold in the fingerprints of DIRTY submodules collected before the index was
+# swapped (see above). Their gitlink alone cannot see inside them.
+if [ -n "${DIRTY_SUBS:-}" ]; then
+  SUB_FP=""
+  OLD_IFS="$IFS"; IFS='
+'
+  for sub in $DIRTY_SUBS; do
+    IFS="$OLD_IFS"
+    child="$( cd "$sub" 2>/dev/null && GIT_INDEX_FILE= bash "$SELF" 2>/dev/null )" || exit 0
+    [ -n "$child" ] || exit 0          # a submodule we cannot hash means an unknown state
+    SUB_FP="$SUB_FP$sub $child
+"
+    IFS='
+'
+  done
+  IFS="$OLD_IFS"
+  TREE="$(printf '%s\n%s' "$TREE" "$SUB_FP" | git hash-object --stdin 2>/dev/null)" || exit 0
+fi
+printf '%s\n' "$TREE"

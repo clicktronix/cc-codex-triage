@@ -135,6 +135,37 @@ log_size() { # $1=thread — current byte size of the thread log, 0 if absent
 # A per-writer temp plus rename makes each rewrite all-or-nothing. Concurrent
 # writers can still lose an increment (last rename wins), which only makes the
 # cap arrive later — it cannot corrupt the file or bypass the cap.
+# Serialize the whole read-validate-rewrite. Atomic rename already stopped the
+# file being CORRUPTED, but concurrent hooks still lost increments (last rename
+# wins), so twenty parallel blocks counted as one and the cap arrived twenty
+# times later than it should.
+#
+# mkdir is atomic on POSIX — the same primitive the driver's lease uses. The
+# hook must stay fast and fail OPEN, so this never waits long and never blocks
+# on a lock it cannot get: a handful of short retries, then give up and let the
+# caller proceed unserialized (the rename keeps that safe, just lossy).
+# A lock older than 30s is stale by construction — nothing here holds it for
+# more than a few file operations.
+armed_lock() { # $1=armed file → 0 if held
+  local d="$1.lock" i=0 age now
+  while [ "$i" -lt 25 ]; do
+    if mkdir "$d" 2>/dev/null; then return 0; fi
+    now="$(date +%s 2>/dev/null)" || return 1
+    age="$(_lock_age "$d" "$now")"
+    if [ -n "$age" ] && [ "$age" -gt 30 ]; then rm -rf "$d" 2>/dev/null; continue; fi
+    sleep 0.05 2>/dev/null || sleep 1
+    i=$((i+1))
+  done
+  return 1
+}
+armed_unlock() { rm -rf "$1.lock" 2>/dev/null; }
+_lock_age() { # $1=lock dir $2=now — GNU first, per the stat-probe rule above
+  local m
+  m="$(stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null)" || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$(( $2 - m ))"
+}
+
 armed_rewrite() { # $1=armed file; body on stdin
   local f="$1" tmp
   tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 1
@@ -147,13 +178,20 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   # Returns non-zero if the increment could NOT be persisted (e.g. read-only
   # state dir). The caller must then fail OPEN: blocking without a persisted
   # counter would bypass the cap into unlimited blocking.
-  local f="$1" b=$(( $2 + 1 ))
+  # Re-read the counter INSIDE the lock: the value the caller validated may be
+  # stale by now, and incrementing a stale value is exactly the lost update.
+  local f="$1" b cur locked=false
+  armed_lock "$f" && locked=true
+  cur="$(raw_field "$f" blocks)"
+  is_bounded_num "$cur" || cur="$2"
+  b=$(( cur + 1 ))
   # stderr is silenced on the write itself: a read-only state dir otherwise
   # prints a raw "…armed.tmp: Permission denied" next to the tidy explanation
   # below, and the raw one is the confusing half.
   { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
-  } | armed_rewrite "$f" || return 1
+  } | armed_rewrite "$f" || { $locked && armed_unlock "$f"; return 1; }
+  $locked && armed_unlock "$f"
   printf '%s' "$b"
 }
 

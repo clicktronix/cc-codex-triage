@@ -449,6 +449,37 @@ mkdir -p docs/plans; echo "# p" > docs/plans/p.md
 [[ "$(fp_now docs/plans docs/PLANS)" != "$EMPTY_SCOPE" ]] && ok "a first plan doc moves it" || bad "first plan doc invisible"
 rm -rf docs
 
+echo "== fingerprint: dirty submodule content is inside the cycle =="
+# write-tree records a submodule as a GITLINK, so edits inside one leave the
+# superproject tree identical and no cycle opens — and because the fingerprint
+# is still non-empty, the caller does not fall back to the dirty-tree predicate
+# either. `git submodule status` is the WRONG probe: its `+` marks a differing
+# COMMIT, and a plain content edit leaves it unchanged.
+SUBT="$(mktemp -d "${TMPDIR:-/tmp}/cc-sub.XXXXXX")"
+( git init -q -b main "$SUBT/lib" >/dev/null 2>&1
+  cd "$SUBT/lib" && git config user.email t@t.t && git config user.name t \
+    && echo lib > lib.txt && git add -A && git commit -qm init ) >/dev/null 2>&1
+if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" vendor ) >/dev/null 2>&1; then
+  git commit -qm "add submodule" >/dev/null 2>&1
+  S_CLEAN="$(fp_now)"
+  echo "edited inside the submodule" >> vendor/lib.txt
+  S_DIRTY="$(fp_now)"
+  [[ "$S_DIRTY" != "$S_CLEAN" ]] && ok "an edit inside a submodule moves the fingerprint" || bad "submodule edit invisible — no cycle would open"
+  echo "edited again" >> vendor/lib.txt
+  [[ "$(fp_now)" != "$S_DIRTY" ]] && ok "a further edit is distinguishable" || bad "successive submodule edits collapse"
+  git -C vendor checkout -q -- lib.txt
+  [[ "$(fp_now)" == "$S_CLEAN" ]] && ok "reverting returns to the clean fingerprint" || bad "unstable across a revert"
+  echo untracked > vendor/new.txt
+  [[ "$(fp_now)" != "$S_CLEAN" ]] && ok "an untracked file inside a submodule counts too" || bad "untracked submodule content invisible"
+  rm -f vendor/new.txt
+  git submodule deinit -qf vendor >/dev/null 2>&1; git rm -qf vendor >/dev/null 2>&1
+  rm -rf .gitmodules .git/modules/vendor
+  git add -A >/dev/null 2>&1; git commit -qm "drop submodule" >/dev/null 2>&1
+else
+  ok "submodule fixture unavailable in this environment (skipped)"
+fi
+rm -rf "$SUBT"
+
 echo "== fingerprint: a failing pathspec is NOT an empty scope =="
 # `git ls-files … | head` reports HEAD's status, so an invalid pathspec (git
 # exits 128) read as "matches nothing" and the script returned the empty-tree
@@ -681,7 +712,7 @@ echo "== concurrent hooks cannot corrupt the armed file =="
 # disarmed gate. A lost increment only delays the cap; corruption removes it.
 git add -A >/dev/null && git commit -qm "settle before race test" >/dev/null 2>&1
 : > "$SD/review-main.log"
-arm_review_fp main review-main 30 0 0 "$(fp_now)"
+arm_review_fp main review-main 50 0 0 "$(fp_now)"
 echo "concurrent work" >> f.txt
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   ( printf '%s' "$DEFAULT_INPUT" | bash "$HOOK" >/dev/null 2>&1 ) &
@@ -692,7 +723,12 @@ for k in branch thread lens cap blocks log_bytes_at_arming fp_at_arming; do
 done
 grep -q '^branch=' "$SD/autoreview.armed" && grep -q '^cap=' "$SD/autoreview.armed" && grep -q '^fp_at_arming=' "$SD/autoreview.armed" \
   && ok "the armed file survives 20 concurrent hooks intact" || bad "armed file corrupted by concurrent hooks"
-[[ -z "$(ls "$SD"/autoreview.armed.* 2>/dev/null)" ]] && ok "no temp files left behind" || bad "leftover rewrite temp files"
+# And no LOST increments: the rename alone kept the file valid but let twenty
+# blocks count as one, so the cap arrived twenty times later than it should.
+RACED="$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")"
+[[ "$RACED" == "20" ]] && ok "all 20 blocks counted (no lost increments)" || bad "only $RACED of 20 blocks counted — the cap is not what it says"
+[[ -z "$(ls -d "$SD"/autoreview.armed.lock 2>/dev/null)" ]] && ok "no lock left behind" || bad "stale lock survives"
+[[ -z "$(ls "$SD"/autoreview.armed.[A-Za-z0-9]* 2>/dev/null | grep -v '\.lock$')" ]] && ok "no temp files left behind" || bad "leftover rewrite temp files"
 rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
