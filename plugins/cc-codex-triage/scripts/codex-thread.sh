@@ -126,8 +126,19 @@ SCHEMA=""
 TOPIC=""
 # Args a --detach launcher forwards to its re-exec'd child: everything except
 # --detach itself (the child is an ordinary foreground invocation).
+# Walked as option/value pairs, not filtered value-blind: a plain filter also
+# ate a --topic (or --model, --effort, --schema) VALUE that happened to equal
+# "--detach", leaving the child a dangling flag.
 CHILD_ARGS=()
-for _a in "$@"; do [[ "$_a" == "--detach" ]] || CHILD_ARGS+=("$_a"); done
+_skip_next=false
+for _a in "$@"; do
+  if $_skip_next; then CHILD_ARGS+=("$_a"); _skip_next=false; continue; fi
+  case "$_a" in
+    --detach) ;;
+    --model|--effort|--schema|--topic) CHILD_ARGS+=("$_a"); _skip_next=true ;;
+    *) CHILD_ARGS+=("$_a") ;;
+  esac
+done
 while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
@@ -645,7 +656,7 @@ if ! $ONESHOT; then
       # Ownerless lock: only a crash between mkdir and the token write leaves
       # this state, and that window is a couple of builtins wide — an
       # ownerless lock older than 60s can only be a crashed acquirer.
-      LOCK_MTIME="$(stat -f '%m' "$LEASE_LOCK" 2>/dev/null || stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || true)"
+      LOCK_MTIME="$(stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || stat -f '%m' "$LEASE_LOCK" 2>/dev/null || true)"
       NOW_EPOCH="$(date +%s)"
       if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
         STEAL=true
@@ -761,27 +772,6 @@ porcelain() {
 # ── tracked-file mutation guard (pre) ─────────────────────────────────────
 REPO_ROOT="$(git -C . rev-parse --show-toplevel 2>/dev/null || true)"
 PRE_PORCELAIN="$(porcelain)"
-
-# ── code state at dispatch time (for the /autoreview gate) ────────────────
-# This is the state Codex is about to look at. The Stop hook records it as the
-# released fingerprint when this thread's verdict releases a cycle, instead of
-# fingerprinting the worktree at turn-end: anything written between the verdict
-# arriving and the turn ending was never reviewed, and stamping it as approved
-# is how unreviewed code slips through a gate that is doing its job.
-#
-# Best-effort in every direction. --oneshot leaves no state at all; outside a
-# repo, or with the fingerprint script missing, the file is simply absent and
-# the hook falls back to its own fingerprint (the previous behaviour).
-if ! $ONESHOT && [[ -n "$REPO_ROOT" && -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  _fp_sh="$CLAUDE_PLUGIN_ROOT/scripts/gate-fingerprint.sh"
-  if [[ -f "$_fp_sh" ]]; then
-    _fp="$( cd "$REPO_ROOT" && bash "$_fp_sh" 2>/dev/null || true )"
-    if [[ -n "$_fp" ]]; then
-      mkdir -p "$STATE_DIR" 2>/dev/null || true
-      printf '%s\n' "$_fp" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
-    fi
-  fi
-fi
 
 # ── resolve thread ─────────────────────────────────────────────────────────
 MODE=""
@@ -925,13 +915,36 @@ if ! $ONESHOT; then
     # never-overwrite rule would then pin that wrong label forever.
     # Written only when absent — it describes what the thread was CREATED for.
     # --new clears it with the rest of the thread's state.
-    if [[ -n "$TOPIC" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
+    if [[ -n "$TOPIC" && "$MODE" == "initial" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
       # Bash parameter expansion rather than `cut`: GNU cut terminates its
       # output with a newline and BSD cut does not, so building the line with
       # an external command produced a two-line file on Linux and a one-line
       # file on macOS. This is also one less process on a hot path.
       _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
       printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
+    fi
+    # Code state this dispatch was made against, for the /autoreview gate.
+    # Written HERE, on the success path: a failed run used to overwrite it, and
+    # a later APPROVE for an EARLIER state then released whatever that failed
+    # run had snapshotted.
+    # Resolved from THIS script's own location, not from CLAUDE_PLUGIN_ROOT: the
+    # sibling script is always next to the driver, while the env var is set only
+    # when a command invokes it — so keying on the var meant no snapshot at all
+    # for any direct call, tests included.
+    _fpsh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/gate-fingerprint.sh"
+    [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
+    if [[ -f "$_fpsh" ]]; then
+      _fp="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
+      [[ -n "$_fp" ]] && printf '%s\n' "$_fp" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+      # And a PLAN-SCOPED snapshot when this thread is the one /autoplan
+      # watches. That gate had no dispatch-time state at all, so it re-baselined
+      # to whatever the worktree held at turn-end — marking plan edits made
+      # after the dispatch as reviewed.
+      if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
+        # shellcheck disable=SC2086 — splitting the pathspecs is intended
+        _pfp="$( cd "$REPO_ROOT" && set -f && bash "$_fpsh" ${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS} 2>/dev/null || true )"
+        [[ -n "$_pfp" ]] && printf '%s\n' "$_pfp" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+      fi
     fi
   else
     ROUND=0

@@ -43,9 +43,14 @@ if [ "$#" -gt 0 ]; then
   # yet" is the normal state of a fresh branch. Drop empty ones; if none match,
   # write-tree yields the empty-tree hash — a stable "no plan docs", not a
   # failure that would silently disable the gate.
+  # Status-checked, not piped into `head`: a pipeline reports the LAST command's
+  # status, so an invalid pathspec (git exits 128) read as "matches nothing" and
+  # the script returned the empty-tree hash — which autoplan would then treat as
+  # a stable "no plan docs" forever.
   SPECS=""
   for spec in "$@"; do
-    [ -z "$(git ls-files -c -o --exclude-standard -- "$spec" 2>/dev/null | head -1)" ] || SPECS="$SPECS $spec"
+    _m="$(git ls-files -c -o --exclude-standard -- "$spec" 2>/dev/null)" || exit 0
+    [ -z "$_m" ] || SPECS="$SPECS $spec"
   done
   # shellcheck disable=SC2086 — splitting the collected pathspecs is intended
   [ -z "$SPECS" ] || git add -A -- $SPECS >/dev/null 2>&1 || exit 0

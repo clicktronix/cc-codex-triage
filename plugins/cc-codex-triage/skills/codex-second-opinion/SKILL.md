@@ -35,7 +35,7 @@ All of these share one property: more reading will not settle it.
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh"
 ```
 
-Reuse a thread whose topic covers this question. Otherwise open one by passing a new name — the driver takes it positionally — plus `--topic "<what it is about>"`, so the next agent can make the same judgement. `--oneshot` for a genuinely one-off question. **Never `review-<branch>`** — the `/autoreview` gate parses verdicts from that log. A `[busy]` thread has a dispatch in flight and would refuse yours (exit 10).
+Reuse a thread whose topic covers this question. Otherwise open one by passing a new name — the driver takes it positionally — plus `--topic "<what it is about>"`, so the next agent can make the same judgement. `--oneshot` for a genuinely one-off question. **Never a gate thread — `review-<branch>` or `plan-<branch>`.** `/autoreview` parses verdicts from the first; `/autoplan` releases on ANY growth of the second, so a question asked there would satisfy an open plan gate without a stress-test. A `[busy]` thread has a dispatch in flight and would refuse yours (exit 10).
 
 **3. Send intent, not context.** Codex reads files, runs `git diff`, greps and runs tests itself. What it lacks is your intent, your scope, and what you have already ruled out.
 
@@ -66,7 +66,7 @@ Exit codes per skill `codex-triage`: 3 = dispatch failed, 4 = resume failed (**a
 
 - [ ] Cost announced before the dispatch.
 - [ ] Existing threads were listed before opening a new one.
-- [ ] Thread is not a `review-<branch>` gate thread; a new one carries a `--topic`.
+- [ ] Thread is neither gate thread (`review-<branch>`, `plan-<branch>`); a new one carries a `--topic`.
 - [ ] Codex's reply shown verbatim.
 - [ ] The recommendation checked against the code before acting on it.
 - [ ] Exactly one dispatch spent.

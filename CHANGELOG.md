@@ -102,6 +102,15 @@ full.
   `tests/scenarios/README.md` records both that fact and the RED that would
   test it.
 
+- **Gate releases are bound to the state the dispatch saw.** The driver records
+  a fingerprint on every successful dispatch — whole-tree, plus a plan-scoped one
+  for the armed plan thread — and each gate releases against that rather than the
+  worktree at turn-end. A release that is already stale opens the next cycle
+  immediately instead of letting the turn finish. Idle-verdict consumption
+  advances only the verdict cut: it used to reset the round budget too, so
+  reverting to the released state and reapplying the change bought a full cap
+  again, repeatably.
+
 - **Threads are findable, not just resumable.** `--topic "<text>"` on the driver
   records one line about what a thread holds, set when it is created and never
   overwritten (cleared by `--new`). New `scripts/thread-index.sh` lists every

@@ -370,12 +370,17 @@ run tl2 --topic "$(printf 'line one\nline two\tand a tab')"
 # the line with `cut`, which terminates its output with a newline on GNU but
 # not on BSD, so a separate printf produced TWO lines on Linux only — i.e. a
 # green suite on macOS and a red one on the other supported platform.
-[[ "$(od -An -c "$SD/tl2.topic" | tr -s ' ' | grep -c '\\n  \\n')" == "0" ]] \
-  && ok "exactly one trailing newline (no BSD/GNU divergence)" || bad "double newline in the topic file"
+# Byte-exact: an earlier version of this assertion piped od through `tr -s ' '`
+# and then looked for a two-space pattern that squeezing had already removed —
+# it returned 0 for a one-line AND a two-line file, so it could not fail.
+TL2_BYTES="$(od -An -tx1 "$SD/tl2.topic" | tr -d ' \n')"
+[[ "$TL2_BYTES" == *0a ]] && [[ "$TL2_BYTES" != *0a0a ]] \
+  && ok "exactly one trailing newline (no BSD/GNU divergence)" || bad "trailing bytes wrong: ...${TL2_BYTES: -8}"
 printf '%s' "$(cat "$SD/tl2.topic")" | grep -q "$(printf '\t')" \
   && bad "tab survived into the label" || ok "tabs stripped (TSV index stays parseable)"
 # A label longer than the cap must still be one line, not one-plus-a-blank.
-run tl4 --topic "$(python3 -c 'print("y"*400)' 2>/dev/null || printf 'yyyy')"
+LONG=""; i=0; while [ "$i" -lt 40 ]; do LONG="${LONG}yyyyyyyyyy"; i=$((i+1)); done   # 400 chars, no python needed
+run tl4 --topic "$LONG"
 [[ "$(wc -l < "$SD/tl4.topic" | tr -d ' ')" == "1" ]] && ok "over-long topic stays one line" || bad "over-long topic split"
 # --oneshot keeps no state at all, topic included.
 rm -f "$SD/tl3.topic"; run tl3 --oneshot --topic "throwaway"
@@ -390,6 +395,49 @@ FAKE_CODEX_EXIT=3 run tl5 --topic "label from a run that failed" || true
 [[ ! -e "$SD/tl5.topic" ]] && ok "a failed dispatch writes no label" || bad "failed dispatch left a label: $(cat "$SD/tl5.topic")"
 run tl5 --topic "the real subject"
 [[ "$(cat "$SD/tl5.topic" 2>/dev/null)" == "the real subject" ]] && ok "the successful retry sets the label" || bad "retry label wrong: $(cat "$SD/tl5.topic" 2>/dev/null)"
+
+echo "== dispatch-fp is written on SUCCESS, and scoped for the plan gate =="
+rm -rf "$SD"
+FAKE_CODEX_EXIT=3 run dfp || true
+[[ ! -e "$SD/dfp.dispatch-fp" ]] && ok "a failed dispatch writes no fingerprint" || bad "failed dispatch left a dispatch-fp"
+run dfp
+[[ -s "$SD/dfp.dispatch-fp" ]] && ok "a successful dispatch records one" || bad "no dispatch-fp after success"
+[[ ! -e "$SD/dfp.dispatch-fp-plan" ]] && ok "no plan snapshot for an unrelated thread" || bad "plan snapshot written for a non-plan thread"
+# The plan gate had no dispatch-time state at all, so it re-baselined to
+# whatever the worktree held at turn-end — marking plan edits made after the
+# dispatch as reviewed.
+mkdir -p "$SD"; printf 'branch=main\nthread=plan-x\n' > "$SD/autoplan.armed"
+run plan-x
+[[ -s "$SD/plan-x.dispatch-fp-plan" ]] && ok "the armed plan thread gets a plan-scoped snapshot" || bad "no plan-scoped snapshot for the armed plan thread"
+[[ "$(cat "$SD/plan-x.dispatch-fp-plan")" != "$(cat "$SD/plan-x.dispatch-fp")" ]] \
+  && ok "and it differs from the whole-tree one" || bad "plan snapshot equals the whole-tree snapshot"
+rm -f "$SD/autoplan.armed"
+
+echo "== --topic labels only a thread it CREATES =="
+# Documented as creation-only. Writing it whenever the sidecar was absent also
+# labelled a RESUME of an older unlabelled thread with the current subject.
+rm -rf "$SD"; run tno                       # creates the thread, no label
+[[ ! -e "$SD/tno.topic" ]] && ok "no label when none was asked for" || bad "unexpected topic file"
+run tno --topic "subject of a much later question"
+[[ ! -e "$SD/tno.topic" ]] && ok "a resume does not label an existing thread" || bad "resume labelled the thread: $(cat "$SD/tno.topic")"
+run tno --new --topic "deliberate relabel"
+[[ "$(cat "$SD/tno.topic" 2>/dev/null)" == "deliberate relabel" ]] && ok "--new creates, so it labels" || bad "--new did not label"
+
+echo "== a --topic value equal to --detach survives argument forwarding =="
+# The forwarding pass filtered every argument equal to "--detach", including a
+# VALUE that happened to be that string, leaving the child a dangling flag.
+rm -rf "$SD"; run td --topic "--detach"
+[[ "$(cat "$SD/td.topic" 2>/dev/null)" == "--detach" ]] && ok "the literal value is preserved" || bad "topic value eaten: '$(cat "$SD/td.topic" 2>/dev/null)'"
+
+echo "== thread-index applies the driver's PID grammar =="
+rm -rf "$SD"; run pg --topic "pid grammar"
+printf 'garbage123\n' > "$SD/pg.active"
+bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $6}' | grep -q busy \
+  && bad "malformed lease repaired into a live PID (driver treats it as stale)" || ok "malformed lease is not a live owner"
+printf '0000000001\n' > "$SD/pg.active"
+bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $6}' | grep -q busy \
+  && bad "leading-zero PID accepted" || ok "leading-zero PID rejected, as the driver does"
+rm -f "$SD/pg.active"
 
 echo "== thread-index: the surface a skill runs unprompted =="
 IDXSH="$(dirname "$DRIVER")/thread-index.sh"

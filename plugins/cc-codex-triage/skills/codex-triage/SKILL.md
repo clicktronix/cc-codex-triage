@@ -48,7 +48,7 @@ State files live in `.claude/codex-threads/` in the current repo (git-ignore thi
 - `<name>.detach-stderr` — the latest detach child's STDERR — warnings a successful run emits (invalid saved ID discarded, ignored resume overrides, porcelain guard notes); the watcher surfaces it on every outcome.
 - `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on; no matching record → the watcher reports UNKNOWN (exit 4), never success-from-log-growth.
 - `<name>.topic` — one-line label of what the thread is about, set by `--topic` when it is created. `thread-index.sh` lists it so an agent can reuse the right thread instead of opening a new one.
-- `<name>.dispatch-fp` — code fingerprint at the moment of the last dispatch; the `/autoreview` gate releases against this, so work added after the verdict stays gated.
+- `<name>.dispatch-fp` / `<name>.dispatch-fp-plan` — code fingerprint at the moment of the last *successful* dispatch, whole-tree and (for the armed plan thread) plan-scoped. The gates release against these, so work added after the verdict stays gated.
 - `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
 - `<name>.active.lock` — transient acquisition mutex directory (with an owner-PID token inside) held only while a dispatch claims the lease. Stale recovery is automatic: a lock whose owner PID is dead, or an ownerless lock older than 60s, is reclaimed by the next dispatch; a lock with a live owner is never stolen.
 

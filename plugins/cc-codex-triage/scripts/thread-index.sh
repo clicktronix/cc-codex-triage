@@ -45,10 +45,14 @@ for f in "$@"; do
   # with exit 10, so a caller choosing a thread needs to know before it tries.
   busy=""
   if [ -f "$STATE_DIR/$name.active" ]; then
-    pid="$(tr -cd '0-9' < "$STATE_DIR/$name.active" 2>/dev/null)"
-    # Strictly positive, mirroring the driver: `kill -0 0` signals the whole
-    # process group and would report every thread busy.
-    case "$pid" in ''|0|*[!0-9]*) pid="" ;; esac
+    # RAW, not `tr -cd '0-9'`: stripping non-digits turns malformed content like
+    # "garbage123" into a live PID and reports the thread busy, while the driver
+    # treats that same lease as stale and dispatchable. Same grammar as the
+    # driver: positive decimal, no leading zero, bounded length. (`kill -0 0`
+    # would also signal the whole process group.)
+    pid="$(head -1 "$STATE_DIR/$name.active" 2>/dev/null | tr -d ' \t\r\n')"
+    case "$pid" in ''|0|0*|*[!0-9]*) pid="" ;; esac
+    [ "${#pid}" -le 12 ] || pid=""
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && busy="busy"
   fi
   if $TSV; then

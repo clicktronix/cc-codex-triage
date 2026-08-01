@@ -449,6 +449,16 @@ mkdir -p docs/plans; echo "# p" > docs/plans/p.md
 [[ "$(fp_now docs/plans docs/PLANS)" != "$EMPTY_SCOPE" ]] && ok "a first plan doc moves it" || bad "first plan doc invisible"
 rm -rf docs
 
+echo "== fingerprint: a failing pathspec is NOT an empty scope =="
+# `git ls-files … | head` reports HEAD's status, so an invalid pathspec (git
+# exits 128) read as "matches nothing" and the script returned the empty-tree
+# hash — a stable value autoplan would treat as "no plan docs" forever.
+[[ -z "$(fp_now ':(invalidmagic)x')" ]] \
+  && ok "an invalid pathspec yields nothing (caller fails open)" \
+  || bad "invalid pathspec returned a confident hash: $(fp_now ':(invalidmagic)x')"
+[[ -n "$(fp_now docs/plans docs/PLANS)" ]] \
+  && ok "absent-but-valid paths still yield the empty-tree hash" || bad "valid absent paths returned nothing"
+
 echo "== fingerprint: the state dir is excluded even when NOT gitignored =="
 # The add cannot name the state dir in a pathspec (git exits 1 when a pathspec
 # names an ignored path, which is the normal case), so it is dropped from the
@@ -583,8 +593,11 @@ expect_block "cycle opens"
 printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"   # what the driver snapshots
 reply_log APPROVE
 echo "snuck in after the verdict" >> f.txt                  # never reviewed
-expect_allow "the approved state releases this turn"
-expect_block "the code added after the verdict is still gated"
+# The release covers the state Codex saw. Since the worktree has already moved
+# past it, the next cycle is open ALREADY — blocking now rather than letting
+# this turn end and catching it only if there happens to be another one.
+expect_block "code added after the verdict opens the next cycle at once"
+expect_block "and it stays open on the following turn"
 rm -f "$SD/review-main.dispatch-fp"
 # A malformed snapshot must not poison the release — fall back to the hook's own.
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
@@ -614,6 +627,66 @@ echo "post-release code" >> f.txt
 expect_block "and it now gates new code like a 0.9 gate"
 rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
+
+echo "== the round budget survives revert-and-reapply =="
+# Idle consumption used to call rebaseline_cycle, which resets blocks=0. So:
+# burn the cap, revert to the released state, let the idle pass consume, reapply
+# the change — and get a full budget again, repeatably. The cap bounded nothing.
+git add -A >/dev/null && git commit -qm "settle before budget test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+BASE_FP="$(fp_now)"
+arm_review_fp main review-main 2 0 0 "$BASE_FP"
+reply_log REQUEST_CHANGES
+# The backup lives OUTSIDE the repo: the fingerprint hashes untracked content,
+# so a copy kept inside is itself a change and the "revert" never returns to the
+# baseline — which made the assertion below unable to fail.
+ORIG="$(mktemp "${TMPDIR:-/tmp}/cc-hook-orig.XXXXXX")"
+cp f.txt "$ORIG"
+echo "risky" >> f.txt
+expect_block "budget 1/2"
+expect_block "budget 2/2"
+expect_allow "cap reached"
+cp "$ORIG" f.txt                            # back to the released state
+printf 'REPLY:\n  REQUEST_CHANGES\n---\nREPLY:\n  REQUEST_CHANGES\n' > "$SD/review-main.log"   # log grows while idle
+run_hook                                    # the idle pass runs here
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" != "0" ]] \
+  && ok "idle consumption did not refill the round budget" \
+  || bad "budget refilled without an earned release — the cap can be reset indefinitely"
+echo "risky again" >> f.txt
+expect_allow "still capped after revert-and-reapply"
+rm -f "$SD/autoreview.armed"; cp "$ORIG" f.txt; rm -f "$ORIG"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== a pre-0.9 armed file does not bank idle verdicts either =="
+# Its fingerprint fields stay absent (dirty-tree predicate still governs it),
+# but an APPROVE arriving while clean must not sit past the cut and release the
+# next dirty state.
+: > "$SD/review-main.log"
+arm_review main review-main 3 0 0            # legacy: no fp_at_arming
+reply_log APPROVE                            # lands while the tree is clean
+expect_allow "clean tree, legacy file -> allow"
+[[ "$(sed -n 's/^log_bytes_at_arming=//p' "$SD/autoreview.armed")" == "$(logsize "$SD/review-main.log")" ]] \
+  && ok "the idle APPROVE was consumed on the legacy path too" || bad "legacy file banked the verdict"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "and it did NOT silently adopt the cycle model" || bad "legacy file gained a fingerprint from an idle pass"
+echo "now dirty" >> f.txt
+expect_block "the banked APPROVE cannot release the next dirty state"
+rm -f "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== counters too large for shell arithmetic fail OPEN =="
+# There must be WORK, or the gate allows for the ordinary reason and the
+# assertion cannot fail. bash wraps silently here: 0 -ge 99999999999999999999
+# is FALSE and (off + 1) yields 7766279631452241920, so an unbounded cap means
+# the block counter never reaches it — unbounded blocking, not a failure.
+echo "work for the counter test" >> f.txt
+arm_review main review-main 99999999999999999999 0 0
+expect_allow "a 20-digit cap fails open rather than blocking forever"
+grep -q "malformed" "$ERR" && ok "and says why" || bad "no malformed-counter note"
+arm_review main review-main 3 0 99999999999999999999
+expect_allow "a 20-digit log offset fails open"
+rm -f "$SD/autoreview.armed"
+git add -A >/dev/null && git commit -qm "settle after counter test" >/dev/null 2>&1
 
 echo "== BOTH gates armed: a block on one must not bank the other's verdicts =="
 # emit_block and allow exit the whole hook, so a block on autoreview used to

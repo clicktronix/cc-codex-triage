@@ -91,6 +91,11 @@ BRANCH_SLUG="$(printf '%s' "$BRANCH" | tr -c 'a-zA-Z0-9_.-' '-')"
 # as octal and errors out — which would skew BOTH the cap comparison and the
 # bump arithmetic into a fail-closed loop.
 is_num() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
+# Numeric AND small enough for shell arithmetic. A cap of 10^20 is not a cap,
+# and an offset that long makes `[` and `$(( ))` error out downstream — which
+# would block on broken state instead of failing open. 9 digits is far above
+# any real cap, block count or log size.
+is_bounded_num() { is_num "$1" && [[ "${#1}" -le 9 ]]; }
 is_thread() { [[ "$1" =~ ^[a-zA-Z0-9_.-]+$ ]]; }
 # Exact allowlists (not a character-class filter): the lens lands in the block
 # reason as a --lens argument, and an unknown-but-printable value would route
@@ -212,7 +217,7 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # not use this — its plan-scoped fingerprint would never compare equal.
   local v
   v="$(head -1 "$STATE_DIR/$1.dispatch-fp" 2>/dev/null | tr -d '[:space:]')"
-  [[ "$v" =~ ^[0-9a-f]{40}$ ]] || v="$2"
+  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="$2"   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
 }
 
@@ -225,15 +230,25 @@ consume_idle_verdicts() { # $1=armed file $2=current fp $3=thread
   #
   # 0.9 files only — a pre-0.9 file keeps 0.8 semantics until its first release.
   # Writes only when the log grew, so an idle turn costs one wc -c.
-  local f="$1" fp="$2" t="$3" now off
-  [[ -n "$fp" ]] || return 0                      # unknown state → change nothing
-  [[ -n "$(gate_baseline "$f")" ]] || return 0    # pre-0.9 file → leave alone
+  # OFFSET ONLY — never rebaseline_cycle. That resets blocks=0, so reverting to
+  # the released state, letting the idle pass consume, then reapplying the
+  # change bought a full cap again, repeatably: the cap stopped bounding cost.
+  # Only an earned release refills the budget.
+  #
+  # Runs for pre-0.9 files too. Their fingerprint fields stay untouched (so the
+  # dirty-tree predicate still governs them, as documented), but an APPROVE that
+  # arrived while clean would otherwise sit past the cut and release the next
+  # dirty state — the banking hole, in the compatibility path.
+  local f="$1" t="$3" now off
   has_field "$f" log_bytes_at_arming || return 0
   off="$(raw_field "$f" log_bytes_at_arming)"
-  is_num "$off" || return 0
+  is_bounded_num "$off" || return 0
   now="$(log_size "$t")"
   [[ "$now" -ne "$off" ]] || return 0
-  rebaseline_cycle "$f" "$fp" "$t" >/dev/null 2>&1 || true
+  { grep -v -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+    echo "log_bytes_at_arming=$now"
+  } > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null
+  return 0
 }
 
 rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cycle.
@@ -287,8 +302,10 @@ fi
 # cannot be removed is treated as absent for the remainder of THIS run only —
 # never block on an unremovable stale gate.
 GATE_TTL=1209600   # 14 days, in seconds
-epoch_date() { # $1=epoch → ISO day. BSD `date -r <epoch>`, GNU `date -d @<epoch>`.
-  date -r "$1" '+%Y-%m-%d' 2>/dev/null || date -d "@$1" '+%Y-%m-%d' 2>/dev/null || printf 'epoch %s' "$1"
+epoch_date() { # $1=epoch → ISO day. GNU FIRST: GNU's `date -r` takes a FILE, so
+  # `date -r <epoch>` succeeds against a same-named file and reports its mtime
+  # instead of the epoch — the same failure shape as the stat probes.
+  date -d "@$1" '+%Y-%m-%d' 2>/dev/null || date -r "$1" '+%Y-%m-%d' 2>/dev/null || printf 'epoch %s' "$1"
 }
 AR_TTL_DEAD=0; AP_TTL_DEAD=0
 NOW="$(date +%s 2>/dev/null || true)"
@@ -357,7 +374,7 @@ if [[ "$AR_LIVE" -eq 1 ]]; then
       # stale-APPROVE hole exactly on upgrade. Missing field = fail open.
       if ! has_field "$AR" log_bytes_at_arming; then
         echo "autoreview: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoreview on." >&2
-      elif ! is_num "$cap" || ! is_num "$blocks" || ! is_num "$log_off"; then
+      elif ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
         echo "autoreview: malformed counters in $AR — failing open. Re-arm with /autoreview on." >&2
       else
         # The ONE canonical parser, which /status also calls — two copies
@@ -373,7 +390,18 @@ if [[ "$AR_LIVE" -eq 1 ]]; then
           # APPROVE earned this cycle — release, and record WHAT it approved.
           # Without the record, this one verdict would keep releasing every
           # later turn no matter how much new unreviewed code was written.
-          rebaseline_cycle "$AR" "$(reviewed_fingerprint "$thread" "$ar_fp")" "$thread" || true   # diagnoses itself
+          ar_released="$(reviewed_fingerprint "$thread" "$ar_fp")"
+          rebaseline_cycle "$AR" "$ar_released" "$thread" || true   # diagnoses itself
+          # The approval covers the state Codex saw. If the worktree has moved
+          # past it — code written after the verdict arrived, in this same turn
+          # — the next cycle is open ALREADY. Open it now rather than letting
+          # the turn end and catching it only if there happens to be another.
+          if [[ -n "$ar_released" && -n "$ar_fp" && "$ar_released" != "$ar_fp" ]]; then
+            nblocks="$(raw_field "$AR" blocks)"; is_bounded_num "$nblocks" || nblocks=0
+            if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AR" "$nblocks")"; then
+              emit_block "autoreview armed: the APPROVE covers the state that was reviewed, but the code changed after it — review the new changes. Read $CMD_DIR/review.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoreview command (off)."
+            fi
+          fi
         elif [[ "$blocks" -ge "$cap" ]]; then
           echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
         elif n="$(bump_blocks "$AR" "$blocks")"; then
@@ -397,7 +425,7 @@ if [[ "$AP_LIVE" -eq 1 ]]; then
       log_now="$(log_size "$thread")"
       if ! has_field "$AP" log_bytes_at_arming; then
         echo "autoplan: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoplan on." >&2
-      elif ! is_num "$cap" || ! is_num "$blocks" || ! is_num "$log_off"; then
+      elif ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
         echo "autoplan: malformed counters in $AP — failing open. Re-arm with /autoplan on." >&2
       # Release when the thread log changed size since arming: ANY dispatch to
       # the plan thread appends (normally the requested /plan run — the gate
@@ -412,10 +440,21 @@ if [[ "$AP_LIVE" -eq 1 ]]; then
         # At least one dispatch on the plan thread this cycle — release, and
         # record the plan state it covered plus the new log baseline, so the
         # NEXT plan edit needs its OWN dispatch rather than coasting on this one.
-        # NOT reviewed_fingerprint here: the driver snapshots the WHOLE tree,
-        # while this gate compares a plan-pathspec fingerprint. Mixing the two
-        # would never compare equal and would block every turn to the cap.
-        rebaseline_cycle "$AP" "$ap_fp" "$thread" || true   # diagnoses itself
+        # The PLAN-SCOPED snapshot the driver takes for this thread — not the
+        # whole-tree one, which could never compare equal to a pathspec
+        # fingerprint and would block every turn to the cap. Falls back to the
+        # Stop-time fingerprint when no snapshot exists (older state, or a
+        # thread the driver did not recognise as the armed plan thread).
+        ap_released="$(reviewed_fingerprint "$thread" "$ap_fp" plan)"
+        rebaseline_cycle "$AP" "$ap_released" "$thread" || true   # diagnoses itself
+        # Plan edits made AFTER the releasing dispatch are not covered by it, so
+        # open the next cycle now rather than ending the turn on them.
+        if [[ -n "$ap_released" && -n "$ap_fp" && "$ap_released" != "$ap_fp" ]]; then
+          nblocks="$(raw_field "$AP" blocks)"; is_bounded_num "$nblocks" || nblocks=0
+          if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$nblocks")"; then
+            emit_block "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
+          fi
+        fi
       elif [[ "$blocks" -ge "$cap" ]]; then
         echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
       elif n="$(bump_blocks "$AP" "$blocks")"; then

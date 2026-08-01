@@ -13,7 +13,7 @@ Two parts: (1) **on arming, if the branch already has code changes, run the revi
 
 - **committing the fixes keeps the gate engaged** — a fix is still a difference after it is committed, where the old dirty-tree test went quiet exactly when the follow-up round was owed;
 - **committing already-approved bytes costs nothing** — identical content hashes identically;
-- **one APPROVE covers one state** — each release records what it approved, so the next edit re-engages the gate.
+- **one APPROVE covers one state** — each release records the fingerprint the dispatch was made against, so the next edit re-engages the gate. If the code already moved after the verdict, the next cycle opens in the same turn rather than at the next one.
 
 Runaway-safe: the cap terminates each cycle (counters numeric-validated, malformed state fails OPEN) and only a real release refills it. The hook never calls Codex — it routes you to the normal `/review` flow.
 
