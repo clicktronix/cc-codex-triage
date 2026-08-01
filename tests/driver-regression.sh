@@ -560,7 +560,32 @@ bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $
 printf '0000000001\n' > "$SD/pg.active"
 bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $6}' | grep -q busy \
   && bad "leading-zero PID accepted" || ok "leading-zero PID rejected, as the driver does"
+# Whitespace is corruption too, and it was being repaired away: a padded LIVE
+# pid was reported busy while the driver's regex rejects the same bytes as
+# stale — this listing told an agent to avoid a thread /review would dispatch to.
+printf '  %s  \n' "$$" > "$SD/pg.active"
+bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $6}' | grep -q busy \
+  && bad "whitespace-padded PID repaired into a live owner" || ok "whitespace-padded PID rejected, as the driver does"
+printf '%s\n' "$$" > "$SD/pg.active"
+bash "$(dirname "$DRIVER")/thread-index.sh" --tsv | awk -F'\t' '$1=="pg"{print $6}' | grep -q busy \
+  && ok "a well-formed live PID still reads busy" || bad "valid lease no longer detected — the check cannot fail"
 rm -f "$SD/pg.active"
+
+echo "== last-abort belongs to the thread, not to whatever ran last =="
+# The marker records that a dispatch was KILLED before it could reply. A
+# throwaway never writes one (abort_dispatch skips oneshot), so it must not
+# delete one either; and --new discards the incarnation the marker described,
+# so it must.
+rm -rf "$SD"; run la >/dev/null 2>&1
+printf 'signal=TERM\nthread=la\n' > "$SD/la.last-abort"
+run la --oneshot >/dev/null 2>&1
+[[ -f "$SD/la.last-abort" ]] && ok "a successful --oneshot leaves the thread's abort marker alone" || bad "oneshot erased the persistent thread's abort marker"
+# The replacement dispatch must FAIL here. A successful one clears the marker
+# on its own, so asserting against it proves nothing about --new — the first
+# version of this test passed with the fix reverted.
+FAKE_CODEX_EXIT=1 run la --new >/dev/null 2>&1
+[[ ! -f "$SD/la.last-abort" ]] && ok "--new discards the previous incarnation's abort marker, even when the replacement fails" || bad "--new kept a marker describing a thread it just destroyed"
+rm -rf "$SD"
 
 echo "== thread-index: the surface a skill runs unprompted =="
 IDXSH="$(dirname "$DRIVER")/thread-index.sh"

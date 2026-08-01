@@ -45,12 +45,14 @@ for f in "$@"; do
   # with exit 10, so a caller choosing a thread needs to know before it tries.
   busy=""
   if [ -f "$STATE_DIR/$name.active" ]; then
-    # RAW, not `tr -cd '0-9'`: stripping non-digits turns malformed content like
-    # "garbage123" into a live PID and reports the thread busy, while the driver
-    # treats that same lease as stale and dispatchable. Same grammar as the
-    # driver: positive decimal, no leading zero, bounded length. (`kill -0 0`
-    # would also signal the whole process group.)
-    pid="$(head -1 "$STATE_DIR/$name.active" 2>/dev/null | tr -d ' \t\r\n')"
+    # RAW, with no repair at all: stripping non-digits turned "garbage123" into
+    # a live PID, and stripping whitespace turned "  123  " into one — both
+    # spellings the driver's `^[1-9][0-9]{0,11}$` rejects as stale and
+    # dispatchable, so this listing called a thread busy that /review would
+    # happily dispatch to. Same grammar as the driver, applied to the same
+    # bytes. (`kill -0 0` would also signal the whole process group, hence no
+    # leading zero and no bare 0.)
+    pid="$(cat "$STATE_DIR/$name.active" 2>/dev/null)"
     case "$pid" in ''|0|0*|*[!0-9]*) pid="" ;; esac
     [ "${#pid}" -le 12 ] || pid=""
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && busy="busy"

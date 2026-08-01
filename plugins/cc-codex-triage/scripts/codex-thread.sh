@@ -762,7 +762,11 @@ if $FORCE_NEW; then
   # the previous task's findings ledger / scope / approval baseline. Runs
   # while HOLDING the lease — a busy thread was refused above with every
   # sidecar intact.
-  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" "$STATE_DIR/${THREAD}.topic"
+  # last-abort belongs to the incarnation being discarded: leaving it made a
+  # fresh thread open carrying the previous one's killed-dispatch marker until
+  # its first success happened to clear it.
+  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" \
+        "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is
@@ -890,8 +894,11 @@ if $ONESHOT; then
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
-  # last-error means the LAST error: a successful dispatch clears the diag.
-  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
+  # last-error means the LAST error, and oneshot DOES write it on failure, so
+  # clearing it here is symmetric. The abort marker is not: abort_dispatch skips
+  # oneshot entirely, so removing it would let a throwaway erase the persistent
+  # thread's record of a killed dispatch — the opposite of leaving no trace.
+  rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
   # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
