@@ -436,7 +436,14 @@ i=0; while [ ! -f "$SD/abrt.active" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1))
 # signalling that leaves the driver untouched — the probe would then measure
 # nothing. The lease names the driver, which is exactly what we need to signal.
 DRVPID="$(cat "$SD/abrt.active" 2>/dev/null | tr -cd '0-9')"
-CODEXPID="$(pgrep -f "$SLOWBIN/codex" | head -1)"
+# Wait for the CHILD, not just the lease: the pre-dispatch fingerprint runs
+# between acquiring the lease and starting codex, so the lease appears about a
+# second before there is anything to interrupt.
+i=0; CODEXPID=""
+while [ -z "$CODEXPID" ] && [ $i -lt 100 ]; do
+  CODEXPID="$(pgrep -f "$SLOWBIN/codex" | head -1)"
+  [ -n "$CODEXPID" ] || { sleep 0.1; i=$((i+1)); }
+done
 [[ -n "$DRVPID" ]] && ok "the lease names the dispatching driver" || bad "no lease to read the driver pid from"
 [[ -n "$CODEXPID" ]] && ok "codex child is running under the driver" || bad "no codex child to interrupt"
 kill -TERM "$DRVPID" 2>/dev/null

@@ -612,6 +612,37 @@ expect_allow "clean tree right after arming -> allow"
 echo "first real change after arming" >> f.txt
 expect_block "the first change after arming is gated (was: allowed)"
 
+echo "== the released fingerprint belongs to the verdict that earned it =="
+# The verdict came from the log while the fingerprint came from a mutable
+# sidecar, chosen independently. So an APPROVE for state A followed by a
+# SUCCESSFUL but verdict-less dispatch B released B — nothing had approved it.
+# The driver now stamps the pre-dispatch state into each record's header and the
+# parser returns the one belonging to the selected verdict.
+git add -A >/dev/null && git commit -qm "settle before correlation test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "reviewed change" >> f.txt
+FP_A="$(fp_now)"
+printf '[t1] mode=initial thread=review-main round=1 fp=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$FP_A" > "$SD/review-main.log"
+echo "added after the verdict, reviewed by nobody" >> f.txt
+FP_B="$(fp_now)"
+printf '[t2] mode=resume thread=review-main round=2 fp=%s\nPROMPT:\n  p\nREPLY:\n  prose, no verdict at all\n---\n' "$FP_B" >> "$SD/review-main.log"
+printf '%s\n' "$FP_B" > "$SD/review-main.dispatch-fp"     # the sidecar the later dispatch overwrote
+expect_block "state B is gated: the APPROVE judged A, not B"
+[[ "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" == "$FP_A" ]] \
+  && ok "released_fp is the state the verdict actually judged" || bad "released_fp took the later dispatch's state"
+# A record written before headers carried fp= must keep working, falling back to
+# the sidecar rather than blocking an existing thread forever.
+: > "$SD/review-main.log"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "legacy-era change" >> f.txt
+printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"
+printf '[t1] mode=initial thread=review-main round=1\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' > "$SD/review-main.log"
+expect_allow "a pre-fp= record still releases via the sidecar"
+rm -f "$SD/autoreview.armed" "$SD/review-main.dispatch-fp"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== release records what CODEX saw, not the tree at turn-end =="
 # Code written after the verdict arrives but before the turn ends was never
 # reviewed. Releasing against the driver's dispatch-time snapshot keeps it

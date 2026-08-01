@@ -29,6 +29,13 @@
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
+#   <thread>.dispatch-fp      code state this thread was last dispatched
+#   <thread>.dispatch-fp-plan against, whole-tree and (for the armed plan
+#                             thread) plan-scoped. Captured BEFORE codex runs.
+#                             Also stamped into that dispatch's log header as
+#                             fp= / fp-plan=, which is what lets a verdict be
+#                             matched to the state it judged; the sidecars are
+#                             the fallback for records written before that.
 #   <thread>.last-abort       written when a signal kills a dispatch before it
 #                             replies (usually a caller timeout). Cleared by the
 #                             next successful dispatch. NOT in .log: autoplan
@@ -810,6 +817,25 @@ if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
   printf '%s' "$$" > "$CC_CODEX_READY_FILE"
 fi
 
+# ── code state at dispatch time ───────────────────────────────────────────
+# Captured BEFORE codex runs and held in memory, because that is the state Codex
+# is about to look at; a snapshot taken afterwards also admits whatever changed
+# while it ran. Written out only on success — into the log record of THIS
+# dispatch, so a verdict can be matched to the state that earned it, and into
+# the sidecars, which /status and older readers still use.
+PRE_FP=""; PRE_FP_PLAN=""
+if ! $ONESHOT && [[ -n "$REPO_ROOT" ]]; then
+  _fpsh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/gate-fingerprint.sh"
+  [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
+  if [[ -f "$_fpsh" ]]; then
+    PRE_FP="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
+    if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
+      # shellcheck disable=SC2086 — splitting the pathspecs is intended
+      PRE_FP_PLAN="$( cd "$REPO_ROOT" && set -f && bash "$_fpsh" ${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS} 2>/dev/null || true )"
+    fi
+  fi
+fi
+
 # ── interruptible dispatch ────────────────────────────────────────────────
 # Runs codex in the BACKGROUND and waits. That is not a style choice: bash defers
 # a trap until the current FOREGROUND child finishes, so with a plain `codex …`
@@ -967,31 +993,10 @@ if ! $ONESHOT; then
       _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
       printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
     fi
-    # Code state this dispatch was made against, for the /autoreview gate.
-    # Written HERE, on the success path: a failed run used to overwrite it, and
-    # a later APPROVE for an EARLIER state then released whatever that failed
-    # run had snapshotted.
-    # Resolved from THIS script's own location, not from CLAUDE_PLUGIN_ROOT: the
-    # sibling script is always next to the driver, while the env var is set only
-    # when a command invokes it — so keying on the var meant no snapshot at all
-    # for any direct call, tests included.
-    _fpsh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/gate-fingerprint.sh"
-    [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
-    if [[ -f "$_fpsh" ]]; then
-      _fp="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
-      [[ -n "$_fp" ]] && printf '%s\n' "$_fp" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
-      # And a PLAN-SCOPED snapshot when this thread is the one /autoplan
-      # watches. That gate had no dispatch-time state at all, so it re-baselined
-      # to whatever the worktree held at turn-end — marking plan edits made
-      # after the dispatch as reviewed.
-      if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
-        # shellcheck disable=SC2086 — splitting the pathspecs is intended
-        _pfp="$( cd "$REPO_ROOT" && set -f && bash "$_fpsh" ${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS} 2>/dev/null || true )"
-        [[ -n "$_pfp" ]] && printf '%s\n' "$_pfp" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
-      fi
-    fi
-  else
-    ROUND=0
+    # Sidecars keep the pre-dispatch snapshots for /status and for readers of
+    # logs written before the header carried them.
+    [[ -n "$PRE_FP" ]] && printf '%s\n' "$PRE_FP" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    [[ -n "$PRE_FP_PLAN" ]] && printf '%s\n' "$PRE_FP_PLAN" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
   fi
 
   # Rotate BEFORE appending so the newest entry always lands in the current
@@ -1013,7 +1018,7 @@ if ! $ONESHOT; then
   # PROMPT must never release the autoreview gate). Body lines are always
   # indented two spaces, so prompt/reply content cannot fake a marker.
   {
-    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND"
+    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND${PRE_FP:+ fp=$PRE_FP}${PRE_FP_PLAN:+ fp-plan=$PRE_FP_PLAN}"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
     echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
     echo "---"

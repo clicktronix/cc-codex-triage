@@ -274,9 +274,21 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # a pathspec hash, which can never be equal — so every autoplan release
   # immediately re-blocked, to the cap. The tests missed it because they wrote no
   # sidecar at all and so only ever exercised the fallback.
-  local v f="$STATE_DIR/$1.dispatch-fp"
-  [[ "${3:-}" == "plan" ]] && f="$STATE_DIR/$1.dispatch-fp-plan"
-  v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  # Preference order, strongest first:
+  #   1. the fingerprint stamped into the log record that CONTAINED the selected
+  #      verdict — the only source that is guaranteed to describe the state that
+  #      verdict judged;
+  #   2. the sidecar, i.e. the LATEST successful dispatch on this thread. Right
+  #      whenever that dispatch is the one that produced the verdict, which is
+  #      the ordinary case, but a later verdict-less dispatch overwrites it;
+  #   3. the caller's Stop-time fingerprint.
+  # Records written before the header carried `fp=` fall through to 2, so an
+  # existing thread keeps working and simply does not gain the guarantee until
+  # its next dispatch.
+  local v f="$STATE_DIR/$1.dispatch-fp" flag="--fp"
+  if [[ "${3:-}" == "plan" ]]; then f="$STATE_DIR/$1.dispatch-fp-plan"; flag="--fp-plan"; fi
+  v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${4:-0}" "$flag" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
   [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="$2"   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
 }
@@ -449,7 +461,7 @@ if [[ "$AR_LIVE" -eq 1 ]]; then
           # APPROVE earned this cycle — release, and record WHAT it approved.
           # Without the record, this one verdict would keep releasing every
           # later turn no matter how much new unreviewed code was written.
-          ar_released="$(reviewed_fingerprint "$thread" "$ar_fp")"
+          ar_released="$(reviewed_fingerprint "$thread" "$ar_fp" "" "$log_off")"
           rebaseline_cycle "$AR" "$ar_released" "$thread" || true   # diagnoses itself
           # The approval covers the state Codex saw. If the worktree has moved
           # past it — code written after the verdict arrived, in this same turn
@@ -504,7 +516,7 @@ if [[ "$AP_LIVE" -eq 1 ]]; then
         # fingerprint and would block every turn to the cap. Falls back to the
         # Stop-time fingerprint when no snapshot exists (older state, or a
         # thread the driver did not recognise as the armed plan thread).
-        ap_released="$(reviewed_fingerprint "$thread" "$ap_fp" plan)"
+        ap_released="$(reviewed_fingerprint "$thread" "$ap_fp" plan "$log_off")"
         rebaseline_cycle "$AP" "$ap_released" "$thread" || true   # diagnoses itself
         # Plan edits made AFTER the releasing dispatch are not covered by it, so
         # open the next cycle now rather than ending the turn on them.

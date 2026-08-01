@@ -102,6 +102,15 @@ full.
   `tests/scenarios/README.md` records both that fact and the RED that would
   test it.
 
+- **A release is bound to the verdict that earned it.** The driver captures the
+  code state *before* invoking Codex and stamps it into that dispatch's log
+  record (`fp=` / `fp-plan=`); the parser returns the fingerprint belonging to
+  the record whose verdict was selected. Choosing the verdict from the log and
+  the fingerprint from a mutable sidecar independently meant an APPROVE for
+  state A followed by a successful but verdict-less dispatch B released B, which
+  nothing had approved. Records written before the header carried these fields
+  fall back to the sidecar, so existing threads keep working.
+
 - **Gate releases are bound to the state the dispatch saw.** The driver records
   a fingerprint on every successful dispatch — whole-tree, plus a plan-scoped one
   for the armed plan thread — and each gate releases against that rather than the
