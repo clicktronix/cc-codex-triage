@@ -20,6 +20,7 @@
 #                           thread file-sets — id, log, log.1, rounds,
 #                           findings.jsonl, scope, approved, last-error.jsonl,
 #                           detach-output, detach-stderr, detach-status,
+#                           dispatch-fp, dispatch-fp-plan, topic, last-abort,
 #                           active — whose NEWEST member is
 #                           older than N days. Listed on dry run, moved
 #                           wholesale on --apply.
@@ -97,7 +98,7 @@ NOW="$(date +%s)"
 # Every known per-thread state file (deduplicated — the extensions are
 # distinct). Kept in ONE place so the dormant file-set and the mtime scan can
 # never drift apart.
-THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status active"
+THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status dispatch-fp dispatch-fp-plan topic last-abort log-gen active"
 
 # Existing member paths of a thread's file-set, one per line.  $1=thread
 thread_files() {
@@ -182,7 +183,7 @@ unit_lock() { # $1=thread
     if [ -e "$lock/owner" ]; then
       : # dead/garbage owner: reclaim now
     else
-      mt="$(stat -f '%m' "$lock" 2>/dev/null || stat -c '%Y' "$lock" 2>/dev/null || true)"
+      mt="$(_mtime_epoch "$lock" || true)"
       case "$mt" in
         *[!0-9]*|'') return 1 ;;
         *) [ $((NOW - mt)) -gt 60 ] || return 1 ;;

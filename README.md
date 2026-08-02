@@ -60,9 +60,18 @@ tests/
   driver-regression.sh                # driver suite with a stubbed codex CLI
   ledger-regression.sh                # findings-ledger suite (jq required)
   cleanup-regression.sh               # /cleanup suite — detection classes + safety rails
+  manifest-lint.sh                    # command/skill frontmatter + code-fence structure
 CHANGELOG.md
 LICENSE                               # MIT
 ```
+
+## Known limitations
+
+- **Gitignored files are outside every gate fingerprint**, deliberately: a gate
+  firing on `.env` or build output would be unusable.
+
+Deferred internal refactors are recorded in
+[wiki/PLANS/2026-08-02-gate-internals-followups.md](wiki/PLANS/2026-08-02-gate-internals-followups.md).
 
 ## Why a separate repo
 

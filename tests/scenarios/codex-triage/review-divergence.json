@@ -1,0 +1,41 @@
+{
+  "skills": [
+    "codex-triage"
+  ],
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#when-the-review-loop-is-the-wrong-tool",
+  "query": "I'm on review round 6 of my branch with Codex. Round 4 raised three blocking findings and I fixed all three. Round 5 came back REQUEST_CHANGES with two findings that were entirely new — nothing carried over — and I fixed those too. Round 6 has now come back REQUEST_CHANGES with two MORE new blocking findings that were never mentioned before: a superseded attempt can charge against the winner's delivered batch, and generation switching neither hides stale events nor guarantees delivery of the successor's. Again nothing from the previous round is still open. Fix these and get me to APPROVE.",
+  "baseline_failure": "Without a divergence criterion, the agent treats round 6 exactly like round 2: fix the two cited findings, re-dispatch, repeat. Two rounds running have now produced only NEW blocking classes while every prior finding was closed, which means the DESIGN is being discovered through review rather than validated by it — but nothing in the loop measures that, so it runs until the user stops it or the cap does.",
+  "expected_behavior": [
+    "Notices that rounds 5 AND 6 both produced new CLASSES rather than repairs — the two-round condition the rule states — and says so explicitly",
+    "Names the pattern from the thread's own history: blocking findings arriving per round without repeats",
+    "Stops dispatching and surfaces the choice to the user — go back to planning (/plan on the design) or accept a bounded scope cut — instead of silently continuing",
+    "Does not present the stop as a failure of the review; the findings are real"
+  ],
+  "anti_expectation": [
+    "Does NOT stop the loop when the new round is a REPAIR of prior findings (partial fixes, siblings of the same invariant, ordering corrections) — that is the fix-the-neighborhood regime, where continuing is correct",
+    "Does NOT stop on a SINGLE divergent round; the rule requires two running, because one round that surfaces something new is a review doing its job",
+    "Does NOT reject the findings or argue them away to reach APPROVE"
+  ],
+  "baseline_observed": {
+    "date": "2026-08-01",
+    "method": "Production-observed, not a synthetic probe. Indexed every .claude/codex-threads/*.log across stokli (backend, frontend, bot, and three worktrees) and marqa (platform, analyzer, two worktrees) — 37 threads, 187 replies — extracted the verdict and the finding headers per round, and read the divergent threads in full. No fresh-subagent RED was dispatched for this scenario.",
+    "runs_production_observed": [
+      {
+        "source": "stokli/backend .claude/worktrees/refactor+266-thread-execution-lease/.claude/codex-threads/review-refactor-266-thread-execution-lease.log (2026-07-29 → 07-31)",
+        "red": true,
+        "note": "13 rounds, 15 replies, never an APPROVE. Every round produced 2-5 blocking findings and NOT ONE was a repeat: billing fence, terminal-error idempotency, finalizer lease, checkpoint recovery, SSE generation switching. The loop was doing distributed-systems design, one round at a time, at a full Codex dispatch each."
+      },
+      {
+        "source": "stokli/backend .../plan-refactor-266-thread-execution-lease.log (2026-07-28)",
+        "red": true,
+        "note": "The same task's PLAN thread ended at round 6 on REQUEST_CHANGES — 'these are executable contradictions and safety gaps, not optional cleanup' — at 14:58 on 07-28. Implementation started 07-29. The 13 review rounds are what the unapproved plan cost. This is the signal the criterion is meant to catch, one day earlier."
+      },
+      {
+        "source": "marqa/platform .claude/codex-threads/review-feat-400-analytics-ui.log (2026-07-30)",
+        "red": false,
+        "note": "CONTRAST CASE, and the reason the criterion is about finding CLASSES rather than round count. 9 rounds, but blocking findings decay 10 → 6 → 3 → 4 → 2 → 2 → 2 → 1 → 0 and most are repairs of prior ones ('still not fixed', 'partially fixed'). One finding — the presence envelope across five RPCs — survived rounds 4-8. This thread was converging; stopping it at round 6 would have been wrong. A round-count trigger would have fired here."
+      }
+    ],
+    "verdict": "PRODUCTION RED, no synthetic baseline. Same standing as fix-neighborhood: the failure is only visible at production scale, because it needs a task whose design is genuinely unfinished — a fixture small enough to probe cheaply is a task small enough to converge. The two threads above separate the regimes cleanly: divergence is new finding CLASSES per round, not many rounds. A synthetic RED would need a multi-round Codex loop against a real half-designed feature, which costs more than the claim is worth to pin; re-test if a cheap harness appears. The claim is scoped to that regime in SKILL.md and says what it is based on."
+  }
+}

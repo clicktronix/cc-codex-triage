@@ -7,7 +7,9 @@ disable-model-invocation: true
 
 # /autoplan
 
-Arms a Stop hook that blocks the end of any turn in which plan documents (`docs/plans/**`, `docs/PLANS/**`) changed without the plan thread seeing a dispatch since arming, pointing Claude at the `/plan` command file to follow with `--thread plan-<branch>`. Blocking ends after one post-arming dispatch on that thread (normally your `/plan` round — see the caveat below), on the round cap, or on `/autoplan off`.
+Arms a Stop hook that blocks the end of any turn in which plan documents (`docs/plans/**`, `docs/PLANS/**`) differ from the last state this gate released, pointing Claude at the `/plan` command file to follow with `--thread plan-<branch>`. Blocking ends after one dispatch on that thread within the current cycle (normally your `/plan` round — see the caveat below), on the round cap, or on `/autoplan off`.
+
+**The unit is a cycle, not an arming.** Each release records the plan state it covered and advances the log baseline, so the *next* plan edit needs its own dispatch. That matters more here than for code: a plan document is untracked for its whole first life, so without hashing untracked content a plan could be rewritten end to end after one release and never re-engage the gate.
 
 Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound is prose). The release signal is the thread log growing since arming — which any dispatch to the plan thread produces, including a `/reply plan-<branch>` or `/thread plan-<branch>`. So strictly the gate guarantees *a dispatch to the plan thread happened since arming*; it is a stress-test guarantee only as long as you route actual `/plan` runs (not chatter) to that thread, which the per-task thread convention already does. The verdict is visible in the transcript for you to act on. Re-arm to force another round after major plan revisions.
 
@@ -31,21 +33,50 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # (normally your /plan round). The log, unlike .rounds, is not reset by
    # /thread-new — a bare reset cannot fake a dispatch.
    LOG_BYTES=$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' '); LOG_BYTES=${LOG_BYTES:-0}
+   # fp_at_arming: the plan state the gate starts from. `--plan` asks the
+   # canonical script for the plan scope rather than restating what it is —
+   # the hook and /status resolve it from the same place, so they cannot
+   # disagree (a disagreement is a gate that can never release).
+   # An EMPTY answer must not be armed: the hook reads a missing fp_at_arming as
+   # a pre-0.9 file and silently falls back to 0.8 dirty-tree semantics — the
+   # exact behaviour this field exists to replace. Refuse instead.
+   FP=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" --plan)
+   [ -n "$FP" ] || { echo "cannot fingerprint the plan scope — not arming"; exit 1; }
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
-   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" > "$STATE_DIR/autoplan.armed"
+   # log_gen_at_arming: how many times the driver has rotated this thread's log.
+   # The cut above is a byte offset into the log as it is NOW, so a later
+   # rotation makes it meaningless; a changed generation tells the hook to parse
+   # the whole current log instead.
+   # Same grammar the driver and the hook use — a leading zero is not
+   # octal-safe in shell arithmetic, so anything malformed is generation 0.
+   LOG_GEN=$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null | tr -cd '0-9')
+   case "$LOG_GEN" in ''|0*[0-9]*) LOG_GEN=0 ;; esac; LOG_GEN=${LOG_GEN:-0}
+   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$LOG_GEN" "$(date +%s)" "$FP" \
+     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoplan.armed" || exit 1
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
-   # Already-changed plan docs to stress-test now? Locations honor
-   # CC_CODEX_PLAN_PATHS (space-separated pathspecs; default = the two dirs).
-   PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+   # Already-changed plan docs to stress-test now? Ask the canonical script for
+   # the scope, and keep the SAME empty-answer fallback the hook (plan_paths())
+   # and /status keep: an empty list leaves `git status --` with NO pathspec,
+   # which git reads as the WHOLE repository — that armed a paid plan dispatch
+   # on code-only changes once already.
    # set -f: pass the pathspecs to git unexpanded (no shell globbing first).
+   PLAN_PATHS=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" --plan-paths)
+   [ -n "$PLAN_PATHS" ] || PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
    ( set -f; git status --porcelain -uall -- $PLAN_PATHS | grep -q . ) \
      && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
 3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from deleting files in the wrong directory) and confirm.
+4. `off` — from the repo root, `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed || { echo "could not disarm — the armed file is still in place"; exit 1; }`, then confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
+
+   ```bash
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed \
+     || { echo "could not disarm — the armed file is still in place"; exit 1; }
+   echo "autoplan disarmed."
+   ```
 
 5. `status` — cat the armed file (or "not armed"). Same repo-root anchoring.
 
@@ -54,6 +85,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 ## Notes
 
 - Armed state: `.claude/codex-threads/autoplan.armed`. Branch-scoped.
+- Fields mirror `/autoreview`, including `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook). An armed file with neither is a pre-0.9 arming: dirty-tree behaviour until its first release, cycle model after it.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Plan-doc detection covers `docs/plans/` and `docs/PLANS/` by default. For other layouts, set `CC_CODEX_PLAN_PATHS` (space-separated pathspecs, e.g. `CC_CODEX_PLAN_PATHS="docs/rfcs planning"`) in your environment — the hook and the arming check both honor it. Or use `/plan` manually.
 - Pairs with `/autoreview` (same hook, code gate).

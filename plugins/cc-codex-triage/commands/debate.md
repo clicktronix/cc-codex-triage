@@ -1,6 +1,6 @@
 ---
 description: Run a structured multi-round debate between Claude Code and Codex on a design decision or question, with every exchange visible to the user. Ends in an honest synthesis, not forced consensus.
-argument-hint: "[--rounds N] [--thread <name>] <question or decision to debate>"
+argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] <question or decision to debate>"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -14,15 +14,23 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
 1. Parse flags from the front of `$ARGUMENTS`:
    - `--rounds N` → maximum number of argument rounds before synthesis (default `5`, max `15`). This is a ceiling, not a target: the "advance or sharpen" rule below ends the debate early once a round stops adding new evidence, so a deep disagreement can use all 15 while a shallow one wraps in 2–3.
    - `--thread <name>` → thread name (default: `debate-<short-slug-of-topic>`; one debate = one thread, never reuse).
+   - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
    The remainder is the question/decision under debate.
 
 2. **Commit to your position first.** Investigate as needed (read code/docs), then state YOUR position with evidence — visibly, to the user — BEFORE dispatching anything to Codex. This is the commitment device against capitulation.
 
-3. Open the debate (round 1). Send via Bash (timeout 600000):
+3. Open the debate (round 1). Send via Bash (timeout 600000 — the caller's ceiling, not the dispatch's):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> <<< "$OPENING"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
    ```
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 20 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 20 as a failure: the
+   dispatch is still running and is already paid for.
 
    `$OPENING` template:
 

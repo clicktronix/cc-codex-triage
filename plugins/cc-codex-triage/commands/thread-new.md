@@ -20,7 +20,7 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
    D=".claude/codex-threads"
    # Reset the pointer/counter AND the per-task sidecars, so a reused thread
    # name never inherits the previous task's findings/scope/approval baseline.
-   rm -f "$D/<NAME>.id" "$D/<NAME>.rounds" "$D/<NAME>.findings.jsonl" "$D/<NAME>.scope" "$D/<NAME>.approved"
+   rm -f "$D/<NAME>.id" "$D/<NAME>.rounds" "$D/<NAME>.findings.jsonl" "$D/<NAME>.scope" "$D/<NAME>.approved" "$D/<NAME>.topic"
    echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
    ```
 

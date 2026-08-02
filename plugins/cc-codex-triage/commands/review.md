@@ -1,6 +1,6 @@
 ---
 description: Send code, a diff, a PR, or another agent's findings to a persistent Codex review thread for critique. Iterates to APPROVE by default; --once for a single pass. Supports focus lenses and per-task threads.
-argument-hint: '[--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] [--json] <paste or "review my branch">'
+argument-hint: '[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] [--json] <paste or "review my branch">'
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -15,6 +15,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - `--lens <name>` → one of: `correctness` (default), `security`, `performance`, `architecture`, `ux`, `quick`.
    - `--thread <name>` → target thread. **Default: `review-<branch-slug>`** (e.g. `review-main` on `main` — no main/master special-case; the bare `review` thread only via an explicit `--thread`). `<branch-slug>` = the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` — the SAME slug rule the hook and `/autoreview` use, so a manual review and the gate share one thread. Per-task threads keep one task per thread; mixing tasks inflates every later resume.
    - `--once` → a single dispatch, no iterate-loop (you decide after one round).
+   - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
    - `--oneshot` → throwaway ephemeral run (no thread kept). Implies `--once`.
    - `--cap N` → max review rounds in the loop (default 5).
    - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
@@ -37,11 +38,18 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
 
    **If `--background`:** launch the driver detached — run the SAME command below with the driver's `--detach` flag added, as a normal FOREGROUND Bash call: it prints `DETACHED pid=<pid> output=<THREAD>.detach-output log-offset=<B>` and returns instantly, while the dispatch keeps running in its own session (immune to harness process-reaping). **Then wire up completion delivery — the detached worker alone cannot notify you** (and a post-READY failure appends NO new `round=` header, so log polling would never fire): parse `<pid>` and `<B>` from the DETACHED line and launch the bundled watcher as a Claude-managed background task, `Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detach-watch.sh" <THREAD> <pid> <B>, run_in_background: true)` — its completion notification carries the reply plus any worker warnings from `<THREAD>.detach-stderr` (exit 0), the failure diagnostics — worker rc, `<THREAD>.last-error.jsonl`, `detach-stderr`, `detach-output` tails (exit 1), a still-running timeout notice (exit 3), or an UNKNOWN outcome when no status record matches the worker PID (exit 4 — treat as failure until verified). The watcher is disposable: if the harness reaps it the worker is unaffected — fall back to polling `.claude/codex-threads/<THREAD>.log` for the next `round=` header (raw child output: `<THREAD>.detach-output`, latest run only). Tell the user: "Codex review started in the background — the watcher will surface the result." Fallback if `--detach` exits 8 (neither `setsid` nor `python3` on PATH): `Bash(..., run_in_background: true)` on the plain command — with the caveat that the harness may reap the process group before Codex finishes. Do NOT enter the iterate loop (step 9) and do NOT poll this turn.
 
-   Otherwise, run via Bash (timeout 600000 — reviews take minutes):
+   Otherwise, run via Bash (the 600000 ms ceiling still applies to THIS call, not to the dispatch):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] [--model <m>] [--effort <e>] [--schema <FILE>] <<< "$PROMPT_BODY"
    ```
+
+   `dispatch.sh` detaches the worker and then waits for it here, bounded below
+   the caller's ceiling. A short dispatch returns the reply in this turn exactly
+   as a direct call would; one that outruns the window **exits 20 and hands off**
+   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
+   as a background task delivers the reply. Never treat exit 20 as a failure: the
+   dispatch is still running and is already paid for.
 
    If `--json`: also pass `--schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json"` to the driver.
 
@@ -59,6 +67,7 @@ Forwards a review request to a Codex review thread and **iterates to APPROVE by 
    - **APPROVE** → done.
    - **only `(non-blocking)`/`(if-minor)` items remain** → done; report them, do not loop on nitpicks (the verdict contract already keeps those out of `REQUEST_CHANGES`).
    - **`--cap` rounds reached** → stop and tell the user the open findings — do not keep looping.
+   - **the loop is diverging** → two rounds running whose blocking findings are entirely NEW classes, with nothing carried over from the previous round. Stop and put it to the user: back to `/plan`, or cut the scope. Per skill `codex-triage` ("when the review loop is the wrong tool") — the design is being discovered through review at one paid dispatch per decision. Judge by repeat structure, not round count: a long thread whose blocking count is falling and whose findings are repairs of earlier ones is converging and must not be interrupted.
    A finding you've refuted with file:line is resolved; if Codex still holds it, **escalate to the user** (they lower the bar or accept the open item) — do not fix a wrong finding just to release.
 
 ## Findings ledger (machine-readable history, needs `jq`)
@@ -98,4 +107,4 @@ The ledger lets `--continue` and `/review-dispute|accept|defer` work from state 
 - `--cap` here bounds *this command's* iterate-loop. The `/autoreview` gate has a **separate** cap that counts hook-blocks (each block runs `/review --once`, not a loop) — see `autoreview.md`.
 - Lens templates: `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. No `--lens` = `correctness`.
 - Thread state: `.claude/codex-threads/<thread>.{id,log,rounds}`. Force-reset: `/thread-new <thread>`.
-- The `/autoreview` gate always dispatches text-mode `/review --once` — never `--json`. The hook's verdict parser only matches the standalone-text-verdict line from a text-mode reply, so a `--json` pass could neither release nor false-release the gate; use text-mode `/review` for the gate, and `--json` for a separate structured-output request (step 6).
+- The `/autoreview` gate always dispatches text-mode `/review --once` — never `--json`. The hook's verdict parser (`scripts/last-verdict.sh`, shared with `/status`) reads a verdict standing alone on its own line in a text-mode reply — heading marks and bold around it are tolerated, a line carrying other words is not. A verdict embedded in JSON is not on such a line, so a `--json` pass can neither release nor false-release the gate; use text-mode `/review` for the gate, and `--json` for a separate structured-output request (step 6).

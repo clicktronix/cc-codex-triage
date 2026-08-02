@@ -115,9 +115,58 @@ Added 2026-06-09 (run against fresh subagents the same day):
   still holding the core behaviour — the measured onset of sequential-rebuttal
   capitulation. Anti-capitulation rules kept.
 
-**Net:** of six scenarios, one is a consistent RED (`resume-failure-handling`),
-one has a documented production RED in its real regime (`fix-neighborhood`),
-one is a narrow partial (`debate-capitulation`), and three are unreproducible —
-capable agents already do the right thing, so those sections were kept narrow
-or demoted. This is the eval doing its job: it stopped hypotheses from
-masquerading as validated guidance.
+Added 2026-08-01:
+
+- **`review-divergence.json`** — **PRODUCTION RED, no synthetic baseline.**
+  Same standing as `fix-neighborhood`: the failure needs a task whose design is
+  genuinely unfinished, and any fixture cheap enough to probe is small enough to
+  converge, so no fresh-subagent RED was dispatched. The RED is stokli/backend's
+  `review-refactor-266-thread-execution-lease` — 13 rounds, never an APPROVE,
+  **zero repeated findings**, after that task's plan thread ended on
+  `REQUEST_CHANGES` and implementation started anyway. The contrast case
+  (marqa/platform `review-feat-400-analytics-ui`: 9 rounds, blocking findings
+  decaying 10 → 0, mostly repairs) is why the rule keys on repeat structure and
+  not round count — a round-count trigger would have stopped a converging
+  review. Method: indexed all 37 thread logs across stokli and marqa (187
+  replies), extracted verdicts and finding headers per round, read the divergent
+  threads in full.
+
+**Net:** of seven scenarios, one is a consistent RED (`resume-failure-handling`),
+two have documented production REDs in their real regime (`fix-neighborhood`,
+`review-divergence`), one is a narrow partial (`debate-capitulation`), and three
+are unreproducible — capable agents already do the right thing, so those
+sections were kept narrow or demoted. This is the eval doing its job: it stopped
+hypotheses from masquerading as validated guidance.
+
+**Not covered by a scenario.** Two additions from 2026-08-01 ship with **no
+baseline at all**, and this is the honest place to say so.
+
+The **one-feature-one-thread** routing rule in `codex-triage` (point `/ask`,
+`/plan` and `/debate` at a single per-feature thread) is derived, not measured.
+The constraints inside it are verified facts — `codex exec resume` takes no
+`-s`, and production feature threads reach ~130 KB by round 9 — but the claim
+that an agent left to itself scatters a feature across three threads, and that
+doing so measurably costs something, was never tested. An earlier draft also
+prescribed a "split past ~10 rounds or ~100 KB" threshold; those were round
+numbers rather than findings, so they now read as calibration alongside the
+observed sizes instead of as a rule. The RED would be: give an agent a
+multi-step feature task with the plugin available and see how many distinct
+threads it opens unprompted.
+
+The **`codex-second-opinion`** skill has no baseline either. It is an entry point rather than a behavioural claim — it exists because
+every command in the plugin is `disable-model-invocation`, so an agent that
+wanted a third opinion had to read a 100-line command file to get one. The
+claim it *would* need a RED for is narrower: "an agent stuck at a fork the
+repository cannot settle does not think to ask Codex, and instead picks one and
+proceeds." That is testable — a fixture with two defensible designs and no
+in-repo tiebreaker, measuring whether the agent flags the fork or silently
+resolves it — and has not been tested. Until it is, the skill's cost controls
+(announce before dispatching, one dispatch per fork, never the gate thread) are
+design caution, not measured guidance.
+
+**On production REDs.** Two of seven claims rest on observed production
+behaviour rather than a dispatched probe. That is weaker evidence about *what a
+fresh agent would do unaided* and stronger evidence about *what actually goes
+wrong at scale*. Both say so in their `verdict` field and in
+`references/test-provenance.md`; neither is presented as a reproduced synthetic
+baseline. If a cheap multi-round harness appears, they are the two to re-test.

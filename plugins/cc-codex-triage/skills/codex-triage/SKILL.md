@@ -15,7 +15,7 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 | Intent | Command | Thread |
 |---|---|---|
-| Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only) |
+| Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only), or `--thread <feature>` |
 | Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
 | Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
 | Reply back to something Codex said | `/reply [thread]` | named thread, default `review-<branch-slug>` (falls back to a legacy bare `review` if only that exists) |
@@ -27,9 +27,13 @@ description: Use when the user wants to involve OpenAI Codex CLI from Claude Cod
 
 `ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
 
+**Every command above is `disable-model-invocation`** — each spends real money and minutes, so the user decides. The one exception is the sibling skill **`codex-second-opinion`**, which you may invoke yourself for a *single* bounded dispatch when you are genuinely stuck: a fork the repository does not settle, an irreversible change, two sources contradicting each other. It announces the cost before spending it and never targets a gate thread — `review-<branch>` or `plan-<branch>`, since /autoplan releases on ANY growth of its log. Anything iterative still belongs to the user.
+
 **`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
 
 **One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — there is no main/master special-case) so each branch, and the matching `/autoreview` / `/autoplan` gate, stay on one isolated thread; the bare `review`/`plan` names are only via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
+
+**One feature = one thread, across commands.** Those defaults are per *command kind*, so a feature's context splits across `ask`, `plan-<branch>` and `debate-<slug>`. Point `/ask`, `/plan` and `/debate` at one `--thread <feature>`; leave `/review` on its branch thread, since the gate reads verdicts from that log. Two limits: the **sandbox is fixed at session creation** (`codex exec resume` takes `-m` and `--output-schema` but no `-s`, and the driver withholds the `-c` override that could reach it), so a feature thread picks read-only or write once; and every resume re-feeds the history, so split a large thread into `<feature>-2` with a written handoff. `/thread-list` shows rounds and size — for calibration, production threads reach ~130 KB by round 9 and the longest (13 rounds) never converged.
 
 **`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
 
@@ -43,10 +47,16 @@ State files live in `.claude/codex-threads/` in the current repo (git-ignore thi
 - `<name>.detach-output` — raw STDOUT of the LATEST `--detach` child (truncated per launch by the lease-owning child; the reply itself still lands in the `.log` as usual).
 - `<name>.detach-stderr` — the latest detach child's STDERR — warnings a successful run emits (invalid saved ID discarded, ignored resume overrides, porcelain guard notes); the watcher surfaces it on every outcome.
 - `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on; no matching record → the watcher reports UNKNOWN (exit 4), never success-from-log-growth.
+- `<name>.topic` — one-line label of what the thread is about, set by `--topic` when it is created. `thread-index.sh` lists it so an agent can reuse the right thread instead of opening a new one.
+- `<name>.dispatch-fp` / `<name>.dispatch-fp-plan` — code state the thread was last dispatched against, whole-tree and (for the armed plan thread) plan-scoped, captured *before* Codex runs. The same values are stamped into that dispatch's log header (`fp=` / `fp-plan=`), which is how a gate releases the state the verdict actually judged rather than whatever a later dispatch left behind; the sidecars are the fallback for records written before headers carried them.
+- `<name>.log-gen` — how many times the driver has rotated this thread log. A gate's verdict window is a byte offset into the log as it was, so a changed count tells the hook to parse the whole current log instead of from an offset that now points into unrelated content.
+- `gate-index` — a cached git index the whole-tree fingerprint seeds itself from, so git's stat cache survives between turns. An optimisation only: a stale or missing one is repaired by the next run.
 - `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
 - `<name>.active.lock` — transient acquisition mutex directory (with an owner-PID token inside) held only while a dispatch claims the lease. Stale recovery is automatic: a lock whose owner PID is dead, or an ownerless lock older than 60s, is reclaimed by the next dispatch; a lock with a live owner is never stolen.
 
-List with `/thread-list`. Force-reset (drop saved UUID, next dispatch starts fresh) with `/thread-new <name>`.
+List with `/thread-list`, which prints `scripts/thread-index.sh` — name, rounds, size, last activity, topic, and a `[busy]` marker for a thread with a dispatch in flight. That script is a local read with no Codex dispatch, so `codex-second-opinion` may run it directly to **pick an existing thread rather than open a new one**. Force-reset (drop saved UUID and the topic, next dispatch starts fresh) with `/thread-new <name>`.
+
+**Name and label a thread when you create it.** The name is the handle (`feat-391`, `review-<branch>`); `--topic "what it is about"` is what makes it findable later. A thread called `review-391-a` with no topic tells the next agent nothing.
 
 The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral` and writes **no** `.id`, `.log`, or rollout — a true throwaway.
 
@@ -58,7 +68,7 @@ All commands shell out to the bundled driver. When you need to dispatch without 
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing|--detach] <<< "$PROMPT"
 ```
 
-The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread, 7 = not a git repo — persistent state refused (cd into a repo, fix `CLAUDE_PROJECT_DIR`, or use `--oneshot`), 8 = `--detach` with no isolator available (neither `setsid` nor `python3` on PATH), 9 = `--detach` readiness handshake timed out (spawn killed; check `<thread>.detach-output` / `<thread>.detach-stderr`), 10 = thread busy — the lease could not be acquired: another dispatch holds it (`<thread>.active` names a live PID — wait for it or use a different `--thread`), a concurrent claim holds the acquisition mutex (`<thread>.active.lock`, including a live mutex holder — retry shortly), or `<thread>.active` is not a regular file (inspect and remove it manually). The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.
+The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 1 = usage error, 2 = no `codex` CLI on PATH, 3 = `codex exec` failed on an initial or oneshot dispatch (the most common real failure — the diagnostics land in `<thread>.last-error.jsonl`; report it, do not guess what Codex would have said), 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread, 7 = not a git repo — persistent state refused (cd into a repo, fix `CLAUDE_PROJECT_DIR`, or use `--oneshot`), 8 = `--detach` with no isolator available (neither `setsid` nor `python3` on PATH), 9 = `--detach` readiness handshake timed out (spawn killed; check `<thread>.detach-output` / `<thread>.detach-stderr`), 10 = thread busy — the lease could not be acquired: another dispatch holds it (`<thread>.active` names a live PID — wait for it or use a different `--thread`), a concurrent claim holds the acquisition mutex (`<thread>.active.lock`, including a live mutex holder — retry shortly), or `<thread>.active` is not a regular file (inspect and remove it manually). The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. The commands are `disable-model-invocation`, so you cannot invoke them as slash commands yourself — Read the command file and follow its steps instead.
 
 ## Codex is an agent, not an LLM endpoint
 
@@ -158,9 +168,32 @@ When fixing a review finding, treat it as an instance of a **problem class**, no
 
 A fix that addresses only the cited line invites the next round to flag the sibling — every such round costs a full Codex dispatch.
 
+## When the review loop is the wrong tool
+
+*Rule strength: production RED, no synthetic baseline — the failure needs a task whose design is genuinely unfinished, and any fixture cheap enough to probe is small enough to converge. Baselines: [references/test-provenance.md](references/test-provenance.md), scenario `review-divergence`.*
+
+Iterating to APPROVE assumes the review is **closing** a known design. Check each round which regime you are in:
+
+- **Converging** — this round's findings are repairs of earlier ones (still open, partially fixed, a sibling of the same invariant, an ordering correction), and the blocking count is falling. Keep going; this is what the loop is for.
+- **Diverging** — this round's blocking findings are **new classes** with nothing carried over, and it has happened two rounds running. The design is being discovered through review rather than validated by it, one paid dispatch at a time.
+
+**Round count is not the signal — repeat structure is.** A 9-round thread whose blocking findings decay 10 → 6 → 3 → … → 0 is healthy and must not be interrupted. A 3-round thread that produces three unrelated blocking classes is already diverging.
+
+On divergence, stop dispatching and put it to the user: go back to `/plan` on the design, or cut the scope to something the current design covers. Say plainly that the findings are real and the review is working — it is being asked to do design work, which costs one full dispatch per decision and is the most expensive way to make one.
+
+**A plan thread that never reached APPROVE predicts this.** If `/plan` ended on `REQUEST_CHANGES` or its cap and implementation started anyway, expect the review to collect the difference. Check `<plugin>/scripts/status.sh` output (or the plan thread's last verdict) before opening a long review loop.
+
 ## Self-verification gates (`/autoreview`, `/autoplan`)
 
-Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch is already dirty, run the review flow on it immediately (no manual step); then a Stop hook blocks the end of every future turn with unverified code changes until the per-branch review thread reaches an **APPROVE earned after arming** (the hook only parses verdicts from log content appended after an arming-time byte-offset snapshot — a stale APPROVE from a previous arming can never release, and `/thread-new`'s counter reset can neither fake nor mask a run) or the round cap. `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until the plan thread has seen one post-arming dispatch (normally your `/plan` stress-test — the gate detects thread-log growth, not command identity). The hook never calls Codex itself — when blocked, Read the command file its reason points you to (`<plugin>/commands/review.md` or `plan.md` — the commands are not model-invocable as slash commands) and follow its steps with the thread/lens from the reason, validate and address findings (fix the neighborhood), and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the success release is the post-arming verdict (autoreview) / post-arming dispatch on the plan thread (autoplan), branch+dirty scoping keeps it out of unrelated turns. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped. Arm on a clean tree — pre-existing dirt counts as unverified.
+Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch already has changes, run the review flow on it immediately (no manual step); then a Stop hook blocks the end of every future turn whose code differs from the last state the gate released, until the per-branch review thread reaches an **APPROVE earned inside that cycle** or the round cap. `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until the plan thread has seen one dispatch within the cycle (the gate detects thread-log growth, not command identity).
+
+**The unit is a cycle, not an arming** — this is what makes the loop continue rather than fall silent:
+
+- It hashes working-tree **content** (tracked and untracked; `.gitignore` honoured), so **committing the fixes keeps the gate engaged** while **committing already-approved bytes costs no round**.
+- Each release records what it approved and advances the verdict window, so **one APPROVE covers one state**, not the rest of the arming.
+- The cap bounds one cycle and is refilled only by a real release.
+
+The hook never calls Codex itself — when blocked, Read the command file its reason points you to (`<plugin>/commands/review.md` or `plan.md` — the commands are not model-invocable as slash commands) and follow its steps with the thread/lens from the reason, validate and address findings (fix the neighborhood), and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the success release is the in-cycle verdict (autoreview) / in-cycle dispatch on the plan thread (autoplan), branch scoping keeps it out of unrelated turns. Armed state lives in `.claude/codex-threads/auto{review,plan}.armed`, branch-scoped; an armed file written before 0.9 keeps the old dirty-tree behaviour until its first release, and follows the cycle model after it.
 
 ## Common failure modes
 

@@ -15,6 +15,9 @@
 #                           exclusive with --new.
 #       --require-existing  fail (exit 6) instead of creating a new thread when
 #                           none exists. Used by /reply.
+#       --topic <text>      one-line label for a NEW thread, ignored if the
+#                           thread already has one. Makes the thread findable
+#                           by subject rather than by name alone.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
 #                           reaping); prints `DETACHED pid=<pid>
@@ -26,6 +29,23 @@
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
+#   <thread>.dispatch-fp      code state this thread was last dispatched
+#   <thread>.dispatch-fp-plan against, whole-tree and (for the armed plan
+#                             thread) plan-scoped. Captured BEFORE codex runs.
+#                             Also stamped into that dispatch's log header as
+#                             fp= / fp-plan=, which is what lets a verdict be
+#                             matched to the state it judged; the sidecars are
+#                             the fallback for records written before that.
+#   <thread>.last-abort       written when a signal kills a dispatch before it
+#                             replies (usually a caller timeout). Cleared by the
+#                             next successful dispatch. NOT in .log: autoplan
+#                             releases on log growth, so an abort recorded there
+#                             would release a plan gate with nothing behind it.
+#   <thread>.topic            one-line label of what the thread is about, set
+#                             by --topic on the dispatch that creates it and
+#                             never overwritten after (cleared by --new). Read
+#                             by thread-index.sh so an agent can pick an
+#                             existing thread instead of opening a new one.
 #   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure
 #                             (removed on the next successful dispatch; every
 #                             write is capped to the LAST 64 KB of the stream).
@@ -106,6 +126,19 @@
 
 set -euo pipefail
 
+# ── the detached-child role ───────────────────────────────────────────────
+# "You are the re-exec'd child of a --detach launcher": redirect the reply into
+# the thread's detach sidecars, publish your PID to the READY file, own the
+# prompt tmpfile. It applies to exactly one process, and travels in argv
+# (`--detach-child <ready> <prompt>`, internal) because argv is NOT inherited
+# and the environment is: exported, the role reached everything the worker
+# started — Codex's own bash included — so a driver invoked from inside Codex
+# believed IT was the child. A marker arriving through the environment
+# therefore belongs to an ancestor; erase it before anything reads it.
+DETACH_PROMPT_FILE=""
+DETACH_READY_FILE=""
+unset CC_CODEX_PROMPT_TMPFILE CC_CODEX_READY_FILE
+
 # ── args ──────────────────────────────────────────────────────────────────
 FORCE_NEW=false
 ONESHOT=false
@@ -115,19 +148,37 @@ THREAD=""
 MODEL=""
 EFFORT=""
 SCHEMA=""
+TOPIC=""
 # Args a --detach launcher forwards to its re-exec'd child: everything except
 # --detach itself (the child is an ordinary foreground invocation).
+# Walked as option/value pairs, not filtered value-blind: a plain filter also
+# ate a --topic (or --model, --effort, --schema) VALUE that happened to equal
+# "--detach", leaving the child a dangling flag.
 CHILD_ARGS=()
-for _a in "$@"; do [[ "$_a" == "--detach" ]] || CHILD_ARGS+=("$_a"); done
+_skip_next=false
+for _a in "$@"; do
+  if $_skip_next; then CHILD_ARGS+=("$_a"); _skip_next=false; continue; fi
+  case "$_a" in
+    --detach) ;;
+    --model|--effort|--schema|--topic) CHILD_ARGS+=("$_a"); _skip_next=true ;;
+    *) CHILD_ARGS+=("$_a") ;;
+  esac
+done
 while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
     --oneshot) ONESHOT=true; shift ;;
     --detach) DETACH=true; shift ;;
+    # INTERNAL, set only by this script's own detach launcher on the process it
+    # spawns. Deliberately not in --help or any command file.
+    --detach-child)
+      [[ $# -ge 3 ]] || { echo "--detach-child needs <ready-file> <prompt-file>" >&2; exit 1; }
+      DETACH_READY_FILE="$2"; DETACH_PROMPT_FILE="$3"; shift 3 ;;
     --require-existing) REQUIRE_EXISTING=true; shift ;;
     --model)  [[ $# -ge 2 ]] || { echo "--model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
     --effort) [[ $# -ge 2 ]] || { echo "--effort needs a value" >&2; exit 1; }; EFFORT="$2"; shift 2 ;;
     --schema) [[ $# -ge 2 ]] || { echo "--schema needs a value" >&2; exit 1; }; SCHEMA="$2"; shift 2 ;;
+    --topic)  [[ $# -ge 2 ]] || { echo "--topic needs a value" >&2; exit 1; }; TOPIC="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -414,8 +465,9 @@ if $DETACH; then
   cat > "$PROMPT_TMPFILE"      # persist stdin for the re-exec'd child
   READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
   SPAWNOUT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.spawnout.XXXXXX")"
-  export CC_CODEX_PROMPT_TMPFILE="$PROMPT_TMPFILE"
-  export CC_CODEX_READY_FILE="$READY_FILE"
+  # The child's role is handed to it in argv (--detach-child, on the spawn
+  # below), never in the environment: an exported marker would be inherited by
+  # every process the child later starts, Codex's own shell included.
   # log-offset baseline for detach-watch.sh, measured BEFORE the spawn: the
   # child cannot have appended anything yet, so a fast reply landing before
   # the watcher starts is still counted as growth. (Measuring after the
@@ -436,13 +488,13 @@ if $DETACH; then
   # tmpfile only ever captures PRE-LEASE output (usage errors, busy
   # refusals) and is removed by every launcher exit path.
   if [[ "$DETACH_ISOLATOR" == "setsid" ]]; then
-    setsid bash "$0" "${CHILD_ARGS[@]}" \
+    setsid bash "$0" "${CHILD_ARGS[@]}" --detach-child "$READY_FILE" "$PROMPT_TMPFILE" \
       < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   else
     # No `--` separator: with -c, sys.argv[0] is '-c' — the exec target is
     # sys.argv[1] ('bash').
     python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      bash "$0" "${CHILD_ARGS[@]}" \
+      bash "$0" "${CHILD_ARGS[@]}" --detach-child "$READY_FILE" "$PROMPT_TMPFILE" \
       < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   fi
   SPAWN_PID=$!
@@ -536,11 +588,58 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 # above installs its own EXIT trap, but that code path exits before ever
 # reaching this line, so the two can never collide.)
 DETACH_CHILD=false
+# A signal-killed dispatch otherwise leaves no trace at all: the driver logs
+# only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
+# so an abort recorded there would satisfy a plan gate with nothing behind it.
+abort_dispatch() { # $1=signal name
+  # REAP the child before returning: cleanup releases the lease straight after,
+  # and a codex that delays or ignores TERM would then keep running — paid, and
+  # writing into temp files we are about to delete — while another dispatch
+  # acquires the same thread and resumes it concurrently. Bounded TERM wait,
+  # then KILL, the same escalation the detach launcher uses.
+  # `|| true` on both kills: run_codex clears CODEX_PID only AFTER `wait`
+  # returns, so a signal landing in that window kills an already-reaped PID.
+  # Under `set -e` an unguarded failing kill aborts the trap itself, and neither
+  # `cleanup 143` nor the last-abort marker below would run.
+  if [[ -n "${CODEX_PID:-}" ]]; then
+    kill -TERM "$CODEX_PID" 2>/dev/null || true
+    local _i=0
+    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 30 ]]; do
+      sleep 0.1
+      _i=$((_i+1))
+    done
+    if kill -0 "$CODEX_PID" 2>/dev/null; then
+      kill -KILL "$CODEX_PID" 2>/dev/null || true
+      _i=0
+      while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 20 ]]; do
+        sleep 0.1
+        _i=$((_i+1))
+      done
+    fi
+  fi
+  if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
+    printf 'signal=%s\nthread=%s\nmode=%s\nat=%s\nnote=%s\n' \
+      "$1" "$THREAD" "${MODE:-unresolved}" "$(date -u +%FT%TZ)" \
+      "dispatch killed before a reply; the thread is intact - resume it, and use --detach for anything that may outlive the caller timeout" \
+      > "$STATE_DIR/${THREAD}.last-abort" 2>/dev/null || true
+  fi
+}
+
+# Which thread the plan gate watches, if any — the plan sidecar belongs to that
+# thread alone, so an unrelated dispatch must not clear it.
+raw_plan_thread() {
+  sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1
+}
+
 cleanup() {
   # $? FIRST — every later command in this trap would clobber it. Publishing
   # the worker's real exit status lets detach-watch.sh decide success from
   # fact, not from log growth (which strict-mutation exit 5 also produces).
   local rc=$?
+  # An explicit override, because the signal traps run abort_dispatch first and
+  # that clobbers $?: a TERM-killed worker published rc=0, so detach-watch.sh
+  # read a dead dispatch as a clean success and delivered an empty reply.
+  [[ -n "${1:-}" ]] && rc="$1"
   if [[ "$DETACH_CHILD" == true ]]; then
     printf 'pid=%s\nrc=%s\n' "$$" "$rc" > "$STATE_DIR/${THREAD}.detach-status.tmp" 2>/dev/null \
       && mv -f "$STATE_DIR/${THREAD}.detach-status.tmp" "$STATE_DIR/${THREAD}.detach-status" 2>/dev/null \
@@ -561,10 +660,12 @@ cleanup() {
   fi
   # Detach hook: when a launcher exported a persisted-prompt tmpfile, this
   # (child) invocation owns it. NEVER remove a READY file — the parent owns it.
-  if [[ -n "${CC_CODEX_PROMPT_TMPFILE:-}" ]]; then
-    rm -f "$CC_CODEX_PROMPT_TMPFILE"
+  if [[ -n "$DETACH_PROMPT_FILE" ]]; then
+    rm -f "$DETACH_PROMPT_FILE"
   fi
 }
+trap 'abort_dispatch INT;  cleanup 130; trap - EXIT; exit 130' INT
+trap 'abort_dispatch TERM; cleanup 143; trap - EXIT; exit 143' TERM
 trap cleanup EXIT
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -635,7 +736,7 @@ if ! $ONESHOT; then
       # Ownerless lock: only a crash between mkdir and the token write leaves
       # this state, and that window is a couple of builtins wide — an
       # ownerless lock older than 60s can only be a crashed acquirer.
-      LOCK_MTIME="$(stat -f '%m' "$LEASE_LOCK" 2>/dev/null || stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || true)"
+      LOCK_MTIME="$(stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || stat -f '%m' "$LEASE_LOCK" 2>/dev/null || true)"
       NOW_EPOCH="$(date +%s)"
       if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
         STEAL=true
@@ -714,7 +815,7 @@ if ! $ONESHOT; then
   # (a concurrent exit-10 loser never reaches this line). The stale status
   # record is removed BEFORE dispatch so the watcher can never read an old
   # verdict against this run's PID.
-  if [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+  if [[ -n "$DETACH_READY_FILE" ]]; then
     rm -f "$STATE_DIR/${THREAD}.detach-status"
     exec > "$STATE_DIR/${THREAD}.detach-output" 2> "$STATE_DIR/${THREAD}.detach-stderr"
     DETACH_CHILD=true
@@ -727,7 +828,9 @@ if $FORCE_NEW; then
   # the previous task's findings ledger / scope / approval baseline. Runs
   # while HOLDING the lease — a busy thread was refused above with every
   # sidecar intact.
-  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE"
+  # last-abort belongs to the incarnation being discarded.
+  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" \
+        "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is
@@ -771,16 +874,52 @@ if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
 fi
 
 # ── detach handshake (child side) ─────────────────────────────────────────
-# A --detach launcher exported CC_CODEX_READY_FILE and is polling it for our
+# A --detach launcher handed us --detach-child and is polling that file for our
 # PID. Written only AFTER the lease is held (acquired above, before any
 # thread-state mutation) and every preflight passed, so a DETACHED report
 # proves /cleanup already sees this thread as in-use. The parent owns the
 # READY file and removes it — NEVER delete it here.
-if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+if ! $ONESHOT && [[ -n "$DETACH_READY_FILE" ]]; then
   # (The canonical sidecar boundary + status slate were established right
   # after lease acquisition, above — here we only publish the PID.)
-  printf '%s' "$$" > "$CC_CODEX_READY_FILE"
+  printf '%s' "$$" > "$DETACH_READY_FILE"
 fi
+
+# ── code state at dispatch time ───────────────────────────────────────────
+# Captured BEFORE codex runs and held in memory, because that is the state Codex
+# is about to look at; a snapshot taken afterwards also admits whatever changed
+# while it ran. Written out only on success — into the log record of THIS
+# dispatch, so a verdict can be matched to the state that earned it, and into
+# the sidecars, which /status and older readers still use.
+PRE_FP=""; PRE_FP_PLAN=""
+if ! $ONESHOT && [[ -n "$REPO_ROOT" ]]; then
+  _fpsh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/gate-fingerprint.sh"
+  [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
+  if [[ -f "$_fpsh" ]]; then
+    PRE_FP="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
+    if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
+      PRE_FP_PLAN="$( cd "$REPO_ROOT" && bash "$_fpsh" --plan 2>/dev/null || true )"
+    fi
+  fi
+fi
+
+# ── interruptible dispatch ────────────────────────────────────────────────
+# codex runs in the BACKGROUND with `wait`: bash defers a trap until the current
+# FOREGROUND child exits, so a TERM mid-dispatch (a caller timeout) did nothing
+# at all — cleanup never ran, the lease was left behind, and codex was orphaned
+# finishing a paid run whose reply went nowhere. `wait` IS interruptible.
+CODEX_PID=""
+run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by the caller
+  # `<&0` is required: POSIX gives an async list's stdin /dev/null before any
+  # explicit redirection, so the caller's herestring died at the `&` and codex
+  # read an empty prompt.
+  "$@" <&0 &
+  CODEX_PID=$!
+  local rc=0
+  wait "$CODEX_PID" || rc=$?
+  CODEX_PID=""
+  return "$rc"
+}
 
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
@@ -788,12 +927,13 @@ if $ONESHOT; then
   # Throwaway: no thread tracking, no rollout persisted on the Codex side.
   # codex exec resume cannot continue an --ephemeral session — that is the point.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
-  # last-error means the LAST error: a successful dispatch clears the diag.
+  # oneshot writes last-error on failure, so clearing it is symmetric. It never
+  # writes the abort marker, so it must not clear that one either.
   rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
@@ -804,7 +944,7 @@ elif [[ -n "$SID" ]]; then
   if [[ -n "$MODEL$EFFORT" ]]; then
     echo "WARN: --model/--effort are ignored on resume (kept stable across the thread). Use --new to change them." >&2
   fi
-  if ! codex exec resume --json "$SID" \
+  if ! run_codex codex exec resume --json "$SID" \
         ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
@@ -813,12 +953,12 @@ elif [[ -n "$SID" ]]; then
       "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
   fi
   # last-error means the LAST error: a successful dispatch clears the diag.
-  rm -f "$DIAG_FILE"
+  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
@@ -827,7 +967,7 @@ else
   # diag is stale — remove it NOW, BEFORE UUID extraction, so the deliberate
   # diag write on a UUID-extraction failure below lands in a clean slot and is
   # never erased by its own dispatch.
-  rm -f "$DIAG_FILE"
+  rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
   # Extract the session UUID from the JSONL stream. First event carrying a
   # thread_id / session_id / conversation_id wins. Two-step: match the whole
   # key:value pair (whitespace-tolerant), then strip down to the value — no
@@ -879,6 +1019,11 @@ if ! $ONESHOT; then
   # Round = number of successful dispatches on this PERSISTED thread. Skip the
   # bump when the thread failed to persist (no .id) — otherwise a never-resumed
   # thread accumulates rounds invisible to /thread-list, which iterates *.id.
+  #
+  # round=0 = a paid dispatch belonging to no resumable thread. Set
+  # unconditionally: the log header expands ROUND under `set -u`, so a missing
+  # default aborts AFTER the paid call — zero-byte log, reply never printed.
+  ROUND=0
   if [[ -s "$ID_FILE" ]]; then
     # Validate before arithmetic: a corrupted/CRLF .rounds would otherwise be
     # an arithmetic error under set -e — killing the script AFTER the paid
@@ -889,8 +1034,30 @@ if ! $ONESHOT; then
     [[ "$PREV_ROUNDS" =~ ^(0|[1-9][0-9]*)$ ]] || PREV_ROUNDS=0
     ROUND=$(( PREV_ROUNDS + 1 ))
     echo "$ROUND" > "$ROUNDS_FILE"
-  else
-    ROUND=0
+    # Written HERE, not before the dispatch: a failed run would otherwise pin
+    # its label on a thread it never created, forever (never overwritten).
+    if [[ -n "$TOPIC" && "$MODE" == "initial" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
+      # Parameter expansion, not `cut`: GNU cut adds a trailing newline and BSD
+      # does not, which produced a two-line file on Linux and one on macOS.
+      _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
+      printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
+    fi
+    # Sidecars keep the pre-dispatch snapshots for /status and for readers of
+    # logs written before the header carried them.
+    # A fingerprint that could not be computed must REMOVE the sidecar, not skip
+    # the write: left in place it describes an older dispatch, and the gate then
+    # attributes this reply to a state it never judged — releasing, then
+    # immediately re-blocking, on work that was in fact reviewed.
+    if [[ -n "$PRE_FP" ]]; then
+      printf '%s\n' "$PRE_FP" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    else
+      rm -f "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    fi
+    if [[ -n "$PRE_FP_PLAN" ]]; then
+      printf '%s\n' "$PRE_FP_PLAN" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+    elif [[ "$(raw_plan_thread)" == "$THREAD" ]]; then
+      rm -f "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+    fi
   fi
 
   # Rotate BEFORE appending so the newest entry always lands in the current
@@ -904,6 +1071,23 @@ if ! $ONESHOT; then
     LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
     if [[ -n "$LOG_SIZE" && "$LOG_SIZE" -gt "$LOG_CAP_BYTES" ]]; then
       mv -f "$LOG_FILE" "${LOG_FILE}.1"
+      # Bump the generation so a gate can tell rotation from "the log shrank".
+      # Its cut is a byte offset into the PREVIOUS log; after rotation every
+      # byte here is newer than that cut, so the gate parses from 0 instead of
+      # from an offset that now points into unrelated content.
+      # No pipeline: `cat` on a missing file fails, and under `pipefail` that
+      # took the whole driver down with it AFTER a paid dispatch. The grammar is
+      # strict for the same reason — `08` is not valid in shell arithmetic and
+      # a 20-digit value wraps, both of which would abort here, after the paid
+      # call but before the reply is logged or printed. Anything malformed is
+      # generation 0, so the count still advances.
+      _gen="$(cat "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true)"
+      _gen="${_gen//[^0-9]/}"
+      [[ "$_gen" =~ ^(0|[1-9][0-9]*)$ && "${#_gen}" -le 9 ]] || _gen=0
+      # Atomic: a reader must never see a half-written counter.
+      if printf '%s\n' "$(( _gen + 1 ))" > "$STATE_DIR/${THREAD}.log-gen.tmp" 2>/dev/null; then
+        mv -f "$STATE_DIR/${THREAD}.log-gen.tmp" "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true
+      fi
     fi
   fi
   # Log format contract: the column-0 markers ([timestamp], PROMPT:, REPLY:,
@@ -912,7 +1096,7 @@ if ! $ONESHOT; then
   # PROMPT must never release the autoreview gate). Body lines are always
   # indented two spaces, so prompt/reply content cannot fake a marker.
   {
-    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND"
+    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND${PRE_FP:+ fp=$PRE_FP}${PRE_FP_PLAN:+ fp-plan=$PRE_FP_PLAN}"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
     echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
     echo "---"

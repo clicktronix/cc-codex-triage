@@ -4,6 +4,228 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **The plan scope is followed at the third call site too.** `/autoplan on`
+  asked `gate-fingerprint.sh --plan-paths` for the scope but, unlike the hook
+  and `/status`, kept no fallback for an empty answer — which leaves
+  `git status --` with no pathspec at all, i.e. the whole repository, and armed
+  a paid plan dispatch on code-only changes.
+- **An unfingerprintable worktree is no longer armed.** Both arming commands
+  wrote whatever `gate-fingerprint.sh` printed into `fp_at_arming`, and an
+  empty value makes the hook read a brand-new gate as a pre-0.9 one and fall
+  back to 0.8 dirty-tree semantics — silently, at arming time. They now refuse.
+- **A disarm that did not happen is no longer reported as one.** `gate-state.sh
+  remove` exits 2 having deleted nothing when the mutex is held; the `off`
+  snippets ignored its status, so the gate kept blocking every turn while the
+  user had been told it was off.
+- **A scoped fingerprint no longer moves for out-of-scope work.** When a plan
+  path lives inside a submodule, the recursion carries the pathspec down
+  instead of hashing the submodule whole, and it is folded in on every run
+  rather than only when the submodule reads as dirty — either alone let an edit
+  that touched no plan document open a paid plan cycle.
+- **Removing a submodule no longer disables both gates.** A submodule whose
+  worktree directory is gone made the recursion's `cd` fail and aborted the
+  whole fingerprint, degrading to the dirty-tree predicate until the removal was
+  committed — the "commit makes the gate go quiet" failure 0.9 exists to remove.
+- **A signal landing between the child's reap and its PID being cleared no
+  longer breaks the abort path.** Under `set -e` the unguarded `kill` in
+  `abort_dispatch` aborted the trap itself, so the signal exit status and the
+  last-abort marker were both lost.
+
+### Tests
+- Four assertions could not fail and now can, each verified by mutation: the
+  TERM/KILL escalation (the fixture announced itself only after installing its
+  trap), `--plan` scope drift (both scopes were empty, so both sides were the
+  empty-tree hash), the seeded-index ignore purge (the rule moved to
+  `.git/info/exclude`, which is not part of the tree), and READY resurrection
+  (the fixture read an env var the driver had stopped exporting).
+- New coverage for the two submodule fixes above, and the python-isolator case
+  reports SKIP instead of FAIL when `python3` is absent.
+
+## [0.9.0] - 2026-08-01
+
+Closes the gaps that stopped the review loop rather than loosened it, found by
+auditing 37 real thread logs across stokli and marqa (187 replies): every
+verdict and finding header extracted per round, the divergent threads read in
+full.
+
+### Fixed
+- **A gate never releases a state nothing recorded.** A verdict is paired with
+  the fingerprint stamped into its own log record; where no record and no
+  usable sidecar can say what was dispatched, the gate now answers "unknown"
+  and keeps blocking instead of falling back to the worktree at turn-end —
+  which would stamp bytes approved that were written after the review. The
+  plan gate takes the LATEST post-cut record instead of the verdict's, since it
+  releases on log growth rather than on a verdict. A pre-0.9 armed file is
+  exempt: it has no fingerprint model at all and keeps 0.8 semantics until its
+  first release, as documented. Refusing costs a round, not a deadlock — the
+  next dispatch stamps its own record and settles it.
+- **Every writer of armed state is serialized.** The Stop hook's three writers
+  (block counter, idle consumption, cycle rebaseline) plus TTL expiry take one
+  per-file mkdir mutex, re-read inside it, and write nothing when they cannot
+  get it. Arming and disarming go through new `scripts/gate-state.sh` rather
+  than writing the file straight from a command snippet, so a turn-end hook can
+  no longer overwrite a fresh arming or resurrect a gate just switched off.
+  Locks carry an owner token: a holder that stalls past the staleness window
+  and resumes cannot delete the replacement owner's lock.
+- **Dirty submodules are visible even when git is configured to hide them.**
+  The probe passes `--ignore-submodules=none`, overriding
+  `submodule.<name>.ignore` — a setting that exists to keep `git status` quiet,
+  which is exactly why a gate must not honour it — and `--no-optional-locks`,
+  since it runs at every turn end.
+- **A dispatch is no longer lost to the caller's timeout.** The Bash tool caps
+  a foreground call at 600 s — its maximum, not a setting — and a branch review
+  routinely runs longer. When the cap hit, the round vanished: the paid Codex
+  run finished into nowhere, and since the driver logs only on success it left
+  no trace anywhere. What hid it is that **bash defers a trap until the current
+  foreground child finishes**, so a TERM arriving mid-dispatch did nothing at
+  all. The three `codex exec` calls now run in the background with `wait`
+  (which IS interruptible), so TERM kills the child, frees the lease and
+  records `<thread>.last-abort` — a sidecar, never the log, since `/autoplan`
+  releases on log growth. New `scripts/dispatch.sh`, which every dispatching
+  command routes through, detaches the worker and then waits for it in the
+  foreground bounded below the caller's ceiling (`CC_DISPATCH_WAIT`, default
+  540 s): a short dispatch answers in-turn exactly as before, and only one that
+  would previously have been KILLED behaves differently — it **exits 20 and
+  hands off**, worker untouched, re-runnable through the watcher. Its stdout is
+  byte-identical to the reply (`/review --json` pipes it into `jq`), status goes
+  to stderr, and the driver's exit codes survive rather than collapsing, so a
+  caller can still tell a resume failure from a mutation refusal. 20 and 21
+  deliberately avoid the driver's range: reusing 3 would make a LIVE dispatch
+  indistinguishable from a dead one. `--oneshot` cannot detach (no thread state
+  to hand off) and keeps the old ceiling; a throwaway is cheap to repeat.
+
+- **The gates no longer go quiet at the moment the next round is owed.**
+  `/autoreview` and `/autoplan` decided "is there work?" from
+  `git status --porcelain` and "is it approved?" from the last verdict in the
+  thread log. Both answers were wrong, and both reproduce:
+  - committing the fixes made the tree clean, so the gate allowed the turn to
+    end with the thread's last verdict still `REQUEST_CHANGES`;
+  - the first APPROVE stayed the last parsed verdict for the rest of the
+    arming, releasing every later turn no matter how much new unreviewed code
+    was written.
+
+  Both gates now work in **cycles**. A cycle opens when the code differs from
+  the last released state and closes on a verdict earned inside it; each
+  release re-baselines the approved fingerprint, the verdict window and the
+  round budget together. The fingerprint (new
+  `scripts/gate-fingerprint.sh`, shared by the hook and both arming commands)
+  is a hash of the **working-tree content** in scope — the worktree staged into
+  a throwaway index, then `git write-tree`. Content, not git bookkeeping,
+  because the gate needs both directions: a fix survives its own commit and
+  keeps the gate engaged, while committing already-approved bytes changes
+  nothing and costs no review round. Untracked files are covered by content, a
+  plan document being untracked for its whole first life; `.gitignore` is
+  honoured, so a gate never fires on `.env` or build output.
+
+  Backwards compatible: an armed file with neither `fp_at_arming` nor
+  `released_fp` is a pre-0.9 arming, and keeps the old dirty-tree behaviour
+  until its first release — after which the hook records `released_fp` and it
+  follows the cycle model. An upgrade therefore never changes a gate
+  mid-cycle, and an old gate still picks up the fix rather than carrying the
+  holes until someone re-arms.
+
+- **A review verdict the gate can actually read.** The review
+  `output_contract` asked for "Last line is the verdict" while the parsers
+  required a line consisting of nothing but the verdict. Codex legitimately
+  writes `## APPROVE`. In one production thread **not one of five replies
+  matched**, on a branch that was in fact approved — so the gate could never
+  release and spent its whole cap on approved work. The contract now says the
+  verdict stands alone on its own final line, and says why. The parser is now
+  one script (`scripts/last-verdict.sh`, shared by the hook and `/status`,
+  which previously carried separate copies) that trims heading marks and
+  emphasis from the line ends and then compares exactly — accepting
+  `## APPROVE` and `**APPROVE**` while still refusing "not quite APPROVE".
+  Measured across the 187 production replies: 178 parsed before, 180 now.
+
+- **Non-blocking findings are carried, not restated.** In
+  `review-feat-400-analytics-ui` the same four non-blocking items were
+  re-listed in full across rounds 2–6, one through round 7. The verdict was
+  never wrong — `REQUEST_CHANGES` was correctly reserved for blocking items —
+  but a converging round read as a stalled one, and each restatement bought
+  another round. Still-open non-blocking items now carry as one
+  count-and-titles line.
+
+- **`/ask` can target a thread.** It was pinned to a single repo-wide `ask`
+  thread with no override, contradicting the one-task-one-thread rule stated in
+  the same document. It now takes `--thread`, and only applies its read-only
+  default on an initial dispatch — `codex exec resume` accepts no `-s`, so
+  passing it on a resume set a flag Codex ignores.
+
+- **The comparison table in `README.md`** claimed an open-ended round cap,
+  false since `/review` and `/plan` gained `--cap` (default 5).
+
+- **The skill's exit-code list** omitted 2 and 3; exit 3 (dispatch failed) is
+  the most common real failure and had no documented meaning.
+
+- **`tests/driver-regression.sh`** symlinked `command -v python3` — a pyenv
+  shim — into a minimal PATH farm where the shim cannot resolve, so the suite
+  failed 2 on the maintainer's own machine while the product path was fine.
+
+### Added
+
+- **A divergence criterion: when the review loop is the wrong tool.**
+  `review-refactor-266-thread-execution-lease` ran 13 rounds over three days,
+  never reached APPROVE, and repeated **not one finding** — each round produced
+  2–5 new blocking classes. That task's plan thread had ended at round 6 on
+  `REQUEST_CHANGES` the day before implementation started. The rule keys on
+  repeat structure rather than round count, because a 9-round thread whose
+  blocking findings decay 10 → 0 is converging and must not be interrupted.
+  Ships with `tests/scenarios/codex-triage/review-divergence.json`, a
+  production RED with no synthetic baseline, which says so.
+
+- **Skill `codex-second-opinion`** — the one part of this plugin Claude may
+  invoke itself. Every slash command is `disable-model-invocation`, so an agent
+  wanting a third opinion mid-task had to read a 101-line command file to get
+  one. This is a single bounded dispatch for a fork the repository cannot
+  settle, an irreversible change, or two sources that contradict each other. It
+  announces the cost before spending it, spends exactly one dispatch, and never
+  targets a gate thread (`review-<branch>` or `plan-<branch>`). It ships with **no baseline**, and
+  `tests/scenarios/README.md` records both that fact and the RED that would
+  test it.
+
+- **A release is bound to the verdict that earned it.** The driver captures the
+  code state *before* invoking Codex and stamps it into that dispatch's log
+  record (`fp=` / `fp-plan=`); the parser returns the fingerprint belonging to
+  the record whose verdict was selected. Choosing the verdict from the log and
+  the fingerprint from a mutable sidecar independently meant an APPROVE for
+  state A followed by a successful but verdict-less dispatch B released B, which
+  nothing had approved. Records written before the header carried these fields
+  fall back to the sidecar, so existing threads keep working.
+
+- **Gate releases are bound to the state the dispatch saw.** The driver records
+  a fingerprint on every successful dispatch — whole-tree, plus a plan-scoped one
+  for the armed plan thread — and each gate releases against that rather than the
+  worktree at turn-end. A release that is already stale opens the next cycle
+  immediately instead of letting the turn finish. Idle-verdict consumption
+  advances only the verdict cut: it used to reset the round budget too, so
+  reverting to the released state and reapplying the change bought a full cap
+  again, repeatably.
+
+- **Threads are findable, not just resumable.** `--topic "<text>"` on the driver
+  records one line about what a thread holds, set when it is created and never
+  overwritten (cleared by `--new`). New `scripts/thread-index.sh` lists every
+  thread with its rounds, size, last activity, topic and a `[busy]` marker;
+  `/thread-list` now prints it. It is a local read with no Codex dispatch, so
+  the `codex-second-opinion` skill runs it to **reuse an existing thread rather
+  than open a new one** — until now every listing surface was
+  `disable-model-invocation`, so an agent told to reuse a feature's thread had
+  no way to see which threads existed or what they held.
+
+- **The one-feature-one-thread convention.** Thread defaults are per *command
+  kind*, so a feature's context splits across three or four Codex sessions that
+  each know a third of the story. Documented with its two real limits: the
+  sandbox is fixed at session creation (verified against codex-cli 0.146), and
+  a large thread is worth splitting rather than resumed indefinitely (production
+  threads reach ~130 KB by round 9 — calibration, not a tested threshold).
+
+### Note on versioning
+
+No git tags exist in this repository, including for 0.7.0 and 0.8.0 — the
+0.8.0 entry below was written before its own work finished (13 commits landed
+after the release commit), so there is no commit that cleanly marks it.
+Tagging from 0.9.0 onward.
+
 ## [0.8.0] - 2026-07-19
 
 Closes six state-hygiene gaps surfaced by a 2026-07-19 audit of real

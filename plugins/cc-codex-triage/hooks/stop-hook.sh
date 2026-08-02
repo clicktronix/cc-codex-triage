@@ -5,15 +5,21 @@
 # whether Claude may finish the turn, or must first run /review (or /plan) on
 # its own changes. The actual review runs through the normal commands/driver.
 #
+# The unit of work is a CYCLE, not an arming: it opens when the code differs
+# from the last state this gate released and closes on a verdict earned inside
+# it. Each release re-baselines the approved fingerprint, the verdict window and
+# the round counter together (see rebaseline_cycle).
+#
 # Runaway protection (hard, independent of Claude Code internals):
-#   1. blocks counter vs cap in the armed file — the hard terminator. The
-#      counters are validated as numeric; ANY malformed value fails OPEN
-#      (allow), never closed.
-#   2. Success gates: autoreview releases on an APPROVE verdict appended to
-#      the thread log AFTER arming (byte-offset cut); autoplan releases once
-#      the thread log changed size since arming (a dispatch always appends).
-#   3. Scoping: armed branch must match the current branch and the tree must
-#      actually be dirty for that gate's file class.
+#   1. blocks counter vs cap, per cycle — the hard terminator. Counters are
+#      numeric-validated; ANY malformed value fails OPEN. Only a real release
+#      refills the budget, so a cycle that never earns one stops at `cap`.
+#   2. Success gates: autoreview releases on an APPROVE verdict appended to the
+#      thread log after the cycle's byte-offset cut; autoplan releases once the
+#      thread log changed size within the cycle (a dispatch always appends).
+#   3. Scoping: the armed branch must match the current branch, and the code
+#      fingerprint for that gate's file class must differ from the released
+#      baseline.
 #   4. TTL: an armed file whose armed_at epoch is older than 14 days is
 #      removed by a pre-pass over BOTH files before either gate runs.
 #      Missing/malformed/future armed_at skips TTL for that file (fail-open —
@@ -21,17 +27,20 @@
 #
 # stop_hook_active is deliberately NOT an unconditional allow: honoring it
 # would cap the gate at one block per user turn and silently break the
-# advertised "until APPROVE or cap" contract. The numeric cap bounds total
-# cost instead (at most `cap` blocks per arming).
+# advertised "until APPROVE or cap" contract. The numeric cap bounds cost
+# instead (at most `cap` blocks per cycle).
 #
-# Armed state (written by /autoreview, /autoplan commands):
+# Armed state (written by /autoreview, /autoplan commands; released_fp and the
+# advanced log offset are written by THIS hook):
 #   .claude/codex-threads/autoreview.armed
 #   .claude/codex-threads/autoplan.armed
 #   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming,
-#   armed_at (0.8+, drives the TTL).
-#   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open):
-#   autoreview parses verdicts only from log content appended after it;
-#   autoplan releases when the log size differs from it.
+#   armed_at (0.8+, drives the TTL), fp_at_arming (0.9+), released_fp (0.9+,
+#   hook-written).
+#   log_bytes_at_arming is REQUIRED (missing = pre-0.5 arming = fail open) and
+#   is the cycle's verdict cut, advanced on every release so one verdict cannot
+#   release two cycles. With neither fp_at_arming nor released_fp the file is a
+#   pre-0.9 arming: dirty-tree test until its first release, cycle model after.
 #
 # Output contract: JSON {"decision":"block","reason":"..."} on stdout blocks
 # the stop; exit 0 with no JSON allows it. Never exit non-zero (fail-open).
@@ -73,6 +82,10 @@ BRANCH_SLUG="$(printf '%s' "$BRANCH" | tr -c 'a-zA-Z0-9_.-' '-')"
 # as octal and errors out — which would skew BOTH the cap comparison and the
 # bump arithmetic into a fail-closed loop.
 is_num() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
+# Numeric AND short enough for shell arithmetic: a 20-digit value makes `[` and
+# `$(( ))` error out downstream, which would block on broken state instead of
+# failing open. 9 digits is far above any real cap, count or log size.
+is_bounded_num() { is_num "$1" && [[ "${#1}" -le 9 ]]; }
 is_thread() { [[ "$1" =~ ^[a-zA-Z0-9_.-]+$ ]]; }
 # Exact allowlists (not a character-class filter): the lens lands in the block
 # reason as a --lens argument, and an unknown-but-printable value would route
@@ -80,37 +93,156 @@ is_thread() { [[ "$1" =~ ^[a-zA-Z0-9_.-]+$ ]]; }
 is_review_lens() { case "$1" in correctness|security|performance|architecture|ux|quick) return 0;; *) return 1;; esac; }
 is_plan_lens() { case "$1" in stress-test|pre-mortem|devils-advocate|alternatives|adr) return 0;; *) return 1;; esac; }
 
-read_field() { # $1=file $2=key $3=default — for OPTIONAL fields with a safe fallback
-  local v
-  v="$(sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1)"
-  printf '%s' "${v:-$3}"
+# Field readers. Pure bash, no forks: `sed`+`head` per field cost more than
+# everything else the gate does. HAS is set even for an empty value, so `key=`
+# cannot silently become a default and bypass the caller's validation.
+_field() { # $1=file $2=key -> VAL, HAS
+  local line
+  VAL=""; HAS=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$2="*) VAL="${line#*=}"; HAS=1; return 0 ;;
+    esac
+  done < "$1" 2>/dev/null
+  return 0
 }
 
-raw_field() { # $1=file $2=key — for REQUIRED fields: empty when missing OR
-  # present-but-empty, so `key=` cannot silently become the default and bypass
-  # validation (the caller's is_num rejects empty).
-  sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1
+read_field() { # $1=file $2=key $3=default — OPTIONAL fields with a safe fallback
+  _field "$1" "$2"; printf '%s' "${VAL:-$3}"
 }
 
-has_field() { grep -q "^${2}=" "$1" 2>/dev/null; } # $1=file $2=key
+raw_field() { # $1=file $2=key — REQUIRED fields: empty when missing or empty
+  _field "$1" "$2"; printf '%s' "$VAL"
+}
+
+has_field() { _field "$1" "$2"; [ "$HAS" -eq 1 ]; } # $1=file $2=key
+
+log_gen() { # $1=thread — how many times the driver has rotated this log
+  local g
+  # Same grammar the driver writes with: a leading zero is not octal-safe in
+  # shell arithmetic, and anything malformed is generation 0.
+  g="$(cat "$STATE_DIR/$1.log-gen" 2>/dev/null | tr -cd '0-9')"
+  is_bounded_num "$g" || g=0
+  printf '%s' "$g"
+}
 
 log_size() { # $1=thread — current byte size of the thread log, 0 if absent
   local s
-  s="$(wc -c 2>/dev/null < "$STATE_DIR/$1.log" | tr -d ' ')"
-  s="${s:-0}"
+  s="$(wc -c 2>/dev/null < "$STATE_DIR/$1.log")"
+  s="${s//[[:space:]]/}"
   is_num "$s" || s=0
   printf '%s' "$s"
 }
 
+# All three armed-file writers rewrite the WHOLE file, so each serializes its
+# read-validate-rewrite under a per-file mkdir mutex and re-reads inside it.
+# Unserialized, concurrent hooks corrupted the file (a shared temp name left the
+# survivor's single `blocks=1` line and nothing else) and lost increments (last
+# rename wins), which unbounds the cap. Giving up means the caller does NOT
+# write; each documents its own fallback.
+#
+# The token is per-process AND random: PIDs are recycled, and it must tell our
+# lock from a replacement. A lock older than 30s is stale by construction —
+# nothing here holds it for more than a few file operations.
+ARMED_LOCK_TOKEN="$$.${RANDOM}${RANDOM}"
+
+# stat flavour, resolved once: GNU-first is load-bearing (on GNU, `-f` means
+# --file-system and SUCCEEDS), but probing it per call forks a guaranteed
+# failure on every BSD box, and armed_lock can probe 25 times.
+if stat -c '%Y' . >/dev/null 2>&1; then _STAT_FMT="-c%Y"; else _STAT_FMT="-f%m"; fi
+_lock_mtime() { # $1=lock dir
+  local m
+  m="$(stat "$_STAT_FMT" "$1" 2>/dev/null)" || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$m"
+}
+
+armed_lock() { # $1=armed file → 0 if held
+  local d="$1.lock" i=0 now m1 m2 owner opid
+  while [ "$i" -lt 25 ]; do
+    if mkdir "$d" 2>/dev/null; then
+      # The token MUST land: without it we cannot prove ownership later, and
+      # treating that as a successful acquisition meant writing under a lock we
+      # could neither verify nor release.
+      if ! printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null; then
+        rm -rf "$d" 2>/dev/null
+        return 1
+      fi
+      # Test seam: stolen-and-replaced-while-held cannot be produced by timing.
+      [ -n "${CC_STOP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_STOP_TEST_POST_LOCK_HOOK"
+      return 0
+    fi
+    # Staleness is a 30s question, so it does not need probing at 20 Hz — every
+    # fifth attempt keeps a contended wait at 3 forks instead of 75.
+    if [ "$(( i % 5 ))" -eq 0 ]; then
+      now="$(date +%s 2>/dev/null)" || return 1
+      m1="$(_lock_mtime "$d")"
+      if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
+        # A LIVE holder is slow, not dead: stealing from it hands two writers
+        # the same lock. Only an owner whose process is gone may be evicted.
+        owner="$(cat "$d/owner" 2>/dev/null)"
+        opid="${owner%%.*}"
+        case "$opid" in ''|*[!0-9]*) opid="" ;; esac
+        if [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null; then
+          sleep 0.05 2>/dev/null || sleep 1
+          i=$((i+1))
+          continue
+        fi
+        # Steal only the lock we just measured stale: an unchanged mtime
+        # identifies the same lock (a replacement is >30s newer), and the `mv`
+        # makes the removal single-winner.
+        m2="$(_lock_mtime "$d")"
+        if [ "$m1" = "$m2" ] && mv "$d" "$d.stale.$$" 2>/dev/null; then
+          rm -rf "$d.stale.$$" 2>/dev/null
+        fi
+        # Counted as an attempt: an unremovable lock must not loop forever here.
+        i=$((i+1))
+        continue
+      fi
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+    i=$((i+1))
+  done
+  return 1
+}
+
+# Do we STILL hold it? Checked immediately before every write, because holding
+# the lock at acquisition time is not the same as holding it now: an owner that
+# stalled past the staleness window gets evicted, and without this it would
+# resume and overwrite the new owner's counter or rebaseline.
+armed_owned() { [ "$(cat "$1.lock/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ]; }
+armed_unlock() { # release ONLY our own lock
+  # An owner that stalled past the staleness window and resumed must not delete
+  # the replacement's lock. Not ours = leave it: that costs one staleness
+  # window, deleting it costs mutual exclusion.
+  local d="$1.lock"
+  [ "$(cat "$d/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ] || return 0
+  rm -rf "$d" 2>/dev/null
+}
+
+armed_rewrite() { # $1=armed file; body on stdin
+  local f="$1" tmp
+  tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 1
+  if cat > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then return 0; fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
 bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
-  # Returns non-zero if the increment could NOT be persisted (e.g. read-only
-  # state dir). The caller must then fail OPEN: blocking without a persisted
-  # counter would bypass the cap into unlimited blocking.
-  local f="$1" b=$(( $2 + 1 ))
-  {
-    grep -v '^blocks=' "$f" 2>/dev/null
+  # Re-reads the counter inside the lock (a stale value is the lost update).
+  # Non-zero when the increment could NOT be persisted — including a lock we
+  # could not get — and the caller must then fail OPEN: blocking on an
+  # unpersisted counter bypasses the cap into unlimited blocking.
+  local f="$1" b cur
+  armed_lock "$f" || return 1
+  cur="$(raw_field "$f" blocks)"
+  is_bounded_num "$cur" || cur="$2"
+  b=$(( cur + 1 ))
+  armed_owned "$f" || { armed_unlock "$f"; return 1; }
+  { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
-  } > "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
+  } | armed_rewrite "$f" || { armed_unlock "$f"; return 1; }
+  armed_unlock "$f"
   printf '%s' "$b"
 }
 
@@ -128,59 +260,190 @@ dirty_code() {
   git status --porcelain -uall 2>/dev/null | grep -vF '.claude/codex-threads/' | grep -q .
 }
 
+# The plan scope, from the canonical script, resolved once per run. The hook
+# must still work if that script is missing (it degrades loudly elsewhere), so
+# an empty answer falls back to the documented default rather than to "no
+# pathspecs", which git would read as the whole tree.
+PLAN_PATHS_CACHE=""
+plan_paths() {
+  if [[ -z "$PLAN_PATHS_CACHE" ]]; then
+    local fpsh="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/gate-fingerprint.sh}"
+    [[ -n "$fpsh" && -f "$fpsh" ]] && PLAN_PATHS_CACHE="$(bash "$fpsh" --plan-paths 2>/dev/null)"
+    [[ -n "$PLAN_PATHS_CACHE" ]] || PLAN_PATHS_CACHE="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+  fi
+  printf '%s' "$PLAN_PATHS_CACHE"
+}
+
 dirty_plans() {
-  # Plan-doc locations are configurable via CC_CODEX_PLAN_PATHS (space-separated
-  # pathspecs); defaults to the two conventional dirs. Word-splitting of the
-  # variable into separate pathspecs is intentional.
-  local paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
-  # `set -f` (in a subshell) disables shell globbing so the pathspecs reach git
+  # The scope comes from gate-fingerprint.sh, so the dirt predicate and the
+  # fingerprint can never disagree about what "plan documents" means.
+  local paths; paths="$(plan_paths)"
+  # `set -f` (in a subshell) disables globbing so the pathspecs reach git
   # unexpanded — git does its own pathspec matching.
   # shellcheck disable=SC2086
   ( set -f; git status --porcelain -uall -- $paths 2>/dev/null | grep -q . )
 }
 
-last_review_verdict() { # $1=thread $2=byte offset of the log at arming time.
-  # Standalone verdict line from REPLY sections ONLY, and only from log content
-  # APPENDED AFTER ARMING. Two protections in one:
-  #   - section tracking: the driver writes column-0 markers (PROMPT:/REPLY:/
-  #     ---/[timestamp]) and indents body lines by two spaces, so a verdict
-  #     literal inside a logged PROMPT (e.g. a /reply quoting "earlier you
-  #     said: APPROVE") can never release the gate;
-  #   - the arming offset: a stale pre-arming APPROVE can never release, even
-  #     if later non-verdict rounds (a /reply) bump the round counter.
-  # No line-count window: a single long reply cannot push its verdict out of
-  # scope. tail -c may start mid-line/mid-section; until a column-0 REPLY:
-  # marker is seen, lines are conservatively ignored (blocks toward the cap,
-  # never falsely releases).
-  local log="$STATE_DIR/$1.log" off="${2:-0}" size
-  [[ -f "$log" ]] || return 0
-  size="$(wc -c 2>/dev/null < "$log" | tr -d ' ')"
-  is_num "$size" || size=0
-  # Log smaller than the arming offset = rotated or reset since arming; all
-  # surviving content is post-arming, so parse the whole current log.
-  [[ "$size" -lt "$off" ]] && off=0
-  tail -c +"$(( off + 1 ))" "$log" 2>/dev/null | awk '
-    /^REPLY:/            { r = 1; next }
-    /^(PROMPT:|---$|\[)/ { r = 0; next }
-    r && /^[[:space:]]*([Vv]erdict:[[:space:]]*)?(APPROVE|REQUEST_CHANGES|COMMENT)(---)?[[:space:]]*$/ { v = $0 }
-    END { if (v != "") print v }
-  ' | grep -oE 'APPROVE|REQUEST_CHANGES|COMMENT' | tail -1
+code_fingerprint() { # $1 = optional pathspec list (autoplan); empty = whole tree
+  # The ONE canonical implementation, shared with the arming commands: a copy
+  # that drifted by a pathspec would make every gate read as permanently dirty.
+  local fpsh="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/gate-fingerprint.sh}"
+  [[ -n "$fpsh" && -f "$fpsh" ]] || {
+    echo "cc-codex-triage: gate-fingerprint.sh not found next to the hook — the gate falls back to the dirty-tree test for this turn." >&2
+    return 0
+  }
+  local fp
+  # shellcheck disable=SC2086
+  fp="$( set -f; bash "$fpsh" ${1:-} 2>/dev/null )"
+  # Empty means it ran and could not compute. The gate then degrades to the
+  # dirty-tree test — weaker, so it must not be silent.
+  [[ -n "$fp" ]] || echo "cc-codex-triage: the code fingerprint could not be computed (unreadable file? git error?) — the gate falls back to the dirty-tree test for this turn." >&2
+  printf '%s' "$fp"
 }
+
+# Mirrored in scripts/lib.sh (this hook stays dependency-free) — change both.
+gate_baseline() { # $1=armed file — the code state this gate last RELEASED, else
+  # the state at arming. Empty = pre-0.9 armed file, which keeps the dirty-tree
+  # test until its first release, so an upgrade never changes a live gate.
+  local v
+  v="$(raw_field "$1" released_fp)"
+  [[ -n "$v" ]] || v="$(raw_field "$1" fp_at_arming)"
+  printf '%s' "$v"
+}
+
+has_unreviewed_work() { # $1=baseline fp  $2=current fp  $3=legacy dirt predicate
+  # No baseline (pre-0.9) or no current fingerprint both fall back to the
+  # dirty-tree predicate: a weakened gate beats none.
+  { [[ -n "$1" && -n "$2" ]]; } || { "$3"; return; }
+  [[ "$1" != "$2" ]]
+}
+
+reviewed_fingerprint() { # $1=thread [$2="plan"] [$3=cycle cut]
+  # What the dispatch that earned the verdict actually saw, not the worktree at
+  # turn-end. In order: the `fp=` stamped into the verdict's own log record;
+  # else <thread>.dispatch-fp, the LATEST dispatch, which is right only while
+  # that IS the verdict's dispatch. Full rule: scripts/last-verdict.sh.
+  #
+  # $2="plan" selects the plan-scoped snapshot: comparing a whole-tree hash
+  # against a pathspec hash can never be equal, and re-blocked to the cap.
+  #
+  # RETURNS 0 with the hash, or 2 when nothing records what was dispatched —
+  # a status, not a reserved word on stdout. The caller must not release on 2:
+  # it costs a round, not a deadlock, since the next dispatch settles it.
+  local v f="$STATE_DIR/$1.dispatch-fp" flag="--fp" rc
+  # The plan gate releases on log GROWTH, so its releasing dispatch is the LAST.
+  if [[ "${2:-}" == "plan" ]]; then f="$STATE_DIR/$1.dispatch-fp-plan"; flag="--fp-plan-latest"; fi
+  v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${3:-0}" "$flag" 2>/dev/null)"; rc=$?
+  v="${v//[[:space:]]/}"
+  [[ "$rc" -eq 2 ]] && return 2
+  [[ "$rc" -eq 0 && -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || return 2   # SHA-1 or SHA-256 object id
+  printf '%s' "$v"
+}
+
+consume_idle_verdicts() { # $1=armed file $2=thread
+  # With no cycle open, a verdict appended since the last cut answers nothing —
+  # and left in place it BANKS: the next cycle finds that APPROVE already past
+  # the offset and releases without a review. /autoreview's own arming produces
+  # exactly that, which shipped the first change after arming ungated. Runs for
+  # pre-0.9 files too; their fingerprint fields stay untouched.
+  #
+  # OFFSET ONLY — never rebaseline_cycle, which resets blocks=0: revert,
+  # consume, reapply would then buy a full cap again, repeatably. Only an earned
+  # release refills the budget.
+  #
+  # The growth test comes BEFORE the lock (an idle turn is the common case and
+  # must not pay a lock cycle), and the offset is re-read inside it, since a
+  # racing full-file rewrite would otherwise drop the other writer's field.
+  # No lock, skip: a missed advance costs one blocked turn.
+  # The cut is a PAIR — byte offset AND rotation generation — so both the
+  # early exit and the write compare both halves. Testing the offset alone let
+  # a rotation whose replacement log happened to be the SAME SIZE slip through:
+  # the stored generation stayed stale, and when a cycle later opened, run_gate
+  # reset the cut to zero and re-spent the verdict this pass had consumed.
+  local f="$1" t="$2" now off gen_now gen_at
+  off="$(raw_field "$f" log_bytes_at_arming)"
+  is_bounded_num "$off" || return 0
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at=""
+  now="$(log_size "$t")"
+  gen_now="$(log_gen "$t")"
+  [[ "$now" -ne "$off" || "$gen_now" != "$gen_at" ]] || return 0
+  armed_lock "$f" || return 0
+  off="$(raw_field "$f" log_bytes_at_arming)"
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at=""
+  now="$(log_size "$t")"      # recomputed under the lock, like the offset
+  gen_now="$(log_gen "$t")"
+  if is_bounded_num "$off" && [[ "$now" -ne "$off" || "$gen_now" != "$gen_at" ]]; then
+    if armed_owned "$f"; then
+      { grep -v -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
+        echo "log_bytes_at_arming=$now"
+        echo "log_gen_at_arming=$gen_now"
+      } | armed_rewrite "$f" || true
+    fi
+  fi
+  armed_unlock "$f"
+  return 0
+}
+
+rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cycle.
+  # All three move together or the next cycle runs on stale state:
+  #   released_fp          what was approved, so a later edit re-arms the gate;
+  #   log_bytes_at_arming  advanced, so this verdict cannot release the next cycle;
+  #   blocks=0             a fresh budget, refilled only by a real release.
+  # Returns non-zero on failure; the caller releases anyway — a persisted marker
+  # is not worth withholding an earned APPROVE over.
+  local f="$1" fp="$2" size
+  if [[ -z "$fp" ]]; then
+    echo "cc-codex-triage: released, but the code fingerprint is unavailable so the release could not be recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
+  size="$(log_size "$3")"
+  if ! armed_lock "$f"; then
+    echo "cc-codex-triage: released, but the armed-state lock could not be acquired so the release was not recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
+  if ! armed_owned "$f"; then
+    armed_unlock "$f"
+    echo "cc-codex-triage: released, but the armed-state lock was lost before the release could be recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
+  if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
+         echo "released_fp=$fp"
+         echo "log_bytes_at_arming=$size"
+         echo "log_gen_at_arming=$(log_gen "$3")"
+         echo "blocks=0"
+       } | armed_rewrite "$f"; then
+    armed_unlock "$f"
+    echo "cc-codex-triage: released, but could not write $f (state dir not writable?) — the next turn may re-block. Re-arm to continue." >&2
+    return 1
+  fi
+  armed_unlock "$f"
+}
+
+# Resolved once. A missing parser must not be guessed either way — a faked
+# APPROVE stamps unreviewed code, "no verdict" caps every cycle on a broken
+# install — so the gate is skipped loudly instead, touching no state.
+VERDICT_SH="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/last-verdict.sh}"
+VERDICT_SH_OK=1
+if [[ -z "$VERDICT_SH" || ! -f "$VERDICT_SH" ]]; then
+  echo "cc-codex-triage: last-verdict.sh not found next to the hook — cannot read thread verdicts, skipping the autoreview gate for this turn." >&2
+  VERDICT_SH_OK=0
+fi
 
 # ── Gate TTL pre-pass ───────────────────────────────────────────────────────
 # An armed gate older than 14 days is stale — a month-old gate re-firing on a
-# reused branch name is the audited hazard. This runs over BOTH armed files
-# BEFORE either gate evaluates branch/dirt: the gates run sequentially and
-# allow/emit_block exit the whole hook, so inline expiry inside a gate would
-# suppress or orphan the other gate. The pre-pass itself never exits — gate
-# evaluation proceeds on whatever survived.
-# Fail-open: missing/malformed/future armed_at (including every ≤0.7 armed
-# file, which has no armed_at) skips TTL for that file. An expired file that
-# cannot be removed is treated as absent for the remainder of THIS run only —
-# never block on an unremovable stale gate.
+# reused branch name is the audited hazard. Runs over BOTH armed files before
+# either gate evaluates: allow/emit_block exit the whole hook, so inline expiry
+# would suppress or orphan the other gate.
+# Fail-open: missing/malformed/future armed_at skips TTL for that file, and an
+# expired file that cannot be removed is treated as absent for THIS run only.
 GATE_TTL=1209600   # 14 days, in seconds
-epoch_date() { # $1=epoch → ISO day. BSD `date -r <epoch>`, GNU `date -d @<epoch>`.
-  date -r "$1" '+%Y-%m-%d' 2>/dev/null || date -d "@$1" '+%Y-%m-%d' 2>/dev/null || printf 'epoch %s' "$1"
+epoch_date() { # $1=epoch → ISO day. GNU FIRST: GNU's `date -r` takes a FILE, so
+  # `date -r <epoch>` succeeds against a same-named file and reports its mtime
+  # instead of the epoch — the same failure shape as the stat probes.
+  date -d "@$1" '+%Y-%m-%d' 2>/dev/null || date -r "$1" '+%Y-%m-%d' 2>/dev/null || printf 'epoch %s' "$1"
 }
 AR_TTL_DEAD=0; AP_TTL_DEAD=0
 NOW="$(date +%s 2>/dev/null || true)"
@@ -193,90 +456,172 @@ if is_num "${NOW:-}"; then
     [[ "${#armed_at}" -le 12 ]] || continue   # absurd length would overflow bash arithmetic
     [[ "$armed_at" -le "$NOW" ]] || continue  # future timestamp → TTL skipped
     [[ $(( NOW - armed_at )) -gt "$GATE_TTL" ]] || continue
-    if rm -f "$f" 2>/dev/null && [[ ! -e "$f" ]]; then
+    # Expiry mutates armed state like any other write, so it takes the same
+    # lock and re-reads inside it: a re-arm that happened while we waited must
+    # not be expired on the strength of the value measured outside.
+    if armed_lock "$f"; then
+      armed_at="$(raw_field "$f" armed_at)"
+      if ! is_num "$armed_at" || [[ "${#armed_at}" -gt 12 ]] || [[ "$armed_at" -gt "$NOW" ]] \
+         || [[ $(( NOW - armed_at )) -le "$GATE_TTL" ]]; then
+        armed_unlock "$f"; continue              # re-armed while we waited
+      fi
+      armed_owned "$f" && rm -f "$f" 2>/dev/null
+      armed_unlock "$f"
+    fi
+    # Lock unavailable or removal failed: same outcome — the file is still
+    # there, so treat the gate as absent this turn rather than letting it block.
+    if [[ ! -e "$f" ]]; then
       echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) — removed; re-arm with /$kind on." >&2
     else
-      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) but could not be removed (state dir not writable?) — ignoring it for this turn; re-arm with /$kind on." >&2
+      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) but could not be removed (state dir not writable, or its lock is held) — ignoring it for this turn; re-arm with /$kind on." >&2
       case "$kind" in autoreview) AR_TTL_DEAD=1 ;; autoplan) AP_TTL_DEAD=1 ;; esac
     fi
   done
 fi
 
-# ── /autoreview ─────────────────────────────────────────────────────────────
+# ── gate scope ──────────────────────────────────────────────────────────────
+# Both gates are resolved BEFORE either is evaluated, because emit_block and
+# allow exit the whole hook: a block on autoreview used to skip autoplan
+# entirely, including its idle-verdict consumption, so plan-thread growth
+# during a blocked turn banked and released the next plan cycle for free.
+# The fingerprint runs only after the branch check — it walks the worktree, and
+# an armed gate on another branch should cost nothing.
 AR="$STATE_DIR/autoreview.armed"
-if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 ]]; then
-  ar_branch="$(read_field "$AR" branch "")"
-  if [[ "$ar_branch" == "$BRANCH" ]] && dirty_code; then
-    thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="review-$BRANCH_SLUG"
-    lens="$(read_field "$AR" lens correctness)"
-    is_review_lens "$lens" || lens=correctness
-    cap="$(raw_field "$AR" cap)"
-    blocks="$(raw_field "$AR" blocks)"
-    log_off="$(raw_field "$AR" log_bytes_at_arming)"
-    # A missing offset is NOT a zero offset: a pre-0.5 armed file lacks the
-    # field, and defaulting to 0 would scan the whole log — re-opening the
-    # stale-APPROVE hole exactly on upgrade. Missing field = fail open.
-    if ! has_field "$AR" log_bytes_at_arming; then
-      echo "autoreview: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoreview on." >&2
-    elif ! is_num "$cap" || ! is_num "$blocks" || ! is_num "$log_off"; then
-      echo "autoreview: malformed counters in $AR — failing open. Re-arm with /autoreview on." >&2
-    else
-      verdict="$(last_review_verdict "$thread" "$log_off")"
-      # The offset cut makes the verdict self-sufficient: an APPROVE can only
-      # come from log content appended after arming, which itself proves a
-      # post-arming round ran. No .rounds-based second check — that counter is
-      # reset by /thread-new, so it can both fake a run (reset alone changes
-      # it) and mask one (reset + one run collides with the snapshot).
-      if [[ "$verdict" == "APPROVE" ]]; then
-        : # APPROVE earned since arming — release
-      elif [[ "$blocks" -ge "$cap" ]]; then
-        echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
-      elif n="$(bump_blocks "$AR" "$blocks")"; then
-        emit_block "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks, and a default loop here would multiply cost). Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)."
-      else
-        echo "autoreview: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
-      fi
-    fi
-  fi
+AP="$STATE_DIR/autoplan.armed"
+AR_LIVE=0; AP_LIVE=0; ar_fp=""; ap_fp=""; ar_thread=""; ap_thread=""
+
+if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 \
+      && "$(read_field "$AR" branch "")" == "$BRANCH" ]]; then
+  AR_LIVE=1
+  ar_thread="$(read_field "$AR" thread "review-$BRANCH_SLUG")"
+  is_thread "$ar_thread" || ar_thread="review-$BRANCH_SLUG"
+  ar_fp="$(code_fingerprint)"
+fi
+if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 && "$(read_field "$AP" branch "")" == "$BRANCH" ]]; then
+  AP_LIVE=1
+  ap_thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
+  is_thread "$ap_thread" || ap_thread="plan-$BRANCH_SLUG"
+  ap_fp="$(code_fingerprint --plan)"
 fi
 
-# ── /autoplan ───────────────────────────────────────────────────────────────
-AP="$STATE_DIR/autoplan.armed"
-if [[ -f "$AP" && "$AP_TTL_DEAD" -eq 0 ]]; then
-  ap_branch="$(read_field "$AP" branch "")"
-  if [[ "$ap_branch" == "$BRANCH" ]] && dirty_plans; then
-    thread="$(read_field "$AP" thread "plan-$BRANCH_SLUG")"
-    is_thread "$thread" || thread="plan-$BRANCH_SLUG"
-    lens="$(read_field "$AP" lens stress-test)"
-    is_plan_lens "$lens" || lens=stress-test
-    cap="$(raw_field "$AP" cap)"
-    blocks="$(raw_field "$AP" blocks)"
-    log_off="$(raw_field "$AP" log_bytes_at_arming)"
-    log_now="$(log_size "$thread")"
-    if ! has_field "$AP" log_bytes_at_arming; then
-      echo "autoplan: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoplan on." >&2
-    elif ! is_num "$cap" || ! is_num "$blocks" || ! is_num "$log_off"; then
-      echo "autoplan: malformed counters in $AP — failing open. Re-arm with /autoplan on." >&2
-    # Release when the thread log changed size since arming: ANY dispatch to
-    # the plan thread appends (normally the requested /plan run — the gate
-    # detects log growth, not command identity; documented in autoplan.md).
-    # Unlike the .rounds counter, the log is NOT touched by /thread-new — a
-    # bare reset cannot fake a dispatch, and a post-reset run cannot collide
-    # with the snapshot. Known cap-bounded edge (both gates): a post-arming
-    # rotation that leaves the current log EXACTLY equal in size to the
-    # snapshot reads as "no dispatch" — fails toward blocking, never toward a
-    # false release, and the cap terminates it.
-    elif [[ "$log_now" -ne "$log_off" ]]; then
-      : # at least one post-arming dispatch on the plan thread — release
-    elif [[ "$blocks" -ge "$cap" ]]; then
-      echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
-    elif n="$(bump_blocks "$AP" "$blocks")"; then
-      emit_block "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks). Address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)."
+# Answered once per gate: gate_baseline reads the armed file, and the fallback
+# arm of has_unreviewed_work runs a `git status` — both were evaluated twice,
+# once for the idle pre-pass and again for the gate itself.
+AR_OPEN=0; AP_OPEN=0
+if [[ "$AR_LIVE" -eq 1 ]]; then
+  has_unreviewed_work "$(gate_baseline "$AR")" "$ar_fp" dirty_code && AR_OPEN=1
+  [[ "$AR_OPEN" -eq 1 ]] || consume_idle_verdicts "$AR" "$ar_thread"
+fi
+if [[ "$AP_LIVE" -eq 1 ]]; then
+  has_unreviewed_work "$(gate_baseline "$AP")" "$ap_fp" dirty_plans && AP_OPEN=1
+  [[ "$AP_OPEN" -eq 1 ]] || consume_idle_verdicts "$AP" "$ap_thread"
+fi
+
+# ── the gate ────────────────────────────────────────────────────────────────
+# Both gates run the SAME algorithm and differ in ONE step: what counts as a
+# release — an APPROVE after the cut, versus any growth of the plan thread's
+# log. Written out twice they drifted (the unattributable refusal grew its own
+# cap test on one side only), so the shape lives here once and the difference
+# is a two-line predicate.
+gate_msg() { # $1=kind $2=slot — expanded against the caller's locals
+  case "$1:$2" in
+    autoreview:moved)  printf '%s' "autoreview armed: the APPROVE covers the state that was reviewed, but the code changed after it — review the new changes. Read $CMD_DIR/review.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoreview command (off)." ;;
+    autoreview:block)  printf '%s' "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks, and a default loop here would multiply cost). Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)." ;;
+    autoreview:cap)    printf '%s' "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." ;;
+    autoreview:unattr) printf '%s' "autoreview: the APPROVE on thread $thread cannot be tied to a dispatched state (no fingerprint in its record, and no sidecar that still describes it), so what it approved cannot be established — not releasing. Re-review to settle it." ;;
+    autoplan:moved)    printf '%s' "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)." ;;
+    autoplan:block)    printf '%s' "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks). Address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)." ;;
+    autoplan:cap)      printf '%s' "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." ;;
+    autoplan:unattr)   printf '%s' "autoplan: the plan thread grew, but nothing records which plan state that dispatch saw (no fingerprint in the record, no usable sidecar) — not releasing. Dispatch again to settle it." ;;
+  esac
+}
+
+run_gate() { # $1=kind (autoreview|autoplan) $2=armed file $3=thread $4=current fp
+  local kind="$1" f="$2" thread="$3" fp="$4"
+  local lens cap blocks log_off released release=false earned=false fpmode="" nblocks n
+  case "$kind" in
+    autoreview) lens="$(read_field "$f" lens correctness)"; is_review_lens "$lens" || lens=correctness ;;
+    autoplan)   lens="$(read_field "$f" lens stress-test)"; is_plan_lens   "$lens" || lens=stress-test ;;
+  esac
+  cap="$(raw_field "$f" cap)"
+  blocks="$(raw_field "$f" blocks)"
+  log_off="$(raw_field "$f" log_bytes_at_arming)"
+  # The cut is a byte offset into the log as it was. Rotation makes that offset
+  # meaningless — it now points into unrelated content — and comparing sizes
+  # only catches it when the replacement is SMALLER, so a rotated-in log of
+  # equal or greater size hid every verdict before that point until the cap.
+  # The driver counts rotations; a changed count means "parse from 0", which is
+  # safe because rotation precedes the append, so everything in the current log
+  # is newer than the cut.
+  local gen_now gen_at
+  gen_now="$(log_gen "$thread")"
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at="$gen_now"    # pre-0.10 armed file: assume no rotation
+  [[ "$gen_now" == "$gen_at" ]] || log_off=0
+  # A missing offset is NOT a zero offset: a pre-0.5 armed file lacks the field,
+  # and defaulting to 0 would scan the whole log — re-opening the stale-APPROVE
+  # hole exactly on upgrade. Missing field = fail open.
+  if ! has_field "$f" log_bytes_at_arming; then
+    echo "$kind: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /$kind on." >&2
+    return 0
+  fi
+  if ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
+    echo "$kind: malformed counters in $f — failing open. Re-arm with /$kind on." >&2
+    return 0
+  fi
+
+  # THE difference.
+  #  autoreview: an APPROVE appended after the cut, read by the ONE canonical
+  #    parser /status also calls. The cut makes it self-sufficient — no .rounds
+  #    check, since /thread-new resets that counter.
+  #  autoplan: any growth of the thread log, since ANY dispatch appends and
+  #    /thread-new does not touch it. Known cap-bounded edge: a post-arming
+  #    rotation leaving the log EXACTLY the snapshot size reads as "no
+  #    dispatch" — fails toward blocking, never toward a false release.
+  if [[ "$kind" == autoreview ]]; then
+    [[ "$(bash "$VERDICT_SH" "$STATE_DIR/$thread.log" "$log_off" 2>/dev/null)" == "APPROVE" ]] && earned=true
+  else
+    fpmode=plan
+    [[ "$(log_size "$thread")" -ne "$log_off" ]] && earned=true
+  fi
+
+  # A release that cannot be tied to a dispatched state approves nothing
+  # identifiable and would stamp whatever the worktree holds NOW. A pre-0.9
+  # armed file is exempt: no fingerprint model, so it keeps 0.8 semantics until
+  # its first release (the documented upgrade path).
+  if $earned; then
+    if released="$(reviewed_fingerprint "$thread" "$fpmode" "$log_off")"; then
+      release=true
+    elif [[ -z "$(gate_baseline "$f")" ]]; then
+      released="$fp"; release=true
     else
-      echo "autoplan: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
+      echo "$(gate_msg "$kind" unattr)" >&2
     fi
   fi
-fi
+
+  if $release; then
+    # Record WHAT was released, or one verdict keeps releasing every later turn
+    # no matter how much new unreviewed work is written.
+    rebaseline_cycle "$f" "$released" "$thread" || true   # diagnoses itself
+    # If the tree has moved past what was released — written after the verdict
+    # arrived, in this same turn — the next cycle is open ALREADY. Open it now
+    # rather than ending the turn on it.
+    if [[ -n "$released" && -n "$fp" && "$released" != "$fp" ]]; then
+      nblocks="$(raw_field "$f" blocks)"; is_bounded_num "$nblocks" || nblocks=0
+      if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$f" "$nblocks")"; then
+        emit_block "$(gate_msg "$kind" moved)"
+      fi
+    fi
+  elif [[ "$blocks" -ge "$cap" ]]; then
+    echo "$(gate_msg "$kind" cap)" >&2
+  elif n="$(bump_blocks "$f" "$blocks")"; then
+    emit_block "$(gate_msg "$kind" block)"
+  else
+    echo "$kind: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
+  fi
+}
+
+[[ "$AR_OPEN" -eq 1 ]] && run_gate autoreview "$AR" "$ar_thread" "$ar_fp"
+[[ "$AP_OPEN" -eq 1 ]] && run_gate autoplan   "$AP" "$ap_thread" "$ap_fp"
 
 allow

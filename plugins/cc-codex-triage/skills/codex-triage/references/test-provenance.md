@@ -26,3 +26,11 @@ plugin's **source repo** (`tests/scenarios/codex-triage/`), not the installed pl
 ## Fix the neighborhood
 
 > **Status:** RED run 2026-06-09 (`tests/scenarios/codex-triage/fix-neighborhood.json`) — **SPLIT**. On a small single-file fixture both models fix sibling sites unprompted (synthetic baseline unreproducible). The rule's regime is **cross-file / cross-call-chain neighborhoods at production scale**, where the failure is directly documented: a real 8-round review loop spent 3 rounds on ONE invariant because each fix patched exactly the cited site (first element → all elements → correct ordering).
+
+## When the review loop is the wrong tool
+
+> **Status:** **PRODUCTION RED, no synthetic baseline** — run 2026-08-01 (`tests/scenarios/codex-triage/review-divergence.json`). Same standing as *fix the neighborhood*: the failure only exists at production scale, because it needs a task whose design is genuinely unfinished, and any fixture cheap enough to probe is small enough to converge. No fresh-subagent RED was dispatched.
+>
+> **The RED:** stokli/backend `review-refactor-266-thread-execution-lease` — 13 rounds over three days, 15 replies, never an APPROVE, and **not one repeated finding**. Each round produced 2–5 new blocking classes (billing fence, terminal-error idempotency, finalizer lease, checkpoint recovery, SSE generation switching). The same task's plan thread had ended at round 6 on `REQUEST_CHANGES` — *"these are executable contradictions and safety gaps, not optional cleanup"* — the day before implementation started. The review loop paid the difference at one Codex dispatch per design decision.
+>
+> **The contrast case, and why the rule keys on repeat structure rather than round count:** marqa/platform `review-feat-400-analytics-ui` also ran long — 9 rounds — but its blocking findings decay 10 → 6 → 3 → 4 → 2 → 2 → 2 → 1 → 0 and most rounds are repairs of prior findings, one invariant surviving rounds 4–8. That thread was converging; a round-count trigger would have stopped it wrongly. Method: indexed all 37 thread logs across stokli and marqa (187 replies), extracted verdicts and finding headers per round, read the divergent threads in full.
