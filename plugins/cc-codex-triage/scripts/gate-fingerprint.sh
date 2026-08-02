@@ -70,7 +70,14 @@ if [ -n "$SUB_RAW" ]; then
     [ -n "$_line" ] || continue
     _sub="$(printf '%s' "$_line" | sed -e 's/^.//' -e 's/^[0-9a-f][0-9a-f]* //' -e 's/ ([^)]*)$//')"
     [ -n "$_sub" ] || continue
-    _st="$(git status --porcelain -- "$_sub" 2>/dev/null)" || exit 0
+    # `--ignore-submodules=none` overrides submodule.<name>.ignore and
+    # diff.ignoreSubmodules: with `dirty` or `all` configured, modified contents
+    # produce NO porcelain output, and the script would return a confident
+    # unchanged hash for a submodule the user had edited. Those settings exist
+    # to keep `git status` quiet, which is precisely why a gate must not honour
+    # them. `--no-optional-locks` because this probe runs at every turn end and
+    # has no business refreshing the real index.
+    _st="$(git --no-optional-locks status --porcelain --ignore-submodules=none -- "$_sub" 2>/dev/null)" || exit 0
     [ -n "$_st" ] || continue
     DIRTY_SUBS="$DIRTY_SUBS$_sub
 "

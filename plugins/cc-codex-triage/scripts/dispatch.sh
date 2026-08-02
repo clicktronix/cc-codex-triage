@@ -52,7 +52,11 @@ WATCHER="$SELF_DIR/detach-watch.sh"
 # ceiling, leaving room for the handoff message. Override for a caller with a
 # different limit.
 WAIT="${CC_DISPATCH_WAIT:-540}"
+# Length-bounded like the gate counters: bash arithmetic and `[` both choke
+# on a 20-digit value ("integer expression expected" on every poll), which
+# would defeat the bounded handoff this whole script exists to provide.
 case "$WAIT" in ''|*[!0-9]*) WAIT=540 ;; esac
+[ "${#WAIT}" -le 6 ] || WAIT=540      # ~11 days is already absurd
 
 THREAD=""; ONESHOT=false
 for a in "$@"; do

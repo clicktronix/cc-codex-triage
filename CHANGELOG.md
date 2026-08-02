@@ -188,6 +188,29 @@ a container root, stokli frontend/backend). Plan:
   A concurrent exit-10 loser can no longer truncate or interleave the
   winner's sidecars. `/review`/`/plan` `--background` steps wire the
   watcher up explicitly.
+- **A gate never releases a state nothing recorded.** A verdict is paired with
+  the fingerprint stamped into its own log record; where no record and no
+  usable sidecar can say what was dispatched, the gate now answers "unknown"
+  and keeps blocking instead of falling back to the worktree at turn-end —
+  which would stamp bytes approved that were written after the review. The
+  plan gate takes the LATEST post-cut record instead of the verdict's, since it
+  releases on log growth rather than on a verdict. A pre-0.9 armed file is
+  exempt: it has no fingerprint model at all and keeps 0.8 semantics until its
+  first release, as documented. Refusing costs a round, not a deadlock — the
+  next dispatch stamps its own record and settles it.
+- **Every writer of armed state is serialized.** The Stop hook's three writers
+  (block counter, idle consumption, cycle rebaseline) plus TTL expiry take one
+  per-file mkdir mutex, re-read inside it, and write nothing when they cannot
+  get it. Arming and disarming go through new `scripts/gate-state.sh` rather
+  than writing the file straight from a command snippet, so a turn-end hook can
+  no longer overwrite a fresh arming or resurrect a gate just switched off.
+  Locks carry an owner token: a holder that stalls past the staleness window
+  and resumes cannot delete the replacement owner's lock.
+- **Dirty submodules are visible even when git is configured to hide them.**
+  The probe passes `--ignore-submodules=none`, overriding
+  `submodule.<name>.ignore` — a setting that exists to keep `git status` quiet,
+  which is exactly why a gate must not honour it — and `--no-optional-locks`,
+  since it runs at every turn end.
 - **A dispatch is no longer lost to the caller's timeout.** The Bash tool caps
   a foreground call at 600 s — its maximum, not a setting — and a branch review
   routinely runs longer. When the cap hit, the round vanished: the paid Codex

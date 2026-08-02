@@ -467,6 +467,14 @@ rm -rf "$SD"
 FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail2 <<< "hi" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 3 ]] && ok "an exec failure reaches the caller as 3" || bad "exec failure became rc=$rc"
 
+# An oversized wait counter must fall back, not poison every comparison: on
+# bash 3.2 a 20-digit value makes `[ -ge ]` error on each poll, so the bounded
+# handoff this script promises never happens.
+rm -rf "$SD"
+OUT="$(cd "$REPO" && CC_DISPATCH_WAIT=99999999999999999999 bash "$DISPATCH" d-bigwait <<< "hi" 2>"$T/derr")"; rc=$?
+[[ "$rc" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "an absurd CC_DISPATCH_WAIT falls back to the default" || bad "oversized wait broke the dispatch (rc=$rc out='$OUT')"
+grep -q 'integer expression' "$T/derr" && bad "arithmetic error leaked from the oversized wait" || ok "and no arithmetic error is emitted"
+
 rm -rf "$SD"
 SLOWBIN2="$T/slowbin2"; mkdir -p "$SLOWBIN2"
 printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN2/codex"

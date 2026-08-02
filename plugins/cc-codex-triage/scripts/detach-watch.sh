@@ -79,6 +79,9 @@ fi
 # past any realistic review/plan dispatch).
 TIMEOUT="${CC_DETACH_WATCH_TIMEOUT:-2700}"
 case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=2700 ;; esac
+# Same length bound as dispatch.sh: an oversized value makes `[ -ge ]` error
+# on every poll, so the watcher never times out and never hands off.
+[ "${#TIMEOUT}" -le 6 ] || TIMEOUT=2700
 WAITED=0
 while kill -0 "$PID" 2>/dev/null; do
   if [ "$WAITED" -ge "$TIMEOUT" ]; then

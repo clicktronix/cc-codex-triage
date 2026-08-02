@@ -44,7 +44,8 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    FP=$( set -f; bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" $PLAN_PATHS )
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" > "$STATE_DIR/autoplan.armed"
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" \
+     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoplan.armed" || exit 1
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Already-changed plan docs to stress-test now?
    # set -f: pass the pathspecs to git unexpanded (no shell globbing first).
@@ -54,7 +55,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 
 3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `off` — `rm -f .claude/codex-threads/autoplan.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from deleting files in the wrong directory) and confirm.
+4. `off` — `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from touching the wrong directory) and confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back.
 
 5. `status` — cat the armed file (or "not armed"). Same repo-root anchoring.
 

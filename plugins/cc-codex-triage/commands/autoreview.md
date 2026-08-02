@@ -47,7 +47,8 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
    FP=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh")
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" > "$STATE_DIR/autoreview.armed"
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" \
+     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoreview.armed" || exit 1
    echo "autoreview armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Is there already work to review on this branch?
    git status --porcelain -uall | grep -vF '.claude/codex-threads/' | grep -q . \
@@ -57,7 +58,7 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
 
 3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps right now with `--once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost) — the file path matters: `/review` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. This is the part that removes the manual `/review` step. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
 
-4. `off` — `rm -f .claude/codex-threads/autoreview.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from deleting files in the wrong directory) and confirm.
+4. `off` — `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoreview.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from touching the wrong directory) and confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back.
 
 5. `status` — cat the armed file (or "not armed"), plus the target thread's last verdict if its log exists. Same repo-root anchoring.
 

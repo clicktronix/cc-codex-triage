@@ -10,9 +10,12 @@
 # the user asking. Four suites and 487 tests were green throughout, because
 # every one of them tests behaviour and nothing read the manifests.
 #
-# The checks are deliberately structural. Anything that parses per-key semantics
-# would drift from the Claude Code loader; a delimiter and a fence either
-# balance or they do not.
+# The checks are deliberately structural — a delimiter and a fence either
+# balance or they do not — with ONE value assertion:
+# `disable-model-invocation: true`. Presence alone is not the invariant there,
+# since `false` would re-enable model-triggered paid dispatches while the lint
+# stayed green. Everything else is left to the Claude Code loader, so this file
+# cannot drift from it.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,13 +44,26 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
   fi
 
   # 3. Every required key is present INSIDE the frontmatter, not merely
-  #    somewhere in the prose below it.
-  local key
+  #    somewhere in the prose below it. A requirement written `key=value`
+  #    asserts the VALUE too: for disable-model-invocation, presence is not the
+  #    invariant — `false` would re-enable model-triggered paid dispatches while
+  #    a presence-only check stayed green, which is the same "a check that
+  #    cannot fail" trap this suite exists to catch.
+  local key want
   for key in "$@"; do
-    if awk -v c="$close" -v k="^$key:" 'NR>1 && NR<c && $0 ~ k {found=1} END{exit !found}' "$f"; then
-      ok
-    else
+    want=""
+    case "$key" in *=*) want="${key#*=}"; key="${key%%=*}" ;; esac
+    if ! awk -v c="$close" -v k="^$key:" 'NR>1 && NR<c && $0 ~ k {found=1} END{exit !found}' "$f"; then
       bad "$rel: missing frontmatter key '$key'"
+      continue
+    fi
+    ok
+    [[ -n "$want" ]] || continue
+    local got
+    got="$(awk -v c="$close" -v k="^$key:[[:space:]]*" 'NR>1 && NR<c && $0 ~ k {sub(k,"",$0); print; exit}' "$f" \
+           | tr -d '"'"'"' \t\r')"
+    if [[ "$got" == "$want" ]]; then ok; else
+      bad "$rel: $key is '$got', must be '$want'"
     fi
   done
 
@@ -87,7 +103,7 @@ echo "== commands =="
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   # disable-model-invocation is the load-bearing one: every command here spends
   # real money, so all of them are user-invoked only.
-  check_manifest "$f" description allowed-tools disable-model-invocation
+  check_manifest "$f" description allowed-tools disable-model-invocation=true
 done
 
 echo "== skills =="

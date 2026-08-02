@@ -314,6 +314,20 @@ grep -q "could not be removed" "$ERR" && ok "loud unremovable warning on stderr"
 chmod 755 "$SD"
 [[ -f "$SD/autoreview.armed" ]] && ok "file survived the failed rm (as expected)" || bad "file unexpectedly gone despite read-only dir"
 rm -f "$SD/autoreview.armed"
+
+echo "== TTL t8: expiry takes the armed-state mutex like every other mutation =="
+# Deleting the file mutates armed state, so an unserialized expiry could land
+# between a fresh arming's write and its first read and silently discard it.
+chmod 755 "$SD" 2>/dev/null
+arm_review main review-main 3 0
+printf 'armed_at=%s\n' "$OLD_AT" >> "$SD/autoreview.armed"
+mkdir -p "$SD/autoreview.armed.lock"; printf 'held-elsewhere' > "$SD/autoreview.armed.lock/owner"
+expect_allow "an expired gate whose lock is held does not block either"
+[[ -f "$SD/autoreview.armed" ]] && ok "and is NOT deleted without the lock" || bad "TTL deleted the armed file without holding the lock"
+grep -q "could not be removed" "$ERR" && ok "and the refusal is reported" || bad "silent TTL refusal"
+[[ "$(cat "$SD/autoreview.armed.lock/owner" 2>/dev/null)" == "held-elsewhere" ]] \
+  && ok "and the foreign lock survives" || bad "TTL released a lock it did not own"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed"
 rm -rf docs
 
 # ── Cycle model (0.9): fingerprint baseline, per-cycle release ───────────────
@@ -334,7 +348,16 @@ arm_plan_fp() { # branch thread cap blocks log_bytes fp
   printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
 }
-reply_log() { printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"; }   # overwrite: one verdict, at offset 0
+# One verdict, at offset 0 — and the dispatch snapshot the driver ALWAYS writes
+# beside it. Without the sidecar these fixtures described a log the 0.9 driver
+# could not have produced (a verdict with no record of what was dispatched), and
+# the gate now refuses to release on exactly that, since it cannot tell an
+# approval of the current tree from an approval of something since edited.
+# The snapshot is taken NOW, i.e. "Codex just reviewed this state".
+reply_log() {
+  printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"
+  printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"
+}
 
 echo "== verdict parser: the formats Codex actually writes =="
 VSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/last-verdict.sh"
@@ -472,6 +495,18 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
   echo untracked > vendor/new.txt
   [[ "$(fp_now)" != "$S_CLEAN" ]] && ok "an untracked file inside a submodule counts too" || bad "untracked submodule content invisible"
   rm -f vendor/new.txt
+
+  # submodule.<name>.ignore exists to keep `git status` quiet, which is exactly
+  # why a gate must not honour it: with `all`, a modified submodule produces no
+  # porcelain output and the script returned a confident unchanged hash.
+  for _ig in dirty all untracked; do
+    git config "submodule.vendor.ignore" "$_ig"
+    IG_CLEAN="$(fp_now)"
+    echo "edited under ignore=$_ig" >> vendor/lib.txt
+    [[ "$(fp_now)" != "$IG_CLEAN" ]] && ok "submodule.ignore=$_ig does not hide dirty content" || bad "submodule.ignore=$_ig hid a dirty submodule"
+    git -C vendor checkout -q -- lib.txt
+  done
+  git config --unset submodule.vendor.ignore
 
   # Detection failure must yield NO fingerprint. Through a pipeline the script
   # reported the PARSER's status, so a broken `git submodule status` returned
@@ -728,16 +763,54 @@ echo "snuck in after the verdict" >> f.txt                  # never reviewed
 expect_block "code added after the verdict opens the next cycle at once"
 expect_block "and it stays open on the following turn"
 rm -f "$SD/review-main.dispatch-fp"
-# A malformed snapshot must not poison the release — fall back to the hook's own.
+# A snapshot that cannot be read is not a licence to release the current tree.
+# Falling back to the Stop-time fingerprint here was the last hiding place of
+# the original hole: nothing then recorded what was dispatched, so an APPROVE of
+# state A stamped whatever the worktree held at turn-end. It must block — and it
+# must not DEADLOCK, which is what the fallback was there to avoid: the next
+# dispatch writes a real snapshot and releases.
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
 : > "$SD/review-main.log"
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
 echo "x" >> f.txt; expect_block "cycle opens"
-echo "not-a-fingerprint" > "$SD/review-main.dispatch-fp"
 reply_log APPROVE
-expect_allow "a malformed dispatch-fp falls back instead of blocking forever"
+echo "not-a-fingerprint" > "$SD/review-main.dispatch-fp"   # after reply_log, which writes a good one
+expect_block "an unreadable dispatch-fp does not release the current tree"
+grep -q "cannot be tied to a dispatched state" "$ERR" && ok "and says the state cannot be established" || bad "no explanation for the refusal"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] && ok "and records no release" || bad "released_fp written from an unreadable snapshot"
+printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"  # the next dispatch snapshots properly
+expect_allow "the next dispatch settles it — refusing is a round, not a deadlock"
 rm -f "$SD/review-main.dispatch-fp" "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
+
+echo "== neither gate releases state that was never dispatched =="
+# The attack in one line: review state A, lose every record of what was
+# dispatched, edit to B before the turn ends — and B is stamped approved though
+# nothing ever looked at it. Both gates must refuse.
+git add -A >/dev/null && git commit -qm "settle before never-dispatched test" >/dev/null 2>&1
+: > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "state A" >> f.txt; expect_block "cycle opens on A"
+printf 'REPLY:\n  APPROVE\n---\n' > "$SD/review-main.log"    # a verdict with NO record of its state
+echo "state B, written after the verdict" >> f.txt
+expect_block "autoreview refuses to release B on a verdict that named no state"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "and B is not recorded as approved" || bad "B stamped approved: $(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")"
+rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+rm -rf docs; mkdir -p docs/plans; echo "# plan A" > docs/plans/p.md
+git add -A >/dev/null && git commit -qm "plan A" >/dev/null 2>&1
+: > "$SD/plan-main.log"
+arm_plan_fp main plan-main 3 0 0 "$(fp_now docs/plans docs/PLANS)"
+echo "# edited" >> docs/plans/p.md; expect_block "plan cycle opens"
+printf 'REPLY:\n  stress-tested\n' > "$SD/plan-main.log"     # growth with NO record of its state
+echo "# plan B, written after the dispatch" >> docs/plans/p.md
+expect_block "autoplan refuses to release a plan state nothing recorded"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoplan.armed")" ]] \
+  && ok "and the plan is not recorded as stress-tested" || bad "plan B stamped released"
+rm -f "$SD/autoplan.armed" "$SD/plan-main.log"; rm -rf docs
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== a pre-0.9 armed file adopts the cycle model at its FIRST release =="
 # The compatibility promise is "keeps the old behaviour UNTIL its first
@@ -867,6 +940,60 @@ rm -rf "$SD/autoreview.armed.lock"
 rm -f "$SD/autoreview.armed" "$SD/review-main.log"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+echo "== releasing a lock we do not own is refused =="
+# The stale-steal guard cannot help against the ORIGINAL owner: a holder that
+# stalls past the window gets its lock stolen and replaced, and on resuming
+# would delete the REPLACEMENT owner's lock with an unconditional rm. A lock
+# carrying somebody else's token must survive everything this hook does.
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work" >> f.txt
+mkdir -p "$SD/autoreview.armed.lock"
+printf 'someone-elses-token' > "$SD/autoreview.armed.lock/owner"
+expect_allow "a foreign lock blocks the write and the turn ends"
+[[ -d "$SD/autoreview.armed.lock" ]] && ok "the foreign lock still exists" || bad "deleted a lock this hook never owned"
+[[ "$(cat "$SD/autoreview.armed.lock/owner" 2>/dev/null)" == "someone-elses-token" ]] \
+  && ok "and its owner token is untouched" || bad "foreign owner token overwritten"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+# The interleaving the token actually defends against: our lock is stolen and
+# REPLACED while we hold it, and on releasing we must not delete the
+# replacement. It cannot be produced by timing from outside, so it is injected
+# at the post-lock seam — the same approach cleanup.sh uses for its re-check.
+cat > "$T/steal-lock.sh" <<'STEAL'
+d="$1.lock"
+rm -rf "$d"; mkdir -p "$d"; printf 'replacement-owner' > "$d/owner"
+STEAL
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work for the steal test" >> f.txt
+CC_STOP_TEST_POST_LOCK_HOOK="$T/steal-lock.sh" run_hook
+[[ "$(cat "$SD/autoreview.armed.lock/owner" 2>/dev/null)" == "replacement-owner" ]] \
+  && ok "a lock replaced under us survives our release" || bad "released a replacement owner's lock"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== arming and disarming go through the same mutex as the hook =="
+# They rewrite the same whole file the hook's three writers do. Straight from a
+# command snippet they were outside the mutex, so a turn-end hook could
+# overwrite a fresh arming with the previous cycle's counters, or put back a
+# gate the user had just switched off.
+GSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/gate-state.sh"
+AF="$SD/gs-test.armed"
+rm -f "$AF"; rm -rf "$AF.lock"
+printf 'branch=main\nthread=t\ncap=3\n' | bash "$GSH" write "$AF" >/dev/null 2>&1
+[[ "$(sed -n 's/^cap=//p' "$AF" 2>/dev/null)" == "3" ]] && ok "write creates the armed file" || bad "gate-state write did not land"
+mkdir -p "$AF.lock"; printf 'held-elsewhere' > "$AF.lock/owner"
+printf 'branch=main\nthread=t\ncap=99\n' | bash "$GSH" write "$AF" >/dev/null 2>&1; GRC=$?
+[[ "$GRC" -eq 2 ]] && ok "a locked-out write exits 2" || bad "locked-out write rc=$GRC"
+[[ "$(sed -n 's/^cap=//p' "$AF" 2>/dev/null)" == "3" ]] && ok "and the previous state is intact" || bad "armed file overwritten without the lock"
+bash "$GSH" remove "$AF" >/dev/null 2>&1; GRC=$?
+[[ "$GRC" -eq 2 && -f "$AF" ]] && ok "a locked-out remove exits 2 and disarms nothing" || bad "removed the armed file without the lock (rc=$GRC)"
+[[ "$(cat "$AF.lock/owner" 2>/dev/null)" == "held-elsewhere" ]] && ok "and the foreign lock is left alone" || bad "gate-state released a lock it did not own"
+rm -rf "$AF.lock"
+bash "$GSH" remove "$AF" >/dev/null 2>&1
+[[ ! -f "$AF" ]] && ok "remove disarms once the lock is free" || bad "gate-state remove did not disarm"
+[[ -z "$(ls -d "$AF".* 2>/dev/null)" ]] && ok "and leaves no lock or temp behind" || bad "gate-state leftovers: $(ls -d "$AF".* 2>/dev/null)"
+
 echo "== a stale lock is stolen, but only the one that was measured stale =="
 # A blind `rm -rf` deleted whatever was there, so a writer preempted between the
 # age check and the removal came back and deleted the REPLACEMENT owner's fresh
@@ -973,7 +1100,12 @@ PFP="$(fp_now docs/plans docs/PLANS)"
 arm_plan_fp main plan-main 2 0 0 "$PFP"
 echo "# plan v1" > docs/plans/p.md
 expect_block "changed plan doc -> block"
-printf 'REPLY:\n  stress-tested\n' > "$SD/plan-main.log"      # a dispatch appended
+# A dispatch appended — with the plan snapshot the driver writes beside it for
+# the armed plan thread. Without it the fixture described growth no 0.9 driver
+# could have produced, and the gate refuses to release on that: it cannot tell
+# a stress-test of the current plan from one of a plan since edited.
+printf 'REPLY:\n  stress-tested\n' > "$SD/plan-main.log"
+printf '%s\n' "$(fp_now docs/plans docs/PLANS)" > "$SD/plan-main.dispatch-fp-plan"
 expect_allow "post-arming dispatch releases"
 [[ -n "$(sed -n 's/^released_fp=//p' "$SD/autoplan.armed")" ]] && ok "autoplan records released_fp" || bad "autoplan release not recorded"
 expect_allow "no further plan change -> still allow"

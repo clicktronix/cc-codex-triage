@@ -144,10 +144,22 @@ log_size() { # $1=thread — current byte size of the thread log, 0 if absent
 # own fallback) — proceeding unserialized is what lost the increments.
 # A lock older than 30s is stale by construction — nothing here holds it for
 # more than a few file operations.
+# Unique per process, and not just the PID: PIDs are recycled, and the whole
+# point of the token is telling OUR lock from a replacement that happens to be
+# held by a process with the same number.
+ARMED_LOCK_TOKEN="$$.${RANDOM}${RANDOM}"
+
 armed_lock() { # $1=armed file → 0 if held
   local d="$1.lock" i=0 now m1 m2
   while [ "$i" -lt 25 ]; do
-    if mkdir "$d" 2>/dev/null; then return 0; fi
+    if mkdir "$d" 2>/dev/null; then
+      printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null || true
+      # Test seam, same pattern as cleanup.sh's post-lock hook: the interleaving
+      # the owner token defends against — our lock stolen and REPLACED while we
+      # hold it — cannot be produced by timing from outside.
+      [ -n "${CC_STOP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_STOP_TEST_POST_LOCK_HOOK"
+      return 0
+    fi
     now="$(date +%s 2>/dev/null)" || return 1
     m1="$(_lock_mtime "$d")"
     if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
@@ -172,7 +184,18 @@ armed_lock() { # $1=armed file → 0 if held
   done
   return 1
 }
-armed_unlock() { rm -rf "$1.lock" 2>/dev/null; }
+armed_unlock() { # release ONLY our own lock
+  # An unconditional `rm -rf` was a second way to hand two writers the same
+  # lock: a holder that stalled past the staleness window gets its lock stolen
+  # and replaced, and on resuming it deleted the REPLACEMENT owner's lock. The
+  # mtime guard on the steal cannot help there — the danger is the original
+  # owner, not the stealer. A token that does not match means the lock is no
+  # longer ours, so leaving it costs at most one staleness window; deleting it
+  # costs mutual exclusion.
+  local d="$1.lock"
+  [ "$(cat "$d/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ] || return 0
+  rm -rf "$d" 2>/dev/null
+}
 _lock_mtime() { # $1=lock dir — GNU first, per the stat-probe rule above
   local m
   m="$(stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null)" || return 1
@@ -314,7 +337,13 @@ reviewed_fingerprint() { # $1=thread $2=fallback — what Codex actually looked 
   # the log markers exist to close.
   [[ "$v" == "AMBIGUOUS" ]] && { printf 'AMBIGUOUS'; return 0; }
   [[ -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
-  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="$2"   # SHA-1 or SHA-256 object id
+  # No marker and no usable sidecar means NOTHING records what was dispatched.
+  # Falling back to the caller's Stop-time fingerprint here was the original hole
+  # in its last hiding place: review state A, lose both records, edit to B before
+  # Stop, and B is stamped approved though it was never sent anywhere. Answer
+  # AMBIGUOUS instead and let the caller keep blocking — the next dispatch stamps
+  # its own record and settles it, so this costs a round, not a deadlock.
+  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="AMBIGUOUS"   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
 }
 
@@ -430,10 +459,31 @@ if is_num "${NOW:-}"; then
     [[ "${#armed_at}" -le 12 ]] || continue   # absurd length would overflow bash arithmetic
     [[ "$armed_at" -le "$NOW" ]] || continue  # future timestamp → TTL skipped
     [[ $(( NOW - armed_at )) -gt "$GATE_TTL" ]] || continue
-    if rm -f "$f" 2>/dev/null && [[ ! -e "$f" ]]; then
+    # Deleting the file is a mutation of armed state like any other, so it takes
+    # the same lock: without it, an expiry could land between a fresh arming's
+    # write and its first read and silently discard it. Re-read armed_at inside
+    # the lock — a re-arm that happened while we waited must not be expired on
+    # the strength of the value we measured outside.
+    if armed_lock "$f"; then
+      # Re-read inside the lock: a re-arm that happened while we waited must not
+      # be expired on the strength of the value measured outside it.
+      armed_at="$(raw_field "$f" armed_at)"
+      if ! is_num "$armed_at" || [[ "${#armed_at}" -gt 12 ]] || [[ "$armed_at" -gt "$NOW" ]] \
+         || [[ $(( NOW - armed_at )) -le "$GATE_TTL" ]]; then
+        armed_unlock "$f"; continue              # re-armed while we waited
+      fi
+      rm -f "$f" 2>/dev/null
+      armed_unlock "$f"
+    fi
+    # Whether the lock was unavailable or the removal failed, the outcome is the
+    # same and must be the same: the file is still there, so treat this gate as
+    # absent for this turn rather than letting an expired gate block. (An
+    # unwritable state dir defeats the lock first, since the lock is a mkdir in
+    # that same dir — one message covers both.)
+    if [[ ! -e "$f" ]]; then
       echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) — removed; re-arm with /$kind on." >&2
     else
-      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) but could not be removed (state dir not writable?) — ignoring it for this turn; re-arm with /$kind on." >&2
+      echo "$kind gate expired after 14 days (armed $(epoch_date "$armed_at")) but could not be removed (state dir not writable, or its lock is held) — ignoring it for this turn; re-arm with /$kind on." >&2
       case "$kind" in autoreview) AR_TTL_DEAD=1 ;; autoplan) AP_TTL_DEAD=1 ;; esac
     fi
   done
@@ -498,15 +548,25 @@ if [[ "$AR_LIVE" -eq 1 ]]; then
         # post-arming round ran. No .rounds-based second check — that counter is
         # reset by /thread-new, so it can both fake a run (reset alone changes
         # it) and mask one (reset + one run collides with the snapshot).
-        # An APPROVE whose record carries no fingerprint AND has a later dispatch
-        # behind it cannot be tied to any state: the sidecar describes that later
-        # dispatch. Releasing anyway would stamp the newest bytes approved on the
-        # strength of an older verdict. Demote it to no-verdict so the gate keeps
-        # blocking — the next dispatch stamps its own record and settles it.
+        # An APPROVE that cannot be tied to a dispatched state — no fingerprint
+        # in its own record and no sidecar that still describes it — approves
+        # nothing identifiable. Releasing anyway would stamp whatever the
+        # worktree holds NOW, which is how unreviewed bytes got approved in the
+        # first place. Demote it to no-verdict so the gate keeps blocking; the
+        # next dispatch stamps its own record and settles it.
         if [[ "$verdict" == "APPROVE" ]]; then
           ar_released="$(reviewed_fingerprint "$thread" "$ar_fp" "" "$log_off")"
+          # A pre-0.9 armed file has no fingerprint model at all — it keeps 0.8
+          # semantics until its first release, which is the documented upgrade
+          # path. Refusing there would block every such gate to its cap on
+          # upgrade, so the Stop-time state stands and the file adopts the cycle
+          # model from this release on. The refusal below is for gates that ARE
+          # running the cycle model and still cannot say what was dispatched.
+          if [[ "$ar_released" == "AMBIGUOUS" && -z "$(gate_baseline "$AR")" ]]; then
+            ar_released="$ar_fp"
+          fi
           if [[ "$ar_released" == "AMBIGUOUS" ]]; then
-            echo "autoreview: the APPROVE on thread $thread predates fingerprint records and a later dispatch has replaced the snapshot, so what it approved cannot be established — not releasing. Re-review to settle it." >&2
+            echo "autoreview: the APPROVE on thread $thread cannot be tied to a dispatched state (no fingerprint in its record, and no sidecar that still describes it), so what it approved cannot be established — not releasing. Re-review to settle it." >&2
             verdict="UNATTRIBUTABLE_APPROVE"
           fi
         fi
@@ -563,19 +623,34 @@ if [[ "$AP_LIVE" -eq 1 ]]; then
         # At least one dispatch on the plan thread this cycle — release, and
         # record the plan state it covered plus the new log baseline, so the
         # NEXT plan edit needs its OWN dispatch rather than coasting on this one.
-        # The PLAN-SCOPED snapshot the driver takes for this thread — not the
-        # whole-tree one, which could never compare equal to a pathspec
-        # fingerprint and would block every turn to the cap. Falls back to the
-        # Stop-time fingerprint when no snapshot exists (older state, or a
-        # thread the driver did not recognise as the armed plan thread).
+        # The PLAN-SCOPED snapshot for this thread — not the whole-tree one,
+        # which could never compare equal to a pathspec fingerprint and would
+        # block every turn to the cap.
         ap_released="$(reviewed_fingerprint "$thread" "$ap_fp" plan "$log_off")"
-        rebaseline_cycle "$AP" "$ap_released" "$thread" || true   # diagnoses itself
-        # Plan edits made AFTER the releasing dispatch are not covered by it, so
-        # open the next cycle now rather than ending the turn on them.
-        if [[ -n "$ap_released" && -n "$ap_fp" && "$ap_released" != "$ap_fp" ]]; then
-          nblocks="$(raw_field "$AP" blocks)"; is_bounded_num "$nblocks" || nblocks=0
-          if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$nblocks")"; then
-            emit_block "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
+        # Same upgrade carve-out as autoreview: a pre-0.9 armed file keeps 0.8
+        # semantics until its first release.
+        if [[ "$ap_released" == "AMBIGUOUS" && -z "$(gate_baseline "$AP")" ]]; then
+          ap_released="$ap_fp"
+        fi
+        if [[ "$ap_released" == "AMBIGUOUS" ]]; then
+          # The log grew, but nothing records which plan state that growth was
+          # dispatched against. Releasing would re-baseline to whatever the plan
+          # documents hold NOW — including edits made after the dispatch, which
+          # nobody stress-tested. Block instead; the next dispatch stamps its own
+          # record. Same reasoning as the autoreview side.
+          echo "autoplan: the plan thread grew, but nothing records which plan state that dispatch saw (no fingerprint in the record, no usable sidecar) — not releasing. Dispatch again to settle it." >&2
+          if [[ "$blocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$blocks")"; then
+            emit_block "autoplan armed: the plan thread has grown, but nothing records which plan state that dispatch covered, so the current plan cannot be treated as stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
+          fi
+        else
+          rebaseline_cycle "$AP" "$ap_released" "$thread" || true   # diagnoses itself
+          # Plan edits made AFTER the releasing dispatch are not covered by it, so
+          # open the next cycle now rather than ending the turn on them.
+          if [[ -n "$ap_released" && -n "$ap_fp" && "$ap_released" != "$ap_fp" ]]; then
+            nblocks="$(raw_field "$AP" blocks)"; is_bounded_num "$nblocks" || nblocks=0
+            if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$nblocks")"; then
+              emit_block "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
+            fi
           fi
         fi
       elif [[ "$blocks" -ge "$cap" ]]; then
