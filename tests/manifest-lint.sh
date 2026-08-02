@@ -19,9 +19,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+CC_TEST_QUIET=1   # 130+ structural checks per run: the count is the signal
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 check_manifest() { # $1=file  $2..=required frontmatter keys
   local f="$1"; shift
@@ -111,6 +110,4 @@ for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
 done
 
-echo
-echo "PASS=$PASS FAIL=$FAIL"
-[[ "$FAIL" -eq 0 ]]
+summary

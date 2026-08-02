@@ -58,13 +58,15 @@ Two lines each, so the copies are cheap; what drifts is the convention —
 
 **Fix:** `tests/lib.sh` with `ok`/`bad`/`summary`, sourced by all five.
 
-## Known limitations (user-visible, documented rather than fixed)
+## Known limitations (documented rather than fixed)
 
-- **Log rotation can hide a verdict.** The cycle cut is a byte offset, and
-  rotation is inferred only when the current log is *smaller* than it. If the
-  rotated-in content is equal or larger, parsing starts mid-log and a valid
-  verdict is missed until the cap releases the cycle. Fails toward blocking,
-  never toward a false release. A fix needs a log generation stored beside the
-  cut. Needs a >1 MiB thread log to trigger.
 - **Gitignored files are outside every fingerprint**, deliberately: a gate
   firing on `.env` or build output would be unusable.
+
+## Status
+
+All four refactors above were implemented on 2026-08-02, along with the log
+rotation limitation this document originally listed (the driver now counts
+rotations in `<thread>.log-gen`, and a changed count makes the gate parse the
+whole current log — safe, because rotation precedes the append). Kept as the
+record of why each was done.

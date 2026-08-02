@@ -46,8 +46,13 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
    # Written by the shared script the hook itself calls, never hand-rolled.
    FP=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh")
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
-   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
-     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" \
+   # log_gen_at_arming: how many times the driver has rotated this thread's log.
+   # The cut above is a byte offset into the log as it is NOW, so a later
+   # rotation makes it meaningless; a changed generation tells the hook to parse
+   # the whole current log instead.
+   LOG_GEN=$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null | tr -cd '0-9'); LOG_GEN=${LOG_GEN:-0}
+   printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
+     "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$LOG_GEN" "$(date +%s)" "$FP" \
      | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoreview.armed" || exit 1
    echo "autoreview armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Is there already work to review on this branch?

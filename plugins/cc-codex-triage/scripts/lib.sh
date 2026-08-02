@@ -26,6 +26,48 @@ _mtime_epoch() {
   stat -f '%m' "$1" 2>/dev/null
 }
 
+# Per-file mkdir mutex for armed-gate state. Every writer rewrites the WHOLE
+# file, so an unserialized one drops what a concurrent writer just put there.
+# The Stop hook keeps its OWN copy — it must stay sourceless — so there are two
+# implementations, not one per script. Keep them in step.
+#
+# The token is per-process AND random: PIDs are recycled, and it has to tell our
+# lock from a replacement. A lock older than 30 s is stale by construction; the
+# steal is gated on an unchanged mtime (a replacement is newer) and done with an
+# atomic `mv`, and release only ever removes a lock we still own — an owner that
+# stalled past the window and resumed must not delete its replacement's.
+ARMED_LOCK_TOKEN="$$.${RANDOM:-0}${RANDOM:-0}"
+
+armed_lock() {   # $1=armed file -> 0 if held
+  local d="$1.lock" i=0 now m1 m2
+  while [ "$i" -lt 25 ]; do
+    if mkdir "$d" 2>/dev/null; then
+      printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null || true
+      return 0
+    fi
+    if [ "$(( i % 5 ))" -eq 0 ]; then
+      now="$(date +%s 2>/dev/null)" || return 1
+      m1="$(_mtime_epoch "$d")"
+      case "${m1:-}" in ''|*[!0-9]*) m1="" ;; esac
+      if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
+        m2="$(_mtime_epoch "$d")"
+        if [ "$m1" = "$m2" ] && mv "$d" "$d.stale.$$" 2>/dev/null; then
+          rm -rf "$d.stale.$$" 2>/dev/null
+        fi
+        i=$((i+1)); continue
+      fi
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+    i=$((i+1))
+  done
+  return 1
+}
+
+armed_unlock() { # $1=armed file — releases ONLY our own lock
+  [ "$(cat "$1.lock/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ] || return 0
+  rm -rf "$1.lock" 2>/dev/null
+}
+
 # The code state a gate compares against: what it last RELEASED, else the state
 # at arming. Empty for a pre-0.9 armed file, which uses the dirty-tree test
 # until its first release. Mirrors gate_baseline() in hooks/stop-hook.sh, which

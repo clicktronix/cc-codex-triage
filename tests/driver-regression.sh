@@ -3,6 +3,7 @@
 # on PATH emits a canned JSONL stream and writes the -o file.
 # Usage: bash tests/driver-regression.sh   (exit 0 = all pass)
 set -u
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 DRIVER="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/codex-thread.sh"
 [[ -f "$DRIVER" ]] || { echo "driver not found: $DRIVER"; exit 1; }
@@ -64,9 +65,6 @@ git init -q -b main . && git config user.email t@t.t && git config user.name t
 echo '.claude/codex-threads/' > .gitignore
 echo x > f.txt && git add -A && git commit -qm init
 
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok: $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 SD=.claude/codex-threads
 UUID='0a1b2c3d-1111-4222-8333-444455556666'
 
@@ -133,6 +131,24 @@ echo "prior" > "$SD/t1.log"
 CC_CODEX_TRIAGE_LOG_CAP_BYTES=08 run t1
 [[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "reply survives LOG_CAP=08" || bad "LOG_CAP=08 (rc=$RC out=$OUT)"
 unset CC_CODEX_TRIAGE_LOG_CAP_BYTES
+
+echo "== rotation moves the log aside and counts itself =="
+# The gates cut their verdict window at a byte offset into the log. Rotation
+# makes that offset point into unrelated content, and comparing sizes only
+# catches it when the replacement is smaller — so the driver counts rotations
+# and the hook parses from 0 whenever the count has moved.
+rm -rf "$SD"
+run rot >/dev/null 2>&1                       # create the thread
+head -c 4000 /dev/zero | tr '\0' 'x' > "$SD/rot.log"
+[[ ! -f "$SD/rot.log-gen" ]] && ok "no generation file before the first rotation" || bad "log-gen exists too early"
+CC_CODEX_TRIAGE_LOG_CAP_BYTES=1000 run rot
+[[ -f "$SD/rot.log.1" ]] && ok "the oversized log is moved aside" || bad "no rotation at the cap"
+[[ "$(cat "$SD/rot.log-gen" 2>/dev/null)" == "1" ]] && ok "and the rotation is counted" || bad "generation not bumped: $(cat "$SD/rot.log-gen" 2>/dev/null)"
+head -c 4000 /dev/zero | tr '\0' 'x' > "$SD/rot.log"
+CC_CODEX_TRIAGE_LOG_CAP_BYTES=1000 run rot
+[[ "$(cat "$SD/rot.log-gen" 2>/dev/null)" == "2" ]] && ok "each rotation advances it" || bad "second rotation: $(cat "$SD/rot.log-gen" 2>/dev/null)"
+unset CC_CODEX_TRIAGE_LOG_CAP_BYTES
+rm -rf "$SD"
 
 echo "== UUID extraction tolerates spaces in codex JSON output =="
 rm -rf "$SD"
@@ -1221,6 +1237,4 @@ WOUT="$(bash "$WATCH" p8 "$P8DEAD" 0 2>&1)"; WRC=$?
 { [[ "$WRC" -eq 4 ]] && grep -q 'may not belong to pid' <<<"$WOUT"; } \
   && ok "UNKNOWN output disclaims sidecar attribution" || bad "no attribution note (rc=$WRC out=$WOUT)"
 
-echo ""
-echo "PASS=$PASS FAIL=$FAIL"
-[[ "$FAIL" -eq 0 ]]
+summary

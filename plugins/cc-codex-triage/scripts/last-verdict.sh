@@ -13,12 +13,16 @@
 # Selecting verdict and fingerprint independently was a hole: an APPROVE for
 # state A followed by a verdict-less dispatch B released B, because the
 # fingerprint came from a sidecar B had overwritten.
-#   - record predating `fp=`, and it is the LATEST record  -> print nothing, the
+#   - record predating `fp=`, and it is the LATEST record  -> exit 1, and the
 #     caller may fall back to the sidecar (it still describes that dispatch);
-#   - record predating `fp=` with a LATER record behind it -> print AMBIGUOUS.
-#     The sidecar now describes that later dispatch, so the pair is unknowable.
-#     Callers must NOT release on it: substituting any fingerprint there is the
-#     same hole in legacy clothing.
+#   - record predating `fp=` with a LATER record behind it -> exit 2. The
+#     sidecar now describes that later dispatch, so the pair is unknowable, and
+#     callers must NOT release: substituting any fingerprint there is the same
+#     hole in legacy clothing.
+#
+# EXIT: 0 a value was printed; 1 nothing to report; 2 cannot be attributed. A
+# status, not a reserved word on stdout — one channel carrying both the payload
+# and its own failure mode is what made every caller string-compare a hash.
 # --fp-plan-latest ignores verdicts and returns the plan fingerprint of the LAST
 # post-cut record: the plan gate releases on log GROWTH, so its releasing
 # dispatch is the most recent one, verdict or not.
@@ -43,7 +47,7 @@ case "${3:-}" in
   --fp)             WANT=fp ;;
   --fp-plan-latest) WANT=fpplanlatest ;;
 esac
-[ -f "$LOG" ] || exit 0
+[ -f "$LOG" ] || exit 1
 case "$OFF" in ''|*[!0-9]*) OFF=0 ;; esac
 
 SIZE="$(wc -c 2>/dev/null < "$LOG" | tr -d ' ')"
@@ -78,13 +82,13 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk -v want="$WANT" '
   }
   END {
     # The latest-record lookup is verdict-independent by design.
-    if (want == "fpplanlatest") { if (last_fpplan != "") print last_fpplan; exit }
-    if (v == "") exit
+    if (want == "fpplanlatest") { if (last_fpplan == "") exit 1; print last_fpplan; exit 0 }
+    if (v == "") exit 1
     if (want == "fp") {
-      if (v_fp != "") { print v_fp; exit }
-      if (rec > v_rec) print "AMBIGUOUS"    # a later record owns the sidecar now
-      exit
+      if (v_fp != "") { print v_fp; exit 0 }
+      if (rec > v_rec) exit 2      # a later record owns the sidecar now
+      exit 1
     }
-    print v
+    print v; exit 0
   }
 '

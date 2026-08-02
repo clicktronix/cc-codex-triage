@@ -1025,6 +1025,16 @@ if ! $ONESHOT; then
     LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
     if [[ -n "$LOG_SIZE" && "$LOG_SIZE" -gt "$LOG_CAP_BYTES" ]]; then
       mv -f "$LOG_FILE" "${LOG_FILE}.1"
+      # Bump the generation so a gate can tell rotation from "the log shrank".
+      # Its cut is a byte offset into the PREVIOUS log; after rotation every
+      # byte here is newer than that cut, so the gate parses from 0 instead of
+      # from an offset that now points into unrelated content.
+      # No pipeline: `cat` on a missing file fails, and under `pipefail` that
+      # took the whole driver down with it AFTER a paid dispatch.
+      _gen="$(cat "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true)"
+      _gen="${_gen//[^0-9]/}"
+      [[ -n "$_gen" ]] || _gen=0
+      printf '%s\n' "$(( _gen + 1 ))" > "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true
     fi
   fi
   # Log format contract: the column-0 markers ([timestamp], PROMPT:, REPLY:,

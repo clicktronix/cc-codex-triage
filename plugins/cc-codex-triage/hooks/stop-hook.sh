@@ -117,6 +117,13 @@ raw_field() { # $1=file $2=key — REQUIRED fields: empty when missing or empty
 
 has_field() { _field "$1" "$2"; [ "$HAS" -eq 1 ]; } # $1=file $2=key
 
+log_gen() { # $1=thread — how many times the driver has rotated this log
+  local g
+  g="$(cat "$STATE_DIR/$1.log-gen" 2>/dev/null | tr -cd '0-9')"
+  is_bounded_num "$g" || g=0
+  printf '%s' "$g"
+}
+
 log_size() { # $1=thread — current byte size of the thread log, 0 if absent
   local s
   s="$(wc -c 2>/dev/null < "$STATE_DIR/$1.log")"
@@ -291,20 +298,22 @@ reviewed_fingerprint() { # $1=thread [$2="plan"] [$3=cycle cut]
   # What the dispatch that earned the verdict actually saw, not the worktree at
   # turn-end. In order: the `fp=` stamped into the verdict's own log record;
   # else <thread>.dispatch-fp, the LATEST dispatch, which is right only while
-  # that IS the verdict's dispatch. Neither -> AMBIGUOUS, returned verbatim so
-  # the caller refuses to release. Full rule: scripts/last-verdict.sh.
+  # that IS the verdict's dispatch. Full rule: scripts/last-verdict.sh.
   #
   # $2="plan" selects the plan-scoped snapshot: comparing a whole-tree hash
   # against a pathspec hash can never be equal, and re-blocked to the cap.
-  local v f="$STATE_DIR/$1.dispatch-fp" flag="--fp"
+  #
+  # RETURNS 0 with the hash, or 2 when nothing records what was dispatched —
+  # a status, not a reserved word on stdout. The caller must not release on 2:
+  # it costs a round, not a deadlock, since the next dispatch settles it.
+  local v f="$STATE_DIR/$1.dispatch-fp" flag="--fp" rc
   # The plan gate releases on log GROWTH, so its releasing dispatch is the LAST.
   if [[ "${2:-}" == "plan" ]]; then f="$STATE_DIR/$1.dispatch-fp-plan"; flag="--fp-plan-latest"; fi
-  v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${3:-0}" "$flag" 2>/dev/null | tr -d '[:space:]')"
-  [[ "$v" == "AMBIGUOUS" ]] && { printf 'AMBIGUOUS'; return 0; }
-  [[ -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
-  # Nothing records what was dispatched: keep blocking rather than stamping the
-  # current tree. Costs a round, not a deadlock — the next dispatch settles it.
-  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || v="AMBIGUOUS"   # SHA-1 or SHA-256 object id
+  v="$(bash "$VERDICT_SH" "$STATE_DIR/$1.log" "${3:-0}" "$flag" 2>/dev/null)"; rc=$?
+  v="${v//[[:space:]]/}"
+  [[ "$rc" -eq 2 ]] && return 2
+  [[ "$rc" -eq 0 && -n "$v" ]] || v="$(head -1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$v" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || return 2   # SHA-1 or SHA-256 object id
   printf '%s' "$v"
 }
 
@@ -356,9 +365,10 @@ rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cy
     echo "cc-codex-triage: released, but the armed-state lock could not be acquired so the release was not recorded — the next turn re-evaluates from the previous baseline." >&2
     return 1
   fi
-  if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+  if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
          echo "released_fp=$fp"
          echo "log_bytes_at_arming=$size"
+         echo "log_gen_at_arming=$(log_gen "$3")"
          echo "blocks=0"
        } | armed_rewrite "$f"; then
     armed_unlock "$f"
@@ -463,121 +473,111 @@ if [[ "$AP_LIVE" -eq 1 ]]; then
   [[ "$AP_OPEN" -eq 1 ]] || consume_idle_verdicts "$AP" "$ap_thread"
 fi
 
-# ── /autoreview ─────────────────────────────────────────────────────────────
-if [[ "$AR_OPEN" -eq 1 ]]; then
-  thread="$ar_thread"
-  lens="$(read_field "$AR" lens correctness)"
-  is_review_lens "$lens" || lens=correctness
-  cap="$(raw_field "$AR" cap)"
-  blocks="$(raw_field "$AR" blocks)"
-  log_off="$(raw_field "$AR" log_bytes_at_arming)"
-  # A missing offset is NOT a zero offset: a pre-0.5 armed file lacks the
-  # field, and defaulting to 0 would scan the whole log — re-opening the
-  # stale-APPROVE hole exactly on upgrade. Missing field = fail open.
-  if ! has_field "$AR" log_bytes_at_arming; then
-    echo "autoreview: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoreview on." >&2
-  elif ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
-    echo "autoreview: malformed counters in $AR — failing open. Re-arm with /autoreview on." >&2
-  else
-    # The ONE canonical parser, which /status also calls — two copies
-    # disagreeing would mean /status reporting an APPROVE while the gate
-    # keeps blocking on the same log. Availability is settled at VERDICT_SH.
-    verdict="$(bash "$VERDICT_SH" "$STATE_DIR/$thread.log" "$log_off" 2>/dev/null)"
-    # The cut makes the verdict self-sufficient: an APPROVE can only come from
-    # content appended after arming. No .rounds check — /thread-new resets it.
-    # An APPROVE that cannot be tied to a dispatched state approves nothing
-    # identifiable, and releasing would stamp whatever the worktree holds NOW.
-    # A pre-0.9 armed file is exempt: it has no fingerprint model, and keeps 0.8
-    # semantics until its first release (the documented upgrade path).
-    ar_release=false
-    if [[ "$verdict" == "APPROVE" ]]; then
-      ar_released="$(reviewed_fingerprint "$thread" "" "$log_off")"
-      [[ "$ar_released" == "AMBIGUOUS" && -z "$(gate_baseline "$AR")" ]] && ar_released="$ar_fp"
-      if [[ "$ar_released" == "AMBIGUOUS" ]]; then
-        echo "autoreview: the APPROVE on thread $thread cannot be tied to a dispatched state (no fingerprint in its record, and no sidecar that still describes it), so what it approved cannot be established — not releasing. Re-review to settle it." >&2
-      else
-        ar_release=true
-      fi
-    fi
-    if $ar_release; then
-      # APPROVE earned this cycle — release, and record WHAT it approved.
-      # Without the record, this one verdict would keep releasing every
-      # later turn no matter how much new unreviewed code was written.
-      rebaseline_cycle "$AR" "$ar_released" "$thread" || true   # diagnoses itself
-      # The approval covers the state Codex saw. If the worktree has moved
-      # past it — code written after the verdict arrived, in this same turn
-      # — the next cycle is open ALREADY. Open it now rather than letting
-      # the turn end and catching it only if there happens to be another.
-      if [[ -n "$ar_released" && -n "$ar_fp" && "$ar_released" != "$ar_fp" ]]; then
-        nblocks="$(raw_field "$AR" blocks)"; is_bounded_num "$nblocks" || nblocks=0
-        if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AR" "$nblocks")"; then
-          emit_block "autoreview armed: the APPROVE covers the state that was reviewed, but the code changed after it — review the new changes. Read $CMD_DIR/review.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoreview command (off)."
-        fi
-      fi
-    elif [[ "$blocks" -ge "$cap" ]]; then
-      echo "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." >&2
-    elif n="$(bump_blocks "$AR" "$blocks")"; then
-      emit_block "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks, and a default loop here would multiply cost). Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)."
-    else
-      echo "autoreview: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
-    fi
-fi
-fi
+# ── the gate ────────────────────────────────────────────────────────────────
+# Both gates run the SAME algorithm and differ in ONE step: what counts as a
+# release — an APPROVE after the cut, versus any growth of the plan thread's
+# log. Written out twice they drifted (the unattributable refusal grew its own
+# cap test on one side only), so the shape lives here once and the difference
+# is a two-line predicate.
+gate_msg() { # $1=kind $2=slot — expanded against the caller's locals
+  case "$1:$2" in
+    autoreview:moved)  printf '%s' "autoreview armed: the APPROVE covers the state that was reviewed, but the code changed after it — review the new changes. Read $CMD_DIR/review.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoreview command (off)." ;;
+    autoreview:block)  printf '%s' "autoreview armed: there are unverified code changes. Read $CMD_DIR/review.md and follow its steps to review your changes with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks, and a default loop here would multiply cost). Validate each finding against the code before applying it, and fix the neighborhood of valid ones, per skill codex-triage. Then finish the turn. Round $n/$cap. Disarm with the autoreview command (off)." ;;
+    autoreview:cap)    printf '%s' "autoreview: round cap ($cap) reached without APPROVE on thread $thread — letting the turn finish. See the thread log for open findings; disarm with /autoreview off or re-arm to continue." ;;
+    autoreview:unattr) printf '%s' "autoreview: the APPROVE on thread $thread cannot be tied to a dispatched state (no fingerprint in its record, and no sidecar that still describes it), so what it approved cannot be established — not releasing. Re-review to settle it." ;;
+    autoplan:moved)    printf '%s' "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)." ;;
+    autoplan:block)    printf '%s' "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks). Address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)." ;;
+    autoplan:cap)      printf '%s' "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." ;;
+    autoplan:unattr)   printf '%s' "autoplan: the plan thread grew, but nothing records which plan state that dispatch saw (no fingerprint in the record, no usable sidecar) — not releasing. Dispatch again to settle it." ;;
+  esac
+}
 
-# ── /autoplan ───────────────────────────────────────────────────────────────
-if [[ "$AP_OPEN" -eq 1 ]]; then
-  thread="$ap_thread"
-  lens="$(read_field "$AP" lens stress-test)"
-  is_plan_lens "$lens" || lens=stress-test
-  cap="$(raw_field "$AP" cap)"
-  blocks="$(raw_field "$AP" blocks)"
-  log_off="$(raw_field "$AP" log_bytes_at_arming)"
-  log_now="$(log_size "$thread")"
-  if ! has_field "$AP" log_bytes_at_arming; then
-    echo "autoplan: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /autoplan on." >&2
-  elif ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
-    echo "autoplan: malformed counters in $AP — failing open. Re-arm with /autoplan on." >&2
-  # Release when the thread log changed size since arming: ANY dispatch appends,
-  # and unlike .rounds the log is not touched by /thread-new. Known cap-bounded
-  # edge: a post-arming rotation leaving the log EXACTLY the snapshot size reads
-  # as "no dispatch" — fails toward blocking, never toward a false release.
-  elif [[ "$log_now" -ne "$log_off" ]]; then
-    # A dispatch happened this cycle — release, recording the plan state it
-    # covered and the new log baseline, so the NEXT plan edit needs its own.
-    ap_released="$(reviewed_fingerprint "$thread" plan "$log_off")"
-    # Same upgrade carve-out as autoreview: a pre-0.9 armed file keeps 0.8
-    # semantics until its first release.
-    if [[ "$ap_released" == "AMBIGUOUS" && -z "$(gate_baseline "$AP")" ]]; then
-      ap_released="$ap_fp"
-    fi
-    if [[ "$ap_released" == "AMBIGUOUS" ]]; then
-      # The log grew, but nothing records which plan state that growth was
-      # dispatched against. Releasing would re-baseline to whatever the plan
-      # documents hold NOW — including edits made after the dispatch, which
-      # nobody stress-tested. Block instead; the next dispatch stamps its own
-      # record. Same reasoning as the autoreview side.
-      echo "autoplan: the plan thread grew, but nothing records which plan state that dispatch saw (no fingerprint in the record, no usable sidecar) — not releasing. Dispatch again to settle it." >&2
-      if [[ "$blocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$blocks")"; then
-        emit_block "autoplan armed: the plan thread has grown, but nothing records which plan state that dispatch covered, so the current plan cannot be treated as stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
-      fi
+run_gate() { # $1=kind (autoreview|autoplan) $2=armed file $3=thread $4=current fp
+  local kind="$1" f="$2" thread="$3" fp="$4"
+  local lens cap blocks log_off released release=false earned=false fpmode="" nblocks n
+  case "$kind" in
+    autoreview) lens="$(read_field "$f" lens correctness)"; is_review_lens "$lens" || lens=correctness ;;
+    autoplan)   lens="$(read_field "$f" lens stress-test)"; is_plan_lens   "$lens" || lens=stress-test ;;
+  esac
+  cap="$(raw_field "$f" cap)"
+  blocks="$(raw_field "$f" blocks)"
+  log_off="$(raw_field "$f" log_bytes_at_arming)"
+  # The cut is a byte offset into the log as it was. Rotation makes that offset
+  # meaningless — it now points into unrelated content — and comparing sizes
+  # only catches it when the replacement is SMALLER, so a rotated-in log of
+  # equal or greater size hid every verdict before that point until the cap.
+  # The driver counts rotations; a changed count means "parse from 0", which is
+  # safe because rotation precedes the append, so everything in the current log
+  # is newer than the cut.
+  local gen_now gen_at
+  gen_now="$(log_gen "$thread")"
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at="$gen_now"    # pre-0.10 armed file: assume no rotation
+  [[ "$gen_now" == "$gen_at" ]] || log_off=0
+  # A missing offset is NOT a zero offset: a pre-0.5 armed file lacks the field,
+  # and defaulting to 0 would scan the whole log — re-opening the stale-APPROVE
+  # hole exactly on upgrade. Missing field = fail open.
+  if ! has_field "$f" log_bytes_at_arming; then
+    echo "$kind: armed file has no log_bytes_at_arming (pre-0.5 arming) — failing open. Re-arm with /$kind on." >&2
+    return 0
+  fi
+  if ! is_bounded_num "$cap" || ! is_bounded_num "$blocks" || ! is_bounded_num "$log_off"; then
+    echo "$kind: malformed counters in $f — failing open. Re-arm with /$kind on." >&2
+    return 0
+  fi
+
+  # THE difference.
+  #  autoreview: an APPROVE appended after the cut, read by the ONE canonical
+  #    parser /status also calls. The cut makes it self-sufficient — no .rounds
+  #    check, since /thread-new resets that counter.
+  #  autoplan: any growth of the thread log, since ANY dispatch appends and
+  #    /thread-new does not touch it. Known cap-bounded edge: a post-arming
+  #    rotation leaving the log EXACTLY the snapshot size reads as "no
+  #    dispatch" — fails toward blocking, never toward a false release.
+  if [[ "$kind" == autoreview ]]; then
+    [[ "$(bash "$VERDICT_SH" "$STATE_DIR/$thread.log" "$log_off" 2>/dev/null)" == "APPROVE" ]] && earned=true
+  else
+    fpmode=plan
+    [[ "$(log_size "$thread")" -ne "$log_off" ]] && earned=true
+  fi
+
+  # A release that cannot be tied to a dispatched state approves nothing
+  # identifiable and would stamp whatever the worktree holds NOW. A pre-0.9
+  # armed file is exempt: no fingerprint model, so it keeps 0.8 semantics until
+  # its first release (the documented upgrade path).
+  if $earned; then
+    if released="$(reviewed_fingerprint "$thread" "$fpmode" "$log_off")"; then
+      release=true
+    elif [[ -z "$(gate_baseline "$f")" ]]; then
+      released="$fp"; release=true
     else
-      rebaseline_cycle "$AP" "$ap_released" "$thread" || true   # diagnoses itself
-      # Plan edits made AFTER the releasing dispatch are not covered by it, so
-      # open the next cycle now rather than ending the turn on them.
-      if [[ -n "$ap_released" && -n "$ap_fp" && "$ap_released" != "$ap_fp" ]]; then
-        nblocks="$(raw_field "$AP" blocks)"; is_bounded_num "$nblocks" || nblocks=0
-        if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$AP" "$nblocks")"; then
-          emit_block "autoplan armed: the plan documents changed after the dispatch that released the last cycle, so the current plan has not been stress-tested. Read $CMD_DIR/plan.md and follow its steps with --once --thread $thread --lens $lens. Round $n/$cap. Disarm with the autoplan command (off)."
-        fi
+      echo "$(gate_msg "$kind" unattr)" >&2
+    fi
+  fi
+
+  if $release; then
+    # Record WHAT was released, or one verdict keeps releasing every later turn
+    # no matter how much new unreviewed work is written.
+    rebaseline_cycle "$f" "$released" "$thread" || true   # diagnoses itself
+    # If the tree has moved past what was released — written after the verdict
+    # arrived, in this same turn — the next cycle is open ALREADY. Open it now
+    # rather than ending the turn on it.
+    if [[ -n "$released" && -n "$fp" && "$released" != "$fp" ]]; then
+      nblocks="$(raw_field "$f" blocks)"; is_bounded_num "$nblocks" || nblocks=0
+      if [[ "$nblocks" -lt "$cap" ]] && n="$(bump_blocks "$f" "$nblocks")"; then
+        emit_block "$(gate_msg "$kind" moved)"
       fi
     fi
   elif [[ "$blocks" -ge "$cap" ]]; then
-    echo "autoplan: round cap ($cap) reached without a post-arming dispatch on thread $thread — letting the turn finish. Disarm with /autoplan off or re-arm." >&2
-  elif n="$(bump_blocks "$AP" "$blocks")"; then
-    emit_block "autoplan armed: plan documents changed but have not been stress-tested. Read $CMD_DIR/plan.md and follow its steps to stress-test the updated plan with --once --thread $thread --lens $lens (--once so this gate block is a SINGLE dispatch — the cap counts blocks). Address blocking objections, then finish the turn. Round $n/$cap. Disarm with the autoplan command (off)."
+    echo "$(gate_msg "$kind" cap)" >&2
+  elif n="$(bump_blocks "$f" "$blocks")"; then
+    emit_block "$(gate_msg "$kind" block)"
   else
-    echo "autoplan: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
+    echo "$kind: could not persist the blocks counter (state dir not writable?) — failing open; an unpersisted counter would bypass the cap into unlimited blocking." >&2
   fi
-fi
+}
+
+[[ "$AR_OPEN" -eq 1 ]] && run_gate autoreview "$AR" "$ar_thread" "$ar_fp"
+[[ "$AP_OPEN" -eq 1 ]] && run_gate autoplan   "$AP" "$ap_thread" "$ap_fp"
 
 allow

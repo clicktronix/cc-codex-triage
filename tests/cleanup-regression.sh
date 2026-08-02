@@ -2,6 +2,7 @@
 # Regression suite for scripts/cleanup.sh — synthetic state fixtures, no Codex.
 # Usage: bash tests/cleanup-regression.sh   (exit 0 = all pass)
 set -u
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 CLEANUP="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/cleanup.sh"
 [[ -f "$CLEANUP" ]] || { echo "cleanup script not found: $CLEANUP"; exit 1; }
@@ -16,9 +17,6 @@ echo '.claude/codex-threads/' > .gitignore
 echo x > f.txt && git add -A && git commit -qm init
 unset CLAUDE_PROJECT_DIR 2>/dev/null || true
 
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok: $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 SD=.claude/codex-threads
 
 OUT=""; RC=0
@@ -395,6 +393,4 @@ OUT="$( cd "$NONGIT" && CLAUDE_PROJECT_DIR="$NONGIT" bash "$CLEANUP" --apply 2>&
 [[ "$RC" -eq 7 ]] && ok "cleanup outside a repo -> exit 7" || bad "non-git cleanup rc=$RC out=$OUT"
 [[ -f "$NONGIT/.claude/codex-threads/z1.last-error.jsonl" ]] && ok "non-repo state untouched" || bad "non-repo state was moved"
 
-echo ""
-echo "PASS=$PASS FAIL=$FAIL"
-[[ "$FAIL" -eq 0 ]]
+summary

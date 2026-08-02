@@ -67,12 +67,6 @@ LICENSE                               # MIT
 
 ## Known limitations
 
-- **Log rotation can hide a verdict.** A cycle's verdict window is a byte offset
-  into the thread log, and rotation is inferred only when the log is *smaller*
-  than that offset. A rotated-in log of equal or greater size is parsed from the
-  offset, so a verdict before it is missed until the round cap releases the
-  cycle. It fails toward blocking, never toward a false release, and needs a
-  >1 MiB thread log to reach.
 - **Gitignored files are outside every gate fingerprint**, deliberately: a gate
   firing on `.env` or build output would be unusable.
 

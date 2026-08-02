@@ -2,6 +2,7 @@
 # Regression suite for hooks/stop-hook.sh. No Codex needed — synthetic state.
 # Usage: bash tests/hook-regression.sh   (exit 0 = all pass)
 set -u
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/hooks/stop-hook.sh"
 [[ -f "$HOOK" ]] || { echo "hook not found: $HOOK"; exit 1; }
@@ -11,9 +12,6 @@ ERR="$(mktemp "${TMPDIR:-/tmp}/cc-hook-err.XXXXXX")"   # OUTSIDE the test repo �
 trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T" "$ERR"' EXIT
 cd "$T"
 
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok: $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
 DEFAULT_INPUT='{"hook_event_name":"Stop"}'
 OUT=""; RC=0
@@ -338,15 +336,15 @@ rm -rf docs
 # and the suite has long since cd'd into the fixture repo.
 FPSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/gate-fingerprint.sh"
 fp_now()  { bash "$FPSH" "$@"; }
-arm_review_fp() { # branch thread cap blocks log_bytes fp
+arm_review_fp() { # branch thread cap blocks log_bytes fp [log_gen]
   mkdir -p "$SD"
-  printf 'branch=%s\nthread=%s\nlens=correctness\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoreview.armed"
+  printf 'branch=%s\nthread=%s\nlens=correctness\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\nfp_at_arming=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "${7:-0}" "$6" > "$SD/autoreview.armed"
 }
-arm_plan_fp() { # branch thread cap blocks log_bytes fp
+arm_plan_fp() { # branch thread cap blocks log_bytes fp [log_gen]
   mkdir -p "$SD"
-  printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
+  printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\nfp_at_arming=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "${7:-0}" "$6" > "$SD/autoplan.armed"
 }
 # One verdict at offset 0, plus the dispatch snapshot the driver ALWAYS writes
 # beside it: without it the fixture is a log the 0.9 driver cannot produce, and
@@ -355,6 +353,21 @@ reply_log() {
   printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"
   printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"
 }
+
+echo "== verdict parser: the exit-code contract =="
+# 0 a value, 1 nothing, 2 cannot be attributed. Status rather than a reserved
+# word on stdout, so no caller has to remember to string-compare a hash.
+VSH_C="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/last-verdict.sh"
+CLOG="$T/contract.log"
+printf 'REPLY:\n  APPROVE\n' > "$CLOG"
+bash "$VSH_C" "$CLOG" 0 >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "a verdict exits 0" || bad "verdict did not exit 0"
+printf 'REPLY:\n  nothing here\n' > "$CLOG"
+bash "$VSH_C" "$CLOG" 0 >/dev/null 2>&1; [[ $? -eq 1 ]] && ok "no verdict exits 1" || bad "missing verdict did not exit 1"
+bash "$VSH_C" "$T/does-not-exist.log" 0 >/dev/null 2>&1; [[ $? -eq 1 ]] && ok "an absent log exits 1" || bad "absent log did not exit 1"
+printf 'REPLY:\n  APPROVE\n' > "$CLOG"
+bash "$VSH_C" "$CLOG" 0 --fp >/dev/null 2>&1; [[ $? -eq 1 ]] && ok "a markerless LATEST record exits 1 (sidecar may still answer)" || bad "markerless latest record: wrong status"
+printf '[t1] mode=initial round=1\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n[t2] mode=resume round=2 fp=%s\nPROMPT:\n  p\nREPLY:\n  no verdict\n---\n' "$(printf 'a%.0s' $(seq 40))" > "$CLOG"
+bash "$VSH_C" "$CLOG" 0 --fp >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "a markerless verdict behind a later record exits 2" || bad "unattributable verdict: wrong status"
 
 echo "== verdict parser: the formats Codex actually writes =="
 VSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/last-verdict.sh"
@@ -1067,6 +1080,31 @@ expect_allow "and the released plan stays released"
 rm -f "$SD/autoplan.armed" "$SD/plan-main.log"
 rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+echo "== rotation does not hide a verdict when the new log is not smaller =="
+# The cut is a byte offset into the log as it WAS. Rotation makes it point into
+# unrelated content, and the size test only notices when the replacement is
+# smaller — so a rotated-in log of equal or greater size skipped every verdict
+# before that offset until the cap released the cycle.
+git add -A >/dev/null && git commit -qm "settle before rotation test" >/dev/null 2>&1
+rm -f "$SD/review-main.log-gen"
+BASE_FP="$(fp_now)"
+echo "work needing review" >> f.txt
+# A fresh log LARGER than the old cut, with the APPROVE before that byte.
+# The APPROVE record carries its fp= exactly as a real dispatch stamps it —
+# without it the refusal under test would be the unattributable one, not the cut.
+{ printf '[t] mode=resume thread=review-main round=9 fp=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$(fp_now)"
+  i=1; while [ "$i" -le 40 ]; do printf '[t] mode=resume thread=review-main round=%s\nPROMPT:\n  filler\nREPLY:\n  chatter\n---\n' "$i"; i=$((i+1)); done
+} > "$SD/review-main.log"
+arm_review_fp main review-main 3 0 120 "$BASE_FP"       # cut at byte 120: past the APPROVE
+expect_block "without a rotation, the cut still hides what precedes it"
+printf '1\n' > "$SD/review-main.log-gen"               # the driver rotated since arming
+expect_allow "a rotation makes the whole current log post-cut, and the verdict is seen"
+[[ "$(sed -n 's/^log_gen_at_arming=//p' "$SD/autoreview.armed")" == "1" ]] \
+  && ok "and the release records the generation it released at" || bad "log_gen_at_arming not recorded"
+expect_allow "which does not re-trigger on the next turn"
+rm -f "$SD/autoreview.armed" "$SD/review-main.log" "$SD/review-main.log-gen" "$SD/review-main.dispatch-fp"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== the plan scope has ONE definition, and everything follows it =="
 # The default lived in four files (hook, driver, /status, the arming command).
 # A change that misses one leaves the dirt predicate and the fingerprint
@@ -1113,6 +1151,4 @@ expect_block "NEXT plan edit needs its own dispatch (was: allow forever)"
 rm -f "$SD/autoplan.armed"
 rm -rf docs; git add -A >/dev/null; git commit -qm "cleanup" >/dev/null 2>&1
 
-echo ""
-echo "PASS=$PASS FAIL=$FAIL"
-[[ "$FAIL" -eq 0 ]]
+summary

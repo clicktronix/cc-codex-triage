@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 set -u
 LEDGER="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/ledger.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq absent"; exit 0; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-ledger.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 # The ledger hard-fails outside a git repo (exit 7, driver parity) — the
 # fixture must be a repo, exactly like every production caller.
-export CLAUDE_PROJECT_DIR="$T"; cd "$T"; git init -q -b main .; PASS=0; FAIL=0
-ok(){ PASS=$((PASS+1)); echo "  ok: $1"; }; bad(){ FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+export CLAUDE_PROJECT_DIR="$T"; cd "$T"; git init -q -b main .
 
 ( D="$(mktemp -d)"; cd "$D" && CLAUDE_PROJECT_DIR="$D" bash "$LEDGER" list x ) >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 7 ]] && ok "outside a git repo -> exit 7 (hard root anchoring)" || bad "non-git ledger rc=$rc"
@@ -38,4 +38,4 @@ bash "$LEDGER" list legacy >/dev/null; listrc=$?
 bash "$LEDGER" open legacy >/dev/null; openrc=$?
 [[ "$openrc" -eq 0 ]] && ok "open reads pre-0.7 record without error" || bad "open failed on pre-0.7 record (rc=$openrc)"
 
-echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
+summary
