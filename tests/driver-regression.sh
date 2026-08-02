@@ -1085,6 +1085,21 @@ sleep 0.3   # ensure the reply/status landed well before the watcher starts
 WOUT="$(bash "$WATCH" p4 "$DP4" "$OFF4" 2>&1)"; WRC=$?
 [[ "$WRC" -eq 0 ]] && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "instant child: watcher still reports DONE with the reply" || bad "instant-child watcher rc=$WRC out=$WOUT"
 
+echo "== the watcher trusts the status record over pid liveness =="
+# A zombie, or a PID the OS recycled, keeps `kill -0` succeeding for a dispatch
+# that already finished — the watcher would then wait out its whole window and
+# hand off something with nothing left to hand off. A live surrogate PID with a
+# matching status record must be reported DONE immediately.
+WSH="$(dirname "$DRIVER")/detach-watch.sh"
+sleep 60 & SURROGATE=$!
+printf 'pid=%s\nrc=0\n' "$SURROGATE" > "$SD/wsur.detach-status"
+printf 'SURROGATE_REPLY\n' > "$SD/wsur.detach-output"
+WOUT="$(cd "$REPO" && CC_DETACH_WATCH_TIMEOUT=6 bash "$WSH" wsur "$SURROGATE" 0 2>/dev/null)"; wrc=$?
+kill "$SURROGATE" 2>/dev/null
+[[ "$wrc" -eq 0 ]] && ok "a published status ends the wait even with the pid alive" || bad "watcher waited out a finished dispatch (rc=$wrc)"
+printf '%s' "$WOUT" | grep -q SURROGATE_REPLY && ok "and delivers the reply" || bad "no reply delivered"
+rm -f "$SD/wsur.detach-status" "$SD/wsur.detach-output"
+
 echo "== detach-status: published by the worker, pid + rc=0 =="
 { [[ "$(sed -n 's/^pid=//p' "$SD/p4.detach-status" 2>/dev/null)" == "$DP4" ]] \
   && [[ "$(sed -n 's/^rc=//p' "$SD/p4.detach-status" 2>/dev/null)" == "0" ]]; } \

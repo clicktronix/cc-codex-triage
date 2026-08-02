@@ -33,15 +33,11 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # (normally your /plan round). The log, unlike .rounds, is not reset by
    # /thread-new — a bare reset cannot fake a dispatch.
    LOG_BYTES=$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' '); LOG_BYTES=${LOG_BYTES:-0}
-   # Plan-doc locations honor CC_CODEX_PLAN_PATHS (space-separated pathspecs;
-   # default = the two conventional dirs). The hook reads the SAME variable.
-   PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
-   # fp_at_arming: the plan state the gate starts from, scoped to those paths.
-   # The hook fires while the plan docs differ from it and re-baselines it on
-   # every release, so the NEXT plan edit needs its own dispatch instead of
-   # coasting on the one that released the last cycle.
-   # set -f: pass the pathspecs to the script unexpanded.
-   FP=$( set -f; bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" $PLAN_PATHS )
+   # fp_at_arming: the plan state the gate starts from. `--plan` asks the
+   # canonical script for the plan scope rather than restating what it is —
+   # the hook and /status resolve it from the same place, so they cannot
+   # disagree (a disagreement is a gate that can never release).
+   FP=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" --plan)
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$(date +%s)" "$FP" \

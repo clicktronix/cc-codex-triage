@@ -7,16 +7,13 @@
 # (name, topic, rounds, log bytes, last activity, busy) for a caller that wants
 # to pick a thread rather than show one.
 #
-# This exists because every slash command is disable-model-invocation, so an
-# agent told to "reuse the feature's thread" had no way to see which threads
-# exist or what they hold. Reading it costs nothing — no Codex dispatch — which
-# is why the codex-second-opinion skill may run it unprompted.
+# Every slash command is disable-model-invocation, so an agent told to "reuse
+# the feature's thread" cannot otherwise see what exists. Read-only, no Codex
+# dispatch — the codex-second-opinion skill may run it unprompted.
 #
 # Threads are listed by their `.id` file, so a name with state but no session
 # (a failed first dispatch) is deliberately absent: there is nothing to resume.
 set -u
-# Shared helpers rather than private copies: the inline mtime this script used
-# to carry inherited a Linux bug from the same pattern in lib.sh.
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "Not inside a git repository."; exit 0; }
 cd "$ROOT" || exit 0
@@ -35,9 +32,7 @@ for f in "$@"; do
   name="$(basename "$f" .id)"
   rounds="$(cat "$STATE_DIR/$name.rounds" 2>/dev/null | tr -cd '0-9')"; rounds="${rounds:-0}"
   logsz="$(wc -c 2>/dev/null < "$STATE_DIR/$name.log" | tr -d ' ')"; logsz="${logsz:-0}"
-  # The LOG, not the .id: the driver writes .id once, on the dispatch that
-  # creates the thread, and never again — so stat'ing it reports creation time
-  # under a "last activity" heading. The log is appended every round.
+  # The LOG, not the .id: .id is written once, at thread creation.
   act="$STATE_DIR/$name.log"; [ -f "$act" ] || act="$f"
   mtime="$(_mtime "$act")"
   topic="$(head -1 "$STATE_DIR/$name.topic" 2>/dev/null | tr -d '\t\r')"
@@ -45,13 +40,9 @@ for f in "$@"; do
   # with exit 10, so a caller choosing a thread needs to know before it tries.
   busy=""
   if [ -f "$STATE_DIR/$name.active" ]; then
-    # RAW, with no repair at all: stripping non-digits turned "garbage123" into
-    # a live PID, and stripping whitespace turned "  123  " into one — both
-    # spellings the driver's `^[1-9][0-9]{0,11}$` rejects as stale and
-    # dispatchable, so this listing called a thread busy that /review would
-    # happily dispatch to. Same grammar as the driver, applied to the same
-    # bytes. (`kill -0 0` would also signal the whole process group, hence no
-    # leading zero and no bare 0.)
+    # Same grammar as the driver, on the same bytes, with NO repair: stripping
+    # whitespace or non-digits turns a lease the driver calls stale into a busy
+    # row. No bare or leading zero — `kill -0 0` signals the process group.
     pid="$(cat "$STATE_DIR/$name.active" 2>/dev/null)"
     case "$pid" in ''|0|0*|*[!0-9]*) pid="" ;; esac
     [ "${#pid}" -le 12 ] || pid=""

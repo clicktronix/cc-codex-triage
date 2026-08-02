@@ -28,10 +28,9 @@ cd "$ROOT" || { echo "Not inside a git repository — no thread state to report.
 STATE_DIR=".claude/codex-threads"
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
-# Last verdict from a thread log — whole log, no offset, since this is
-# informational. Delegates to the SAME parser the Stop hook uses: a second
-# implementation here would eventually report an APPROVE the gate does not
-# accept, which reads as the gate being broken. Prints '-' when none.
+# Last verdict from a thread log — whole log, no offset, informational. Same
+# parser the Stop hook uses; a second one here would eventually report an
+# APPROVE the gate refuses. Prints '-' when none.
 VERDICT_SH="$(cd "$(dirname "$0")" && pwd)/last-verdict.sh"
 FP_SH="$(cd "$(dirname "$0")" && pwd)/gate-fingerprint.sh"
 last_verdict() {
@@ -54,7 +53,7 @@ fi
 echo "cc-codex-triage status"
 echo "  repo branch : $BRANCH"
 
-plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"   # also read by the cycle-state check below
+plan_paths="$(bash "$FP_SH" --plan-paths 2>/dev/null)"   # also read by the cycle-state check below
 if $IN_GIT; then
   code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
   # Word-split the pathspecs (intentional) but disable shell globbing so they
@@ -145,15 +144,10 @@ for kind in autoreview autoplan; do
   if [ -n "$at" ] && [ ! -f "$STATE_DIR/$at.log" ] && [ ! -f "$STATE_DIR/$at.id" ]; then
     echo "      WARNING target thread '$at' has no log/id on disk — the gate cannot find it. Did you run /$base with a different --thread name?"
   fi
-  # Cycle state. Without this, /status reported a clean tree while the hook was
-  # blocking on unreviewed committed work, and /status is exactly where someone
-  # goes to understand a block they did not expect.
+  # Cycle state: a clean tree is not what the gate compares against.
   if [ -n "$(gate_baseline "$f")" ]; then
-    # $kind, not $base: base is already stripped to review/plan, so matching
-    # "autoplan" here never fired and every gate was reported against the
-    # whole-tree fingerprint — a false "cycle: OPEN" on autoplan.
     case "$kind" in
-      autoplan) fp_now="$( set -f; bash "$FP_SH" $plan_paths 2>/dev/null )" ;;
+      autoplan) fp_now="$(bash "$FP_SH" --plan 2>/dev/null)" ;;
       *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
     esac
     fp_base="$(gate_baseline "$f")"

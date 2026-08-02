@@ -127,23 +127,14 @@
 set -euo pipefail
 
 # ── the detached-child role ───────────────────────────────────────────────
-# "You are the re-exec'd child of a --detach launcher": redirect your reply into
+# "You are the re-exec'd child of a --detach launcher": redirect the reply into
 # the thread's detach sidecars, publish your PID to the READY file, own the
-# prompt tmpfile. It applies to exactly one process.
-#
-# It travels in argv (`--detach-child <ready> <prompt>`, internal), because argv
-# is NOT inherited and the environment is. Carried in exported variables, the
-# role was inherited by everything the worker started — including the bash Codex
-# runs — so a driver invoked from inside Codex (the model-invocable
-# second-opinion skill does exactly this, and so does the documented
-# direct-driver route) believed IT was the detached child. Reproduced: empty
-# stdout, the reply diverted into the sidecars, a stale READY file recreated,
-# and the OUTER launcher's prompt tmpfile deleted.
-#
-# Any such marker still arriving through the environment therefore belongs to an
-# ancestor, never to us. Erased before anything can read it, so neither a
-# pre-upgrade launcher still running nor Codex's own shell can capture a fresh
-# direct invocation.
+# prompt tmpfile. It applies to exactly one process, and travels in argv
+# (`--detach-child <ready> <prompt>`, internal) because argv is NOT inherited
+# and the environment is: exported, the role reached everything the worker
+# started — Codex's own bash included — so a driver invoked from inside Codex
+# believed IT was the child. A marker arriving through the environment
+# therefore belongs to an ancestor; erase it before anything reads it.
 DETACH_PROMPT_FILE=""
 DETACH_READY_FILE=""
 unset CC_CODEX_PROMPT_TMPFILE CC_CODEX_READY_FILE
@@ -790,9 +781,7 @@ if $FORCE_NEW; then
   # the previous task's findings ledger / scope / approval baseline. Runs
   # while HOLDING the lease — a busy thread was refused above with every
   # sidecar intact.
-  # last-abort belongs to the incarnation being discarded: leaving it made a
-  # fresh thread open carrying the previous one's killed-dispatch marker until
-  # its first success happened to clear it.
+  # last-abort belongs to the incarnation being discarded.
   rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" \
         "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
 fi
@@ -862,30 +851,21 @@ if ! $ONESHOT && [[ -n "$REPO_ROOT" ]]; then
   if [[ -f "$_fpsh" ]]; then
     PRE_FP="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
     if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
-      # shellcheck disable=SC2086 — splitting the pathspecs is intended
-      PRE_FP_PLAN="$( cd "$REPO_ROOT" && set -f && bash "$_fpsh" ${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS} 2>/dev/null || true )"
+      PRE_FP_PLAN="$( cd "$REPO_ROOT" && bash "$_fpsh" --plan 2>/dev/null || true )"
     fi
   fi
 fi
 
 # ── interruptible dispatch ────────────────────────────────────────────────
-# Runs codex in the BACKGROUND and waits. That is not a style choice: bash defers
-# a trap until the current FOREGROUND child finishes, so with a plain `codex …`
-# call a TERM arriving mid-dispatch (the common case being a caller timeout, and
-# the Bash tool caps a foreground call at 10 minutes) did nothing at all —
-# cleanup never ran, the lease was left behind, and the codex child was orphaned,
-# finishing a paid run whose reply went nowhere. `wait` IS interruptible, so the
-# trap below can kill the child, release the lease and leave a trace.
-#
-# Verified: `sleep 30` direct → trap does not fire; `sleep 30 & wait` → it does.
+# codex runs in the BACKGROUND with `wait`: bash defers a trap until the current
+# FOREGROUND child exits, so a TERM mid-dispatch (a caller timeout) did nothing
+# at all — cleanup never ran, the lease was left behind, and codex was orphaned
+# finishing a paid run whose reply went nowhere. `wait` IS interruptible.
 CODEX_PID=""
 run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by the caller
-  # `<&0` is NOT redundant. POSIX assigns an asynchronous list's stdin to
-  # /dev/null before any explicit redirection, so the caller's `<<< "$PROMPT"`
-  # reached this function and then died at the `&` — codex read an empty stdin
-  # and every real dispatch failed with "No prompt provided via stdin." An
-  # explicit fd-0 dup overrides that default. (Proven: `f(){ cat & wait; }`
-  # prints nothing; `f(){ cat <&0 & wait; }` prints the herestring.)
+  # `<&0` is required: POSIX gives an async list's stdin /dev/null before any
+  # explicit redirection, so the caller's herestring died at the `&` and codex
+  # read an empty prompt.
   "$@" <&0 &
   CODEX_PID=$!
   local rc=0
@@ -894,13 +874,9 @@ run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by 
   return "$rc"
 }
 
-# A signal-killed dispatch used to leave NOTHING: no log entry (the driver writes
-# one only on success), no .id, no diagnostic. The round simply vanished, which
-# is why a timed-out review looks like nothing happened.
-#
-# The marker is a SIDECAR, never <thread>.log — the autoplan gate releases on log
-# growth, so an abort recorded there would satisfy a plan gate with no
-# stress-test behind it.
+# A signal-killed dispatch otherwise leaves no trace at all: the driver logs
+# only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
+# so an abort recorded there would satisfy a plan gate with nothing behind it.
 abort_dispatch() { # $1=signal name
   [[ -n "$CODEX_PID" ]] && kill -TERM "$CODEX_PID" 2>/dev/null
   if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
@@ -922,10 +898,8 @@ if $ONESHOT; then
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
-  # last-error means the LAST error, and oneshot DOES write it on failure, so
-  # clearing it here is symmetric. The abort marker is not: abort_dispatch skips
-  # oneshot entirely, so removing it would let a throwaway erase the persistent
-  # thread's record of a killed dispatch — the opposite of leaving no trace.
+  # oneshot writes last-error on failure, so clearing it is symmetric. It never
+  # writes the abort marker, so it must not clear that one either.
   rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
@@ -1012,12 +986,9 @@ if ! $ONESHOT; then
   # bump when the thread failed to persist (no .id) — otherwise a never-resumed
   # thread accumulates rounds invisible to /thread-list, which iterates *.id.
   #
-  # round=0 means EXACTLY that: codex succeeded and was paid for, but the reply
-  # belongs to no resumable thread. The default is not cosmetic — restructuring
-  # this block once dropped the `else ROUND=0` arm, and the unset expansion in
-  # the log header below then aborted under `set -u` AFTER the paid call: a
-  # zero-byte log, the reply never printed, and exit 0 telling the caller it
-  # had all worked.
+  # round=0 = a paid dispatch belonging to no resumable thread. Set
+  # unconditionally: the log header expands ROUND under `set -u`, so a missing
+  # default aborts AFTER the paid call — zero-byte log, reply never printed.
   ROUND=0
   if [[ -s "$ID_FILE" ]]; then
     # Validate before arithmetic: a corrupted/CRLF .rounds would otherwise be
@@ -1029,16 +1000,11 @@ if ! $ONESHOT; then
     [[ "$PREV_ROUNDS" =~ ^(0|[1-9][0-9]*)$ ]] || PREV_ROUNDS=0
     ROUND=$(( PREV_ROUNDS + 1 ))
     echo "$ROUND" > "$ROUNDS_FILE"
-    # Topic label, written HERE and not before the dispatch: a failed run would
-    # otherwise leave its label on a thread it never created, and the
-    # never-overwrite rule would then pin that wrong label forever.
-    # Written only when absent — it describes what the thread was CREATED for.
-    # --new clears it with the rest of the thread's state.
+    # Written HERE, not before the dispatch: a failed run would otherwise pin
+    # its label on a thread it never created, forever (never overwritten).
     if [[ -n "$TOPIC" && "$MODE" == "initial" && ! -f "$STATE_DIR/${THREAD}.topic" ]]; then
-      # Bash parameter expansion rather than `cut`: GNU cut terminates its
-      # output with a newline and BSD cut does not, so building the line with
-      # an external command produced a two-line file on Linux and a one-line
-      # file on macOS. This is also one less process on a hot path.
+      # Parameter expansion, not `cut`: GNU cut adds a trailing newline and BSD
+      # does not, which produced a two-line file on Linux and one on macOS.
       _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
       printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
     fi

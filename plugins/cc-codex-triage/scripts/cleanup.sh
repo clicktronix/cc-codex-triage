@@ -183,7 +183,7 @@ unit_lock() { # $1=thread
     if [ -e "$lock/owner" ]; then
       : # dead/garbage owner: reclaim now
     else
-      mt="$(stat -c '%Y' "$lock" 2>/dev/null || stat -f '%m' "$lock" 2>/dev/null || true)"
+      mt="$(_mtime_epoch "$lock" || true)"
       case "$mt" in
         *[!0-9]*|'') return 1 ;;
         *) [ $((NOW - mt)) -gt 60 ] || return 1 ;;

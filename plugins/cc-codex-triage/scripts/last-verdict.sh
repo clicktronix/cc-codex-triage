@@ -1,56 +1,46 @@
 #!/usr/bin/env bash
 # cc-codex-triage — last machine-readable verdict in a thread log.
 #
-# usage: last-verdict.sh <log-file> [byte-offset] [--fp|--fp-plan|--fp-plan-latest]
+# usage: last-verdict.sh <log-file> [byte-offset] [--fp|--fp-plan-latest]
 #
 # Prints APPROVE | REQUEST_CHANGES | COMMENT, or nothing. Shared by the Stop
 # hook and /status — two copies disagreeing would mean /status reporting an
-# APPROVE the gate refuses, which reads as the gate being broken.
+# APPROVE the gate refuses.
 #
-# --fp / --fp-plan print instead the code fingerprint of the RECORD THAT
-# CONTAINED THE SELECTED VERDICT, taken from the `fp=` / `fp-plan=` fields the
-# driver stamps into that record's header. Selecting the verdict and the
-# fingerprint independently was a real hole: an APPROVE for state A followed by
-# a successful but verdict-less dispatch B released B, because the verdict came
-# from the log while the fingerprint came from a mutable sidecar that B had
-# overwritten.
-#
-# A record written before headers carried these fields yields nothing, and the
-# caller falls back to the sidecar — correct as long as that record is the
-# LATEST one, which is the ordinary legacy case. When a later record exists the
-# sidecar describes that later dispatch instead, so the pairing is unknowable
-# and the answer is the literal `AMBIGUOUS`. Callers must not release on it:
-# substituting any fingerprint there is the original hole in legacy clothing.
-#
-# --fp-plan-latest ignores verdicts entirely and returns the plan fingerprint of
-# the LAST post-cut record. The plan gate releases on log GROWTH, not on a
-# verdict, so the dispatch that releases it is the most recent one — asking for
-# the verdict's record there released an older state and re-blocked the current
-# one.
+# THE FINGERPRINT RULE (authoritative; callers just obey the answer).
+# --fp prints the code fingerprint of the record that CONTAINED the selected
+# verdict, from the `fp=` field the driver stamps into that record's header.
+# Selecting verdict and fingerprint independently was a hole: an APPROVE for
+# state A followed by a verdict-less dispatch B released B, because the
+# fingerprint came from a sidecar B had overwritten.
+#   - record predating `fp=`, and it is the LATEST record  -> print nothing, the
+#     caller may fall back to the sidecar (it still describes that dispatch);
+#   - record predating `fp=` with a LATER record behind it -> print AMBIGUOUS.
+#     The sidecar now describes that later dispatch, so the pair is unknowable.
+#     Callers must NOT release on it: substituting any fingerprint there is the
+#     same hole in legacy clothing.
+# --fp-plan-latest ignores verdicts and returns the plan fingerprint of the LAST
+# post-cut record: the plan gate releases on log GROWTH, so its releasing
+# dispatch is the most recent one, verdict or not.
 #
 # Section tracking: the driver writes column-0 markers and indents body lines,
-# so a verdict quoted inside a PROMPT (a /reply saying "earlier you said
-# APPROVE") cannot release the gate. `tail -c` may start mid-section, so lines
-# are ignored until a column-0 REPLY: marker is seen — that blocks toward the
-# cap, never falsely releases.
+# so a verdict quoted inside a PROMPT cannot release the gate. `tail -c` may
+# start mid-section, so lines are ignored until a column-0 REPLY: is seen —
+# that blocks toward the cap, never falsely releases.
 #
-# The offset is the cycle's cut: only content appended after it is parsed, so
-# the verdict that released the previous cycle cannot release this one. A log
-# SMALLER than the offset was rotated or reset, so all of it is post-cut.
+# The offset is the cycle's cut: only content after it is parsed, so the verdict
+# that released the previous cycle cannot release this one. A log SMALLER than
+# the offset was rotated or reset, so all of it is post-cut.
 #
-# Matching normalizes, then compares EXACTLY. The contract asks for a bare
-# verdict line, but Codex writes `## APPROVE` and `**APPROVE**` — one production
-# thread went five rounds with none matching the old strict pattern, so an
-# approved branch could never release the gate. Trimming decoration and then
-# demanding equality accepts those forms while still refusing every line
-# carrying other words: "not quite APPROVE" does not reduce to the token.
+# Matching normalizes, then compares EXACTLY: Codex writes `## APPROVE` and
+# `**APPROVE**`, which the old strict pattern missed, but "not quite APPROVE"
+# must still not reduce to the token.
 set -u
-LOG="${1:?usage: last-verdict.sh <log-file> [byte-offset] [--fp|--fp-plan|--fp-plan-latest]}"
+LOG="${1:?usage: last-verdict.sh <log-file> [byte-offset] [--fp|--fp-plan-latest]}"
 OFF="${2:-0}"
 WANT="verdict"
 case "${3:-}" in
   --fp)             WANT=fp ;;
-  --fp-plan)        WANT=fpplan ;;
   --fp-plan-latest) WANT=fpplanlatest ;;
 esac
 [ -f "$LOG" ] || exit 0
@@ -83,22 +73,16 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk -v want="$WANT" '
     sub(/^[Vv][Ee][Rr][Dd][Ii][Cc][Tt][[:space:]]*:[[:space:]]*/, "", line)
     sub(/^[[:space:]*_`>]+/, "", line)
     if (line == "APPROVE" || line == "REQUEST_CHANGES" || line == "COMMENT") {
-      v = line; v_fp = cur_fp; v_fpplan = cur_fpplan; v_rec = rec
+      v = line; v_fp = cur_fp; v_rec = rec
     }
   }
   END {
     # The latest-record lookup is verdict-independent by design.
     if (want == "fpplanlatest") { if (last_fpplan != "") print last_fpplan; exit }
     if (v == "") exit
-    if (want == "fp" || want == "fpplan") {
-      f = (want == "fp") ? v_fp : v_fpplan
-      if (f != "") { print f; exit }
-      # No marker on the record that carried the verdict. Falling back to the
-      # sidecar is safe only while that record is still the last one; once a
-      # later dispatch has overwritten it, the pair cannot be reconstructed.
-      # (No apostrophes in here: this awk program is single-quoted, and one
-      # closed it mid-comment — the whole script stopped parsing.)
-      if (rec > v_rec) print "AMBIGUOUS"
+    if (want == "fp") {
+      if (v_fp != "") { print v_fp; exit }
+      if (rec > v_rec) print "AMBIGUOUS"    # a later record owns the sidecar now
       exit
     }
     print v

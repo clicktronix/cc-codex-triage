@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # cc-codex-triage — canonical code fingerprint for the /autoreview + /autoplan gates.
 #
-# usage: gate-fingerprint.sh [pathspec ...]
+# usage: gate-fingerprint.sh [--plan | --plan-paths | pathspec ...]
+#
+# --plan       hash the PLAN scope (the pathspecs below).
+# --plan-paths print those pathspecs and exit — so the dirt predicates and the
+#              arming commands ask for the plan scope instead of each restating
+#              what it is. The default lived in four files, and a change that
+#              missed one produced a gate comparing two different scopes, i.e.
+#              one that can never release.
 #
 # Prints a hash of the working-tree CONTENT in scope, or nothing when it cannot
 # be computed. Callers treat empty as "unknown" and fail OPEN, never as
@@ -17,18 +24,22 @@
 # output would be unusable — and covers untracked files by content, which a new
 # plan document needs for its whole first life.
 #
-# Every git call is status-checked: a silenced failure produced a confident but
+# Every git call is status-checked and never read through a pipeline (a pipeline
+# reports the LAST command's status): a silenced failure produced a confident but
 # fabricated hash, the one outcome this script promises never to produce.
 #
-# `write-tree` records a submodule as a gitlink, so edits inside one would leave
-# the fingerprint identical; dirty submodules are detected and folded in
-# separately (below) for exactly that reason.
+# `write-tree` records a submodule as a gitlink, so content edits inside one
+# would leave the fingerprint identical — dirty submodules are folded in below.
 #
-# One known cost: each run rehashes the worktree from an empty index with no stat
-# cache — sub-second at this repo's scale, but it is the hook's main cost on a
-# monorepo, and it leaves a few unreferenced loose objects per content change.
+# Cost: each run rehashes the worktree from an empty index with no stat cache.
 set -u
 STATE_DIR=".claude/codex-threads"
+
+# Plan-doc locations, configurable via CC_CODEX_PLAN_PATHS (space-separated).
+PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
+if [ "${1:-}" = "--plan-paths" ]; then printf '%s\n' "$PLAN_PATHS"; exit 0; fi
+# shellcheck disable=SC2086 — splitting into separate pathspecs is intended
+if [ "${1:-}" = "--plan" ]; then set -f; set -- $PLAN_PATHS; set +f; fi
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -n "$ROOT" ] || exit 0
@@ -36,55 +47,21 @@ cd "$ROOT" 2>/dev/null || exit 0
 
 # Dirty submodules, detected against the REAL index and therefore BEFORE the
 # throwaway one is swapped in — afterwards everything is staged and nothing
-# reads as modified.
+# reads as modified. A gitlink hides content edits AND keeps the fingerprint
+# non-empty, so the caller does not fall back to the dirty-tree predicate
+# either. Only dirty ones are recursed into; clean and uninitialised submodules
+# are fully described by their gitlink.
 #
-# `write-tree` records a submodule as a GITLINK, the commit it points at, so
-# edits inside one leave the superproject tree identical and no cycle ever
-# opens. Worse than a blind spot: the fingerprint is still non-empty, so the
-# caller does not fall back to the dirty-tree predicate either.
-#
-# `git submodule status` is the WRONG probe here — its `+` marks a differing
-# COMMIT, not a dirty worktree, and a plain content edit leaves it unchanged
-# (verified). `git status --porcelain` on the submodule paths is the signal.
-#
-# Lazy: clean and uninitialised submodules are fully described by their gitlink,
-# so only dirty initialised ones are recursed into. A repository without
-# submodules pays one `git submodule status` and nothing more.
-#
-# Every git call here is status-checked on its own, NOT through a pipeline: a
-# pipeline reports the LAST command's status, so `git … | awk` returned awk's 0
-# and a forced `git submodule status` failure produced the same confident hash
-# before and after a dirty child edit — the fabricated-hash outcome this script
-# promises never to produce.
-#
-# Paths are carried one per line and never word-split: a submodule at
-# `vendor lib` was silently dropped by the previous `-- $SUB_PATHS`.
-SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-SUB_RAW="$(git submodule status --recursive 2>/dev/null)" || exit 0
-DIRTY_SUBS=""
-if [ -n "$SUB_RAW" ]; then
-  # ` <sha> <path> (<describe>)`, where the leading column is the status flag and
-  # the describe suffix is absent for uninitialised entries. Stripping the ends
-  # keeps whatever is between them, spaces included — awk's $2 could not.
-  while IFS= read -r _line; do
-    [ -n "$_line" ] || continue
-    _sub="$(printf '%s' "$_line" | sed -e 's/^.//' -e 's/^[0-9a-f][0-9a-f]* //' -e 's/ ([^)]*)$//')"
-    [ -n "$_sub" ] || continue
-    # `--ignore-submodules=none` overrides submodule.<name>.ignore and
-    # diff.ignoreSubmodules: with `dirty` or `all` configured, modified contents
-    # produce NO porcelain output, and the script would return a confident
-    # unchanged hash for a submodule the user had edited. Those settings exist
-    # to keep `git status` quiet, which is precisely why a gate must not honour
-    # them. `--no-optional-locks` because this probe runs at every turn end and
-    # has no business refreshing the real index.
-    _st="$(git --no-optional-locks status --porcelain --ignore-submodules=none -- "$_sub" 2>/dev/null)" || exit 0
-    [ -n "$_st" ] || continue
-    DIRTY_SUBS="$DIRTY_SUBS$_sub
-"
-  done <<EOF
-$SUB_RAW
-EOF
-fi
+# `diff-files --raw` names them directly, one `:160000 … <TAB>path` line each:
+# no enumerate-then-probe pass, no per-path spawn, and the tab keeps a path like
+# `vendor lib` intact. It is also 8x cheaper than `git submodule status`, which
+# this runs instead of — and this runs at every turn end, per armed gate.
+# `--ignore-submodules=none` overrides submodule.<name>.ignore and
+# diff.ignoreSubmodules: those exist to keep `git status` quiet, which is
+# exactly why a gate must not honour them. `--no-optional-locks` keeps a
+# read-only probe from refreshing the real index.
+SUB_RAW="$(git --no-optional-locks diff-files --ignore-submodules=none --raw 2>/dev/null)" || exit 0
+DIRTY_SUBS="$(printf '%s\n' "$SUB_RAW" | awk -F'\t' '/^:160000/ {print $2}')"
 
 # Scoped (autoplan) mode: keep the dirty submodules that intersect the scope.
 # Skipping submodules here entirely left a dirty `docs/plans` submodule
@@ -159,6 +136,7 @@ TREE="$(git write-tree 2>/dev/null)" || exit 0
 # Fold in the fingerprints of DIRTY submodules collected before the index was
 # swapped (see above). Their gitlink alone cannot see inside them.
 if [ -n "${DIRTY_SUBS:-}" ]; then
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   SUB_FP=""
   OLD_IFS="$IFS"; IFS='
 '

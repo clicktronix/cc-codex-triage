@@ -3,60 +3,35 @@
 #
 # usage: dispatch.sh <thread> [driver flags...]   (prompt on stdin)
 #
-# Same contract as codex-thread.sh — prompt in, reply on stdout, driver exit
-# codes — with one difference: the dispatch is detached first, so a caller
-# timeout can no longer kill it.
+# Same contract as codex-thread.sh: prompt in, reply on stdout and nothing else
+# (`/review --json` pipes it into `jq`), status on stderr, driver exit codes.
+# The two outcomes that are this wrapper's own take codes outside the driver's
+# range — 20 handoff (worker STILL RUNNING), 21 outcome unconfirmed — since
+# reusing 3 ("codex exec failed") would make a live dispatch look like a dead one.
 #
-# That contract is exact, not approximate. stdout carries the reply and nothing
-# else (`/review --json` pipes it straight into `jq`), every status line goes to
-# stderr, and the driver's own exit codes survive so a caller can still tell a
-# resume failure from a mutation refusal. The two outcomes belonging to this
-# wrapper rather than to the driver get codes outside the driver's range:
+# WHY: the Bash tool caps a foreground call at 600 s, its maximum. A branch
+# review runs longer, and the dispatch simply died — the round vanished and the
+# paid Codex run finished into nowhere.
 #
-#   20  handoff — the wait window elapsed and the worker is STILL RUNNING.
-#   21  the worker's outcome could not be confirmed.
+# Detach is about process survival, not response delivery:
+#   1. spawn the worker in its own session, out of reach of whatever kills us;
+#   2. wait for it HERE, bounded below the caller's ceiling.
+# So a short dispatch answers in-turn exactly as a direct call did; only one
+# that would have been KILLED behaves differently, handing off instead. Re-run
+# the watcher named in the message to collect it; the thread is untouched.
 #
-# Neither reuses 3: that is the driver's "codex exec failed", and overloading it
-# would make a live dispatch indistinguishable from a dead one.
-#
-# WHY THIS EXISTS. The Bash tool caps a foreground call at 600 s; that is its
-# maximum, not a setting. A branch review routinely runs longer, and when the
-# cap hit, the dispatch died: the round vanished, the paid Codex run finished
-# into nowhere, and nothing was written anywhere. It happened twice in one
-# session while this was being written.
-#
-# DETACH IS ABOUT PROCESS SURVIVAL, NOT RESPONSE DELIVERY — the two are
-# separable, and separating them is the whole point:
-#
-#   1. spawn the worker in its own session (`--detach`), so nothing that kills
-#      this process can reach it;
-#   2. wait for it HERE, in the foreground, bounded below the caller's ceiling.
-#
-# A short dispatch therefore behaves exactly as a plain foreground call: the
-# reply comes back in the same turn. Only a dispatch that would previously have
-# been killed changes behaviour — it becomes a handoff instead of a loss.
-#
-# On handoff (exit 20) the worker is still running: re-run the watcher named in
-# the message as a background task and its completion notification delivers the
-# reply. The thread is untouched either way.
-#
-# --oneshot cannot detach (there is no thread state to hand off), so it falls
-# through to a direct call and keeps the old ceiling. That is acceptable: a
-# throwaway leaves nothing behind, so a lost one is cheap to repeat.
+# --oneshot has no thread state to hand off, so it falls through to a direct
+# call and keeps the old ceiling — a throwaway is cheap to repeat.
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 DRIVER="$SELF_DIR/codex-thread.sh"
 WATCHER="$SELF_DIR/detach-watch.sh"
 
-# Seconds to wait in the foreground. Default 540 — comfortably inside a 600 s
-# ceiling, leaving room for the handoff message. Override for a caller with a
-# different limit.
+# Foreground wait, inside the caller's 600 s ceiling with room for the handoff
+# message. Length-bounded: a 20-digit value makes every `[` comparison error out.
 WAIT="${CC_DISPATCH_WAIT:-540}"
-# Length-bounded like the gate counters: bash arithmetic and `[` both choke
-# on a 20-digit value ("integer expression expected" on every poll), which
-# would defeat the bounded handoff this whole script exists to provide.
 case "$WAIT" in ''|*[!0-9]*) WAIT=540 ;; esac
-[ "${#WAIT}" -le 6 ] || WAIT=540      # ~11 days is already absurd
+[ "${#WAIT}" -le 6 ] || WAIT=540
 
 THREAD=""; ONESHOT=false
 for a in "$@"; do

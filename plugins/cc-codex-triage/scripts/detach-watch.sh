@@ -19,21 +19,16 @@
 # is read-only: this script writes nothing.
 #
 # CC_WATCH_PORCELAIN=1 switches to the MACHINE contract, for a caller that
-# forwards this output as if it were the driver's own (dispatch.sh):
-#   - stdout is byte-identical to the reply, nothing else. The default mode
-#     prefixes a `DONE:` line, which is right for a notification a human or an
-#     agent reads but breaks `/review --json`, whose next step is `jq`.
-#   - the exit status is the WORKER's, so 3/4/5 survive instead of collapsing
-#     into 1 and losing the caller's ability to recover per cause. The two
-#     outcomes that are the watcher's own get codes outside the driver's range:
-#     20 timeout (handoff — the worker is alive), 21 unconfirmed.
+# forwards this output as the driver's own (dispatch.sh): stdout byte-identical
+# to the reply (the DONE: banner breaks `/review --json`), and the WORKER's exit
+# status so 3/4/5 survive instead of collapsing into 1. The watcher's own two
+# outcomes take 20 (timeout/handoff, worker alive) and 21 (unconfirmed).
 #
 # Portability: macOS bash 3.2 + Linux. No jq.
 
 set -u
 PORCELAIN="${CC_WATCH_PORCELAIN:-0}"
-# fd 3 is the real stdout. In porcelain mode everything printed normally lands
-# on stderr, so only the explicit `>&3` writes — the reply — reach stdout.
+# fd 3 is the real stdout; in porcelain mode only explicit `>&3` writes reach it.
 if [ "$PORCELAIN" = "1" ]; then exec 3>&1 1>&2; else exec 3>&1; fi
 
 THREAD="${1:-}"
@@ -55,6 +50,10 @@ LOG="$STATE_DIR/$THREAD.log"
 DIAG="$STATE_DIR/$THREAD.last-error.jsonl"
 SIDE="$STATE_DIR/$THREAD.detach-output"
 ERRS="$STATE_DIR/$THREAD.detach-stderr"
+STATUS_FILE="$STATE_DIR/$THREAD.detach-status"
+# The worker publishes its REAL exit status here from an EXIT trap; that record,
+# not pid liveness, is the authority.
+status_published() { [ "$(sed -n 's/^pid=//p' "$STATUS_FILE" 2>/dev/null | head -1)" = "$PID" ]; }
 
 # Diagnostic baseline for failure/UNKNOWN output. Success reads the worker-owned
 # detach-output sidecar directly, so a later foreground round on the same thread
@@ -63,11 +62,8 @@ ERRS="$STATE_DIR/$THREAD.detach-stderr"
 if [ -n "$OFFSET" ]; then
   BASE_BYTES="$OFFSET"
 else
-  # `2>/dev/null` BEFORE the input redirection: redirections are applied left to
-  # right, so with `< "$LOG" 2>/dev/null` the shell reports the missing file on
-  # the real stderr before the silencer is in place. A dispatch that fails
-  # before its first log write then emits a raw "No such file" next to the
-  # explanation, and the raw half is the confusing one.
+  # `2>/dev/null` BEFORE the input redirection: redirections apply left to right,
+  # so the shell reports a missing file before the silencer is in place.
   BASE_BYTES="$(wc -c 2>/dev/null < "$LOG" | tr -d ' ')"
   BASE_BYTES="${BASE_BYTES:-0}"
   case "$BASE_BYTES" in *[!0-9]*) BASE_BYTES=0 ;; esac
@@ -79,11 +75,12 @@ fi
 # past any realistic review/plan dispatch).
 TIMEOUT="${CC_DETACH_WATCH_TIMEOUT:-2700}"
 case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=2700 ;; esac
-# Same length bound as dispatch.sh: an oversized value makes `[ -ge ]` error
-# on every poll, so the watcher never times out and never hands off.
-[ "${#TIMEOUT}" -le 6 ] || TIMEOUT=2700
+[ "${#TIMEOUT}" -le 6 ] || TIMEOUT=2700   # oversized makes every `[ -ge ]` error
 WAITED=0
-while kill -0 "$PID" 2>/dev/null; do
+# The status record is checked FIRST: a zombie, or a PID the OS has recycled,
+# keeps `kill -0` succeeding for a dispatch that already finished, and the wait
+# would then time out into a handoff that has nothing left to hand off.
+while ! status_published && kill -0 "$PID" 2>/dev/null; do
   if [ "$WAITED" -ge "$TIMEOUT" ]; then
     echo "TIMEOUT: detached dispatch (thread $THREAD, pid $PID) still running after ${TIMEOUT}s — it keeps running; re-watch or poll $LOG manually."
     [ "$PORCELAIN" = "1" ] && exit 20
@@ -129,11 +126,9 @@ print_diags() {
   fi
 }
 
-# Authoritative verdict: the worker publishes its REAL exit status to
-# <thread>.detach-status (atomic, EXIT trap). Log growth alone is NOT
-# success — a strict-mutation dispatch (exit 5) appends the exchange and
-# still fails, and a partial append before a nonzero death looks identical.
-STATUS_FILE="$STATE_DIR/$THREAD.detach-status"
+# Log growth alone is NOT success: a strict-mutation dispatch (exit 5) appends
+# the exchange and still fails, and a partial append before a nonzero death
+# looks identical.
 S_PID="$(sed -n 's/^pid=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
 S_RC="$(sed -n 's/^rc=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
 if [ "$S_PID" = "$PID" ]; then
@@ -150,8 +145,8 @@ if [ "$S_PID" = "$PID" ]; then
         print_delta
       fi
       print_diags
-      # The worker's own status, so a caller can still tell a resume failure
-      # from a mutation refusal; 1 for the human-facing default.
+      # Worker's own status, so a caller can tell a resume failure from a
+      # mutation refusal; 1 for the human-facing default.
       [ "$PORCELAIN" = "1" ] && exit "$S_RC"
       exit 1 ;;
   esac

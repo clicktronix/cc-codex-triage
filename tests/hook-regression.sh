@@ -348,12 +348,9 @@ arm_plan_fp() { # branch thread cap blocks log_bytes fp
   printf 'branch=%s\nthread=%s\nlens=stress-test\ncap=%s\nblocks=%s\nlog_bytes_at_arming=%s\nfp_at_arming=%s\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" > "$SD/autoplan.armed"
 }
-# One verdict, at offset 0 — and the dispatch snapshot the driver ALWAYS writes
-# beside it. Without the sidecar these fixtures described a log the 0.9 driver
-# could not have produced (a verdict with no record of what was dispatched), and
-# the gate now refuses to release on exactly that, since it cannot tell an
-# approval of the current tree from an approval of something since edited.
-# The snapshot is taken NOW, i.e. "Codex just reviewed this state".
+# One verdict at offset 0, plus the dispatch snapshot the driver ALWAYS writes
+# beside it: without it the fixture is a log the 0.9 driver cannot produce, and
+# the gate refuses to release on that. Snapshot taken NOW = "just reviewed this".
 reply_log() {
   printf 'REPLY:\n  %s\n' "$1" > "$SD/review-main.log"
   printf '%s\n' "$(fp_now)" > "$SD/review-main.dispatch-fp"
@@ -403,11 +400,9 @@ printf 'REPLY:\n  ## APPROVE\n' > "$VLOG"
 [[ "$(bash "$VSH" "$VLOG" 0)" == "APPROVE" ]] && ok "status.sh and the hook share this one parser" || bad "shared parser mismatch"
 
 echo "== fingerprint: an unreadable path yields NOTHING, never a fabricated hash =="
-# The script promises to print nothing when it cannot compute. It used to
-# silence every git invocation and hash whatever came out, so a failure
-# produced a confident but wrong hash — the one outcome it promises never to
-# produce. A dangling symlink is NOT such a case: git records the link itself,
-# so it hashes fine and must keep doing so.
+# Nothing printed when it cannot compute — a confident wrong hash is the one
+# outcome it promises never to produce. A dangling symlink is NOT such a case:
+# git records the link itself, so it must keep hashing fine.
 git checkout -q -- . 2>/dev/null; git clean -qfd 2>/dev/null
 echo v1 > zzz.txt
 FP_BEFORE="$(fp_now)"
@@ -435,13 +430,9 @@ FP_DIRTY="$(fp_now)"
 [[ "$FP_DIRTY" != "$FP_A" ]] && ok "an uncommitted edit moves it" || bad "edit did not move the fingerprint"
 git add -A >/dev/null && git commit -qm "cycle-test commit"
 FP_COMMITTED="$(fp_now)"
-# It hashes CONTENT, so committing is not itself an event. Both directions
-# matter and an earlier version got one of them wrong:
-#   - the content still differs from the pre-edit state, so a fix survives its
-#     own commit and the gate stays engaged (a bare dirty-tree test goes quiet
-#     here, exactly when the follow-up round is still owed);
-#   - committing the SAME bytes is not a change, so approving work and then
-#     committing it costs no review round. Hashing HEAD made it cost one.
+# It hashes CONTENT, so committing is not itself an event, in both directions:
+# a fix survives its own commit and keeps the gate engaged, while committing
+# already-approved bytes costs no review round.
 [[ "$FP_COMMITTED" != "$FP_A" ]] \
   && ok "a change survives its own commit (never back to the pre-edit state)" || bad "commit collapsed to the pre-edit fingerprint"
 [[ "$FP_COMMITTED" == "$FP_DIRTY" ]] \
@@ -476,8 +467,6 @@ echo "== fingerprint: dirty submodule content is inside the cycle =="
 # write-tree records a submodule as a GITLINK, so edits inside one leave the
 # superproject tree identical and no cycle opens — and because the fingerprint
 # is still non-empty, the caller does not fall back to the dirty-tree predicate
-# either. `git submodule status` is the WRONG probe: its `+` marks a differing
-# COMMIT, and a plain content edit leaves it unchanged.
 SUBT="$(mktemp -d "${TMPDIR:-/tmp}/cc-sub.XXXXXX")"
 ( git init -q -b main "$SUBT/lib" >/dev/null 2>&1
   cd "$SUBT/lib" && git config user.email t@t.t && git config user.name t \
@@ -508,14 +497,14 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
   done
   git config --unset submodule.vendor.ignore
 
-  # Detection failure must yield NO fingerprint. Through a pipeline the script
-  # reported the PARSER's status, so a broken `git submodule status` returned
-  # the same confident hash before and after a dirty child edit — a fabricated
-  # answer, which is worse than the gate degrading to the dirty-tree predicate.
+  # Detection failure must yield NO fingerprint. Read through a pipeline, the
+  # script reported the PARSER's status and returned the same confident hash
+  # before and after a dirty child edit — a fabricated answer, worse than the
+  # gate degrading to the dirty-tree predicate.
   REALGIT="$(command -v git)"
   STUBG="$T/stub-git"; mkdir -p "$STUBG"
   { echo '#!/usr/bin/env bash'
-    echo 'if [ "${1:-}" = "submodule" ] && [ "${2:-}" = "status" ]; then exit 128; fi'
+    echo 'for a in "$@"; do [ "$a" = "diff-files" ] && exit 128; done'
     echo "exec \"$REALGIT\" \"\$@\""
   } > "$STUBG/git"
   chmod +x "$STUBG/git"
@@ -578,7 +567,6 @@ echo "== fingerprint: the state dir is excluded even when NOT gitignored =="
 mkdir -p "$SD"
 # The developer's GLOBAL gitignore also covers .claude/codex-threads, so moving
 # the repo .gitignore aside is not enough — without neutralising core.excludesFile
-# this test passes even with the exclusion deleted. (It did; a mutation caught it.)
 if [[ -f .gitignore ]]; then mv .gitignore .gitignore.bak; fi
 GLOBAL_EX="$(git config --get core.excludesFile || true)"
 git config core.excludesFile /dev/null
@@ -694,11 +682,9 @@ echo "first real change after arming" >> f.txt
 expect_block "the first change after arming is gated (was: allowed)"
 
 echo "== the released fingerprint belongs to the verdict that earned it =="
-# The verdict came from the log while the fingerprint came from a mutable
-# sidecar, chosen independently. So an APPROVE for state A followed by a
-# SUCCESSFUL but verdict-less dispatch B released B — nothing had approved it.
-# The driver now stamps the pre-dispatch state into each record's header and the
-# parser returns the one belonging to the selected verdict.
+# Verdict and fingerprint chosen independently: an APPROVE for state A followed
+# by a successful but verdict-less dispatch B released B. The driver stamps the
+# pre-dispatch state into each record; the parser returns the verdict's own.
 git add -A >/dev/null && git commit -qm "settle before correlation test" >/dev/null 2>&1
 : > "$SD/review-main.log"
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
@@ -724,12 +710,8 @@ expect_allow "a pre-fp= record still releases via the sidecar"
 rm -f "$SD/autoreview.armed" "$SD/review-main.dispatch-fp"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
-# …but that fallback is only sound while the legacy record is the LAST one. Put
-# a later dispatch behind it and the sidecar describes THAT dispatch, so the
-# APPROVE cannot be attributed to any state. The gate previously released the
-# newest bytes on the strength of the older verdict — the original hole, wearing
-# legacy clothing. The test above covers only the legacy-record-is-latest case,
-# which is why this survived it.
+# …but that fallback is only sound while the legacy record is the LAST one: a
+# later dispatch owns the sidecar, so the APPROVE cannot be attributed at all.
 : > "$SD/review-main.log"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
@@ -763,12 +745,9 @@ echo "snuck in after the verdict" >> f.txt                  # never reviewed
 expect_block "code added after the verdict opens the next cycle at once"
 expect_block "and it stays open on the following turn"
 rm -f "$SD/review-main.dispatch-fp"
-# A snapshot that cannot be read is not a licence to release the current tree.
-# Falling back to the Stop-time fingerprint here was the last hiding place of
-# the original hole: nothing then recorded what was dispatched, so an APPROVE of
-# state A stamped whatever the worktree held at turn-end. It must block — and it
-# must not DEADLOCK, which is what the fallback was there to avoid: the next
-# dispatch writes a real snapshot and releases.
+# An unreadable snapshot is not a licence to release the current tree: nothing
+# records what was dispatched, so it must block — and must not DEADLOCK, which
+# is what the old fallback avoided. The next dispatch settles it.
 git add -A >/dev/null && git commit -qm "settle" >/dev/null 2>&1
 : > "$SD/review-main.log"
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
@@ -815,7 +794,6 @@ git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 echo "== a pre-0.9 armed file adopts the cycle model at its FIRST release =="
 # The compatibility promise is "keeps the old behaviour UNTIL its first
 # release", not "forever". The old test only exercised clean/dirty/commit and
-# never reached a release, so it could not have caught this either way.
 : > "$SD/review-main.log"
 arm_review main review-main 3 0 0        # legacy: no fp_at_arming
 echo legacy-work >> f.txt
@@ -904,12 +882,10 @@ rm -f "$SD/autoreview.armed"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== all THREE armed-state writers refuse to write without the lock =="
-# The 20-way race above only exercises bump_blocks. Idle consumption and the
-# cycle rebaseline rewrite the WHOLE file too, so an unserialized one drops
-# whatever a concurrent writer had just written — the advanced cut, or
-# released_fp. Holding the lock from outside is the deterministic version of
-# that race: each writer must then decline rather than write anyway.
-# The lock is fresh, so the stale-steal path (>30s) is not involved.
+# The 20-way race above only exercises bump_blocks; the other two writers
+# rewrite the whole file too. Holding the lock from outside is the deterministic
+# form of that race — each writer must decline rather than write anyway. The
+# lock is fresh, so the stale-steal path is not involved.
 git add -A >/dev/null && git commit -qm "settle before lock test" >/dev/null 2>&1
 : > "$SD/review-main.log"
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
@@ -1026,7 +1002,6 @@ echo "== BOTH gates armed: a block on one must not bank the other's verdicts =="
 # emit_block and allow exit the whole hook, so a block on autoreview used to
 # skip autoplan entirely — including its idle-verdict consumption. Plan-thread
 # growth during the blocked turn then banked and released the next plan cycle
-# free. Nothing tested the two gates together, which is why it survived.
 git add -A >/dev/null && git commit -qm "settle before two-gate test" >/dev/null 2>&1
 rm -rf docs; mkdir -p docs/plans
 : > "$SD/review-main.log"; : > "$SD/plan-main.log"
@@ -1071,11 +1046,9 @@ rm -f "$SD/autoplan.armed" "$SD/plan-main.dispatch-fp" "$SD/plan-main.dispatch-f
 rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== autoplan releases the LATEST dispatch's plan state, not the verdict's =="
-# The plan gate releases on log GROWTH, so the dispatch that releases it is the
-# most recent one — which need not carry a verdict at all. Selecting the
-# fingerprint from the record containing the last VERDICT released the older
-# state that verdict judged and then immediately re-blocked the current plan,
-# every turn, to the cap.
+# The plan gate releases on log GROWTH, so its releasing dispatch is the most
+# recent one and need not carry a verdict. Taking the last VERDICT's record
+# released an older state and re-blocked the current plan, every turn, to the cap.
 git add -A >/dev/null && git commit -qm "settle before latest-plan test" >/dev/null 2>&1
 rm -rf docs; mkdir -p docs/plans; echo "# p" > docs/plans/p.md
 : > "$SD/plan-main.log"
@@ -1093,6 +1066,32 @@ expect_allow "the latest dispatch releases the plan state IT saw"
 expect_allow "and the released plan stays released"
 rm -f "$SD/autoplan.armed" "$SD/plan-main.log"
 rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== the plan scope has ONE definition, and everything follows it =="
+# The default lived in four files (hook, driver, /status, the arming command).
+# A change that misses one leaves the dirt predicate and the fingerprint
+# disagreeing about what a plan document IS — a gate that can never release.
+rm -rf docs custom-plans; mkdir -p custom-plans
+git add -A >/dev/null && git commit -qm "settle before scope test" >/dev/null 2>&1
+[[ "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan-paths)" == "custom-plans" ]] \
+  && ok "the canonical script reports the configured scope" || bad "--plan-paths ignored CC_CODEX_PLAN_PATHS"
+[[ "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan)" == "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" custom-plans)" ]] \
+  && ok "--plan hashes exactly that scope" || bad "--plan and the explicit pathspec disagree"
+: > "$SD/plan-main.log"
+arm_plan_fp main plan-main 3 0 0 "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan)"
+echo "# a plan doc in a NON-default location" > custom-plans/p.md
+CC_CODEX_PLAN_PATHS='custom-plans' run_hook
+[[ -n "$OUT" ]] && ok "the hook gates on the configured scope too" || bad "the hook ignored CC_CODEX_PLAN_PATHS (scope definitions have drifted)"
+rm -f "$SD/autoplan.armed"
+# And the legacy dirt predicate, which is a SEPARATE reader of the same scope —
+# the fingerprint path above would pass even if it had its own hardcoded copy.
+: > "$SD/plan-main.log"
+arm_plan main plan-main 3 0 0
+mkdir -p custom-plans; echo "# legacy-path plan doc" > custom-plans/p.md
+CC_CODEX_PLAN_PATHS='custom-plans' run_hook
+[[ -n "$OUT" ]] && ok "the dirt predicate follows the configured scope too" || bad "dirty_plans has its own copy of the scope"
+rm -f "$SD/autoplan.armed" "$SD/plan-main.log"; rm -rf custom-plans
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== autoplan: a released cycle re-arms on the NEXT plan edit =="
 mkdir -p docs/plans
