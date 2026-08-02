@@ -340,8 +340,13 @@ consume_idle_verdicts() { # $1=armed file $2=thread
   armed_lock "$f" || return 0
   off="$(raw_field "$f" log_bytes_at_arming)"
   if is_bounded_num "$off" && [[ "$now" -ne "$off" ]]; then
-    { grep -v -e '^log_bytes_at_arming=' "$f" 2>/dev/null
+    # The cut is a PAIR — byte offset and rotation generation — so consuming
+    # idle growth has to move both. Advancing only the offset left the stored
+    # generation stale, and the next rotation made run_gate reset the offset to
+    # 0 and re-spend the verdict this pass had already consumed.
+    { grep -v -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
       echo "log_bytes_at_arming=$now"
+      echo "log_gen_at_arming=$(log_gen "$t")"
     } | armed_rewrite "$f" || true
   fi
   armed_unlock "$f"

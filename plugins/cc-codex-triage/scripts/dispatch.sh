@@ -33,11 +33,18 @@ WAIT="${CC_DISPATCH_WAIT:-540}"
 case "$WAIT" in ''|*[!0-9]*) WAIT=540 ;; esac
 [ "${#WAIT}" -le 6 ] || WAIT=540
 
-THREAD=""; ONESHOT=false
+# Walked as option/VALUE pairs, the same grammar codex-thread.sh parses. A
+# value-blind scan took the first non-flag word, so `--model gpt-5-codex
+# review-branch` made this watch a thread called "gpt-5-codex" while the driver
+# correctly dispatched to review-branch — the handshake succeeded and the
+# watcher then polled a thread that does not exist.
+THREAD=""; ONESHOT=false; skip_next=false
 for a in "$@"; do
+  if $skip_next; then skip_next=false; continue; fi
   case "$a" in
     --oneshot) ONESHOT=true ;;
     --detach)  ;;                                  # we add it ourselves
+    --model|--effort|--schema|--topic) skip_next=true ;;
     -*)        ;;
     *)         [ -n "$THREAD" ] || THREAD="$a" ;;
   esac

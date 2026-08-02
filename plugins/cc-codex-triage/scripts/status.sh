@@ -53,7 +53,12 @@ fi
 echo "cc-codex-triage status"
 echo "  repo branch : $BRANCH"
 
-plan_paths="$(bash "$FP_SH" --plan-paths 2>/dev/null)"   # also read by the cycle-state check below
+# Same fallback the hook keeps: with the script missing (a partial install —
+# the case the hook explicitly guards), an empty list becomes `git status -- `,
+# i.e. NO pathspec, and /status reports every change in the tree as a plan-doc
+# change. Read by the cycle-state check below too.
+plan_paths="$(bash "$FP_SH" --plan-paths 2>/dev/null)"
+[ -n "$plan_paths" ] || plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
 if $IN_GIT; then
   code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
   # Word-split the pathspecs (intentional) but disable shell globbing so they

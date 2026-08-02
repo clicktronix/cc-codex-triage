@@ -71,11 +71,15 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk -v want="$WANT" '
     # Trim from the ENDS only: a global strip of "_" turns REQUEST_CHANGES into
     # REQUESTCHANGES and silently stops every change request being seen.
     line = $0
-    sub(/^[[:space:]*_#`>-]+/, "", line)      # headings, emphasis, bullets, quotes, indent
+    # Headings, emphasis and indent only. NOT `>` or `-`: a blockquote or a
+    # bullet is Codex QUOTING a verdict ("you told me earlier: > APPROVE"),
+    # which must not release a gate — the same reason a verdict inside a PROMPT
+    # section does not count.
+    sub(/^[[:space:]*_#`]+/, "", line)
     sub(/[-.:;!,*_`[:space:]]+$/, "", line)   # punctuation, plus the --- reply terminator
     # Spelled per character: awk has no portable case-insensitive flag.
     sub(/^[Vv][Ee][Rr][Dd][Ii][Cc][Tt][[:space:]]*:[[:space:]]*/, "", line)
-    sub(/^[[:space:]*_`>]+/, "", line)
+    sub(/^[[:space:]*_`]+/, "", line)
     if (line == "APPROVE" || line == "REQUEST_CHANGES" || line == "COMMENT") {
       v = line; v_fp = cur_fp; v_rec = rec
     }

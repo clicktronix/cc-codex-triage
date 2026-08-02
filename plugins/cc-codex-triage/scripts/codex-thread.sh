@@ -588,11 +588,34 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 # above installs its own EXIT trap, but that code path exits before ever
 # reaching this line, so the two can never collide.)
 DETACH_CHILD=false
+# A signal-killed dispatch otherwise leaves no trace at all: the driver logs
+# only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
+# so an abort recorded there would satisfy a plan gate with nothing behind it.
+abort_dispatch() { # $1=signal name
+  [[ -n "${CODEX_PID:-}" ]] && kill -TERM "$CODEX_PID" 2>/dev/null
+  if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
+    printf 'signal=%s\nthread=%s\nmode=%s\nat=%s\nnote=%s\n' \
+      "$1" "$THREAD" "${MODE:-unresolved}" "$(date -u +%FT%TZ)" \
+      "dispatch killed before a reply; the thread is intact - resume it, and use --detach for anything that may outlive the caller timeout" \
+      > "$STATE_DIR/${THREAD}.last-abort" 2>/dev/null || true
+  fi
+}
+
+# Which thread the plan gate watches, if any — the plan sidecar belongs to that
+# thread alone, so an unrelated dispatch must not clear it.
+raw_plan_thread() {
+  sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1
+}
+
 cleanup() {
   # $? FIRST — every later command in this trap would clobber it. Publishing
   # the worker's real exit status lets detach-watch.sh decide success from
   # fact, not from log growth (which strict-mutation exit 5 also produces).
   local rc=$?
+  # An explicit override, because the signal traps run abort_dispatch first and
+  # that clobbers $?: a TERM-killed worker published rc=0, so detach-watch.sh
+  # read a dead dispatch as a clean success and delivered an empty reply.
+  [[ -n "${1:-}" ]] && rc="$1"
   if [[ "$DETACH_CHILD" == true ]]; then
     printf 'pid=%s\nrc=%s\n' "$$" "$rc" > "$STATE_DIR/${THREAD}.detach-status.tmp" 2>/dev/null \
       && mv -f "$STATE_DIR/${THREAD}.detach-status.tmp" "$STATE_DIR/${THREAD}.detach-status" 2>/dev/null \
@@ -617,8 +640,8 @@ cleanup() {
     rm -f "$DETACH_PROMPT_FILE"
   fi
 }
-trap 'abort_dispatch INT;  cleanup; trap - EXIT; exit 130' INT
-trap 'abort_dispatch TERM; cleanup; trap - EXIT; exit 143' TERM
+trap 'abort_dispatch INT;  cleanup 130; trap - EXIT; exit 130' INT
+trap 'abort_dispatch TERM; cleanup 143; trap - EXIT; exit 143' TERM
 trap cleanup EXIT
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -874,19 +897,6 @@ run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by 
   return "$rc"
 }
 
-# A signal-killed dispatch otherwise leaves no trace at all: the driver logs
-# only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
-# so an abort recorded there would satisfy a plan gate with nothing behind it.
-abort_dispatch() { # $1=signal name
-  [[ -n "$CODEX_PID" ]] && kill -TERM "$CODEX_PID" 2>/dev/null
-  if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
-    printf 'signal=%s\nthread=%s\nmode=%s\nat=%s\nnote=%s\n' \
-      "$1" "$THREAD" "${MODE:-unresolved}" "$(date -u +%FT%TZ)" \
-      "dispatch killed before a reply; the thread is intact - resume it, and use --detach for anything that may outlive the caller timeout" \
-      > "$STATE_DIR/${THREAD}.last-abort" 2>/dev/null || true
-  fi
-}
-
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
   MODE="oneshot"
@@ -1010,8 +1020,20 @@ if ! $ONESHOT; then
     fi
     # Sidecars keep the pre-dispatch snapshots for /status and for readers of
     # logs written before the header carried them.
-    [[ -n "$PRE_FP" ]] && printf '%s\n' "$PRE_FP" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
-    [[ -n "$PRE_FP_PLAN" ]] && printf '%s\n' "$PRE_FP_PLAN" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+    # A fingerprint that could not be computed must REMOVE the sidecar, not skip
+    # the write: left in place it describes an older dispatch, and the gate then
+    # attributes this reply to a state it never judged — releasing, then
+    # immediately re-blocking, on work that was in fact reviewed.
+    if [[ -n "$PRE_FP" ]]; then
+      printf '%s\n' "$PRE_FP" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    else
+      rm -f "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
+    fi
+    if [[ -n "$PRE_FP_PLAN" ]]; then
+      printf '%s\n' "$PRE_FP_PLAN" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+    elif [[ "$(raw_plan_thread)" == "$THREAD" ]]; then
+      rm -f "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
+    fi
   fi
 
   # Rotate BEFORE appending so the newest entry always lands in the current

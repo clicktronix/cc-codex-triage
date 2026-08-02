@@ -100,6 +100,22 @@ fi
 IDX="$(mktemp "${TMPDIR:-/tmp}/cc-gate-idx.XXXXXX")" || exit 0
 rm -f "$IDX"                        # git needs to create it; a 0-byte file is not a valid index
 trap 'rm -f "$IDX" "$IDX.lock"' EXIT
+
+# Whole-tree runs SEED the throwaway index from a cached copy, so git's stat
+# cache survives between turns and `git add -A` re-hashes only what actually
+# changed. From a cold empty index every turn end rehashes the entire worktree
+# — 0.2 s here, seconds on a monorepo, twice per Stop with both gates armed,
+# against a 30 s hook timeout past which the gates stop evaluating at all.
+#
+# The cache is an optimisation only: a stale or corrupt one is repaired by the
+# `add -A` that follows, and concurrent runs each work on their own copy, so the
+# worst a race costs is a colder cache. Scoped runs keep the cold index — they
+# cover two directories, and a cache keyed on one scope would carry entries from
+# another.
+CACHE="$STATE_DIR/gate-index"
+if [ "$#" -eq 0 ] && [ -f "$CACHE" ]; then
+  cp "$CACHE" "$IDX" 2>/dev/null || rm -f "$IDX"
+fi
 export GIT_INDEX_FILE="$IDX"        # the repo's real index and worktree are never touched
 
 set -f                              # pathspecs reach git unexpanded
@@ -133,6 +149,11 @@ fi
 TREE="$(git write-tree 2>/dev/null)" || exit 0
 [ -n "$TREE" ] || exit 0
 
+# Refresh the cache with the index we just built, atomically.
+if [ "$#" -eq 0 ] && [ -d "$STATE_DIR" ]; then
+  cp "$IDX" "$CACHE.$$" 2>/dev/null && mv -f "$CACHE.$$" "$CACHE" 2>/dev/null || rm -f "$CACHE.$$" 2>/dev/null
+fi
+
 # Fold in the fingerprints of DIRTY submodules collected before the index was
 # swapped (see above). Their gitlink alone cannot see inside them.
 if [ -n "${DIRTY_SUBS:-}" ]; then
@@ -142,7 +163,11 @@ if [ -n "${DIRTY_SUBS:-}" ]; then
 '
   for sub in $DIRTY_SUBS; do
     IFS="$OLD_IFS"
-    child="$( cd "$sub" 2>/dev/null && GIT_INDEX_FILE= bash "$SELF" 2>/dev/null )" || exit 0
+    # `env -u`, not `GIT_INDEX_FILE=`: git falls back to .git/index only when
+    # the variable is ABSENT. Set to the empty string it is a literal index
+    # path, so the child probed an empty index, saw no gitlinks, and a dirty
+    # NESTED submodule was folded in as unchanged.
+    child="$( cd "$sub" 2>/dev/null && env -u GIT_INDEX_FILE bash "$SELF" 2>/dev/null )" || exit 0
     [ -n "$child" ] || exit 0          # a submodule we cannot hash means an unknown state
     SUB_FP="$SUB_FP$sub $child
 "

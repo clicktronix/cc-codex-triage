@@ -395,6 +395,9 @@ v '  REQUEST_CHANGES---'      REQUEST_CHANGES
 v '  ## REQUEST_CHANGES'      REQUEST_CHANGES
 # Refused: any line carrying other words. Tolerating those would also accept
 # the first of these, which is a REFUSAL to approve.
+v '  > APPROVE'                                     -
+v '  - APPROVE'                                     -
+v '  > **APPROVE**'                                 -
 v '  ## Verdict: very close, but not quite APPROVE'  -
 v '  I would not give APPROVE here'                  -
 v '  **Final review decision: APPROVE.**'            -
@@ -422,6 +425,11 @@ FP_BEFORE="$(fp_now)"
 ln -s /nonexistent/target aaa-dangling
 [[ -n "$(fp_now)" && "$(fp_now)" != "$FP_BEFORE" ]] && ok "a dangling symlink is hashable content, not a failure" || bad "dangling symlink broke the fingerprint"
 rm -f aaa-dangling
+# The cache is cleared FIRST: chmod does not change content, so a warm stat
+# cache legitimately answers without re-reading the file and no degradation
+# happens. This asserts the cold-compute failure path, and leaving the cache in
+# made the suite flaky — the same tree answering two ways run to run.
+rm -f "$SD/gate-index"
 chmod 000 zzz.txt
 [[ -z "$(fp_now)" ]] && ok "an unreadable file -> empty (caller fails open)" || bad "fabricated a hash for an unreadable file"
 # Degrading to the weaker dirty-tree test must be as loud as a missing script.
@@ -476,6 +484,23 @@ mkdir -p docs/plans; echo "# p" > docs/plans/p.md
 [[ "$(fp_now docs/plans docs/PLANS)" != "$EMPTY_SCOPE" ]] && ok "a first plan doc moves it" || bad "first plan doc invisible"
 rm -rf docs
 
+echo "== the index cache changes speed, never the answer =="
+# Whole-tree runs seed the throwaway index from a cached copy so git's stat
+# cache survives between turns. A cache that altered the hash — or one that went
+# stale across an edit — would be a gate that fires at random.
+rm -f "$SD/gate-index"
+COLD1="$(fp_now)"
+WARM1="$(fp_now)"
+[[ "$COLD1" == "$WARM1" ]] && ok "a warm run agrees with a cold one" || bad "cache changed the hash: $COLD1 vs $WARM1"
+echo "edited under a warm cache" >> f.txt
+WARM2="$(fp_now)"
+[[ "$WARM2" != "$WARM1" ]] && ok "and still sees an edit made since it was written" || bad "the cache hid an edit"
+rm -f "$SD/gate-index"
+[[ "$(fp_now)" == "$WARM2" ]] && ok "and a cold run agrees with the warm one again" || bad "cold and warm diverge after an edit"
+git checkout -q -- f.txt 2>/dev/null
+[[ ! -e "$SD/gate-index.$$" ]] && ok "no cache temp left behind" || bad "cache temp leaked"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== fingerprint: dirty submodule content is inside the cycle =="
 # write-tree records a submodule as a GITLINK, so edits inside one leave the
 # superproject tree identical and no cycle opens — and because the fingerprint
@@ -484,6 +509,9 @@ SUBT="$(mktemp -d "${TMPDIR:-/tmp}/cc-sub.XXXXXX")"
 ( git init -q -b main "$SUBT/lib" >/dev/null 2>&1
   cd "$SUBT/lib" && git config user.email t@t.t && git config user.name t \
     && echo lib > lib.txt && git add -A && git commit -qm init ) >/dev/null 2>&1
+( git init -q -b main "$SUBT/lib2" >/dev/null 2>&1
+  cd "$SUBT/lib2" && git config user.email t@t.t && git config user.name t \
+    && echo lib2 > lib2.txt && git add -A && git commit -qm init ) >/dev/null 2>&1
 if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" vendor ) >/dev/null 2>&1; then
   git commit -qm "add submodule" >/dev/null 2>&1
   S_CLEAN="$(fp_now)"
@@ -497,6 +525,27 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
   echo untracked > vendor/new.txt
   [[ "$(fp_now)" != "$S_CLEAN" ]] && ok "an untracked file inside a submodule counts too" || bad "untracked submodule content invisible"
   rm -f vendor/new.txt
+
+  # A submodule inside a submodule. The recursion ran the child with
+  # `GIT_INDEX_FILE=` — empty, which git reads as a literal index path rather
+  # than as "unset" — so the child probed an EMPTY index, saw no gitlinks, and
+  # folded the inner one in as unchanged.
+  if ( cd "$SUBT/lib" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib2" inner ) >/dev/null 2>&1 \
+     && ( cd "$SUBT/lib" && git commit -qm "add inner" ) >/dev/null 2>&1 \
+     && ( cd "$T/vendor" && git -c protocol.file.allow=always submodule update -q --init --recursive ) >/dev/null 2>&1; then
+    git -C vendor pull -q origin main >/dev/null 2>&1 || git -C vendor fetch -q origin >/dev/null 2>&1
+    ( cd "$T/vendor" && git -c protocol.file.allow=always submodule update -q --init --recursive ) >/dev/null 2>&1
+    if [[ -d "$T/vendor/inner" ]]; then
+      N_CLEAN="$(fp_now)"
+      echo "edited two levels down" >> "$T/vendor/inner/lib2.txt"
+      [[ "$(fp_now)" != "$N_CLEAN" ]] && ok "an edit inside a NESTED submodule moves the fingerprint" || bad "nested submodule content invisible"
+      git -C "$T/vendor/inner" checkout -q -- lib2.txt 2>/dev/null
+    else
+      skip "nested submodule did not materialise — that coverage did NOT run"
+    fi
+  else
+    skip "nested submodule fixture unavailable — that coverage did NOT run"
+  fi
 
   # submodule.<name>.ignore exists to keep `git status` quiet, which is exactly
   # why a gate must not honour it: with `all`, a modified submodule produces no
@@ -540,7 +589,7 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
     rm -rf .gitmodules ".git/modules/vendor lib"
     git add -A >/dev/null 2>&1; git commit -qm "drop spaced submodule" >/dev/null 2>&1
   else
-    ok "spaced-path submodule fixture unavailable (skipped)"
+    skip "spaced-path submodule fixture unavailable — that coverage did NOT run"
   fi
 
   # Scoped (autoplan) mode used to skip submodules entirely, so a plan document
@@ -555,11 +604,11 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
     rm -rf .gitmodules .git/modules/docs
     git add -A >/dev/null 2>&1; git commit -qm "drop plan submodule" >/dev/null 2>&1
   else
-    ok "scoped submodule fixture unavailable (skipped)"
+    skip "scoped submodule fixture unavailable — that coverage did NOT run"
   fi
   rm -rf docs
 else
-  ok "submodule fixture unavailable in this environment (skipped)"
+  skip "submodule fixtures unavailable — ELEVEN dirty-submodule assertions did NOT run"
 fi
 rm -rf "$SUBT"
 
@@ -1080,6 +1129,28 @@ expect_allow "and the released plan stays released"
 rm -f "$SD/autoplan.armed" "$SD/plan-main.log"
 rm -rf docs; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+echo "== an idle-consumed verdict is not re-spent after a rotation =="
+# The cut is a PAIR: byte offset and rotation generation. Advancing only the
+# offset left the generation stale, so the next rotation reset the offset to 0
+# and the consumed APPROVE released a cycle it had already answered — and with
+# the fingerprint unavailable it ALLOWED the turn outright.
+git add -A >/dev/null && git commit -qm "settle before re-spend test" >/dev/null 2>&1
+rm -f "$SD/review-main.log-gen"
+IDLE_FP="$(fp_now)"
+printf '1\n' > "$SD/review-main.log-gen"                       # the driver rotated
+printf '[t] mode=resume thread=review-main round=9 fp=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$IDLE_FP" > "$SD/review-main.log"
+printf '%s\n' "$IDLE_FP" > "$SD/review-main.dispatch-fp"
+arm_review_fp main review-main 3 0 0 "$IDLE_FP" 0               # armed at generation 0
+expect_allow "an idle turn consumes the verdict"
+[[ "$(sed -n 's/^log_gen_at_arming=//p' "$SD/autoreview.armed")" == "1" ]] \
+  && ok "and records the generation it consumed at" || bad "idle consumption left the generation stale"
+echo "brand new, reviewed by nobody" >> f.txt
+expect_block "the consumed verdict cannot release the NEXT cycle"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "and nothing is recorded as released" || bad "a re-spent verdict wrote released_fp"
+rm -f "$SD/autoreview.armed" "$SD/review-main.log" "$SD/review-main.log-gen" "$SD/review-main.dispatch-fp"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 echo "== rotation does not hide a verdict when the new log is not smaller =="
 # The cut is a byte offset into the log as it WAS. Rotation makes it point into
 # unrelated content, and the size test only notices when the replacement is
@@ -1104,6 +1175,21 @@ expect_allow "a rotation makes the whole current log post-cut, and the verdict i
 expect_allow "which does not re-trigger on the next turn"
 rm -f "$SD/autoreview.armed" "$SD/review-main.log" "$SD/review-main.log-gen" "$SD/review-main.dispatch-fp"
 git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== /status keeps a plan-scope fallback when the script is missing =="
+# Resolved solely by shelling out, an absent gate-fingerprint.sh left plan_paths
+# empty and the status line became `git status -- ` — no pathspec at all — so
+# every change in the tree was counted as a plan-doc change.
+SSH_DIR="$T/status-only"; mkdir -p "$SSH_DIR"
+cp "$(dirname "$HOOK")/../scripts/status.sh" "$(dirname "$HOOK")/../scripts/lib.sh" \
+   "$(dirname "$HOOK")/../scripts/last-verdict.sh" "$SSH_DIR/"     # deliberately NO gate-fingerprint.sh
+rm -rf docs; echo "a code change" >> f.txt
+SOUT="$(bash "$SSH_DIR/status.sh" 2>/dev/null | grep 'working tree')"
+printf '%s' "$SOUT" | grep -q '0 plan-doc change' \
+  && ok "an absent fingerprint script does not turn every file into a plan doc" \
+  || bad "plan-doc count without a fallback: $SOUT"
+git checkout -q -- f.txt 2>/dev/null; rm -rf "$SSH_DIR"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
 echo "== the plan scope has ONE definition, and everything follows it =="
 # The default lived in four files (hook, driver, /status, the arming command).

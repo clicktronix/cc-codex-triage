@@ -491,6 +491,15 @@ OUT="$(cd "$REPO" && CC_DISPATCH_WAIT=99999999999999999999 bash "$DISPATCH" d-bi
 [[ "$rc" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "an absurd CC_DISPATCH_WAIT falls back to the default" || bad "oversized wait broke the dispatch (rc=$rc out='$OUT')"
 grep -q 'integer expression' "$T/derr" && bad "arithmetic error leaked from the oversized wait" || ok "and no arithmetic error is emitted"
 
+# A value-taking flag BEFORE the thread must not be mistaken for the thread:
+# the driver parses option/value pairs and accepts the positional anywhere, so a
+# value-blind scan here watched a thread that does not exist while the dispatch
+# ran fine under its real name.
+rm -rf "$SD"
+OUT="$(cd "$REPO" && bash "$DISPATCH" --topic "a label" d-flagfirst <<< "hi" 2>"$T/derr")"; rc=$?
+[[ "$rc" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "a flag before the thread still returns the reply" || bad "flag-first dispatch rc=$rc out='$OUT'"
+[[ -s "$SD/d-flagfirst.id" ]] && ok "and the thread it watched is the one that ran" || bad "watched the wrong thread: $(ls "$SD" 2>/dev/null | tr '\n' ' ')"
+
 rm -rf "$SD"
 SLOWBIN2="$T/slowbin2"; mkdir -p "$SLOWBIN2"
 printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN2/codex"
@@ -545,6 +554,62 @@ grep -q '^signal=TERM' "$SD/abrt.last-abort" 2>/dev/null && ok "the abort left a
 [[ ! -e "$SD/abrt.log" ]] && ok "and nothing was appended to the thread log" || bad "abort grew the log — autoplan would release on it"
 pkill -f "$SLOWBIN/codex" 2>/dev/null
 rm -rf "$SLOWBIN" "$SD"
+
+echo "== a dispatch whose fingerprint fails clears the sidecar, not keeps it =="
+# Left in place, the previous dispatch's snapshot describes a state THIS reply
+# never judged: the gate releases against it and then immediately re-blocks
+# with "the code changed after it" on work that was in fact reviewed.
+rm -rf "$SD"
+run sfp >/dev/null 2>&1
+[[ -s "$SD/sfp.dispatch-fp" ]] && ok "a normal dispatch records its snapshot" || bad "no snapshot from a normal dispatch"
+FPGIT="$T/fpfail-git"; mkdir -p "$FPGIT"
+{ echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do [ "$a" = "write-tree" ] && exit 128; done'
+  echo "exec \"$(command -v git)\" \"\$@\""
+} > "$FPGIT/git"
+chmod +x "$FPGIT/git"
+PATH="$FPGIT:$PATH" run sfp >/dev/null 2>&1
+[[ ! -e "$SD/sfp.dispatch-fp" ]] && ok "a dispatch with no computable snapshot leaves none behind" || bad "stale snapshot survived: $(cat "$SD/sfp.dispatch-fp")"
+rm -rf "$FPGIT" "$SD"
+
+echo "== every function a trap calls is defined before the trap is installed =="
+# A trap installed above its handler is a live grenade: a signal arriving in
+# between runs `abort_dispatch: command not found`, errexit fires on the 127 and
+# the rest of the handler — cleanup, the lease release, exit 143 — never runs.
+# The window covered lease acquisition and the pre-dispatch fingerprint, which
+# is exactly where a caller timeout lands. Structural, because the window
+# cannot be hit deterministically from outside.
+TRAP_LINE="$(grep -n "^trap '" "$DRIVER" | head -1 | cut -d: -f1)"
+for fn in abort_dispatch cleanup; do
+  DEF_LINE="$(grep -n "^$fn() {" "$DRIVER" | head -1 | cut -d: -f1)"
+  if [[ -n "$DEF_LINE" && -n "$TRAP_LINE" && "$DEF_LINE" -lt "$TRAP_LINE" ]]; then
+    ok "$fn is defined before the first trap that calls it"
+  else
+    bad "$fn defined at line ${DEF_LINE:-?}, after the trap at ${TRAP_LINE:-?}"
+  fi
+done
+
+echo "== a killed DETACHED worker publishes the signal status, not 0 =="
+# The traps run abort_dispatch before cleanup, and that clobbered $? — cleanup
+# published rc=0, so detach-watch.sh matched the pid, took its rc=0 branch and
+# reported DONE for a dispatch that was killed mid-flight.
+rm -rf "$SD"
+SLOWBIN3="$T/slowbin3"; mkdir -p "$SLOWBIN3"
+printf '#!/usr/bin/env bash\ntrap "kill %%1 2>/dev/null; exit 143" TERM\nsleep 60 &\nwait %%1\n' > "$SLOWBIN3/codex"
+chmod +x "$SLOWBIN3/codex"
+OUT="$(cd "$REPO" && PATH="$SLOWBIN3:$PATH" bash "$DRIVER" dkill --detach <<< "hi" 2>&1)"
+DKPID="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while [[ ! -s "$SD/dkill.active" && $i -lt 60 ]]; do sleep 0.1; i=$((i+1)); done
+kill -TERM "$DKPID" 2>/dev/null
+i=0; while kill -0 "$DKPID" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)); done
+sleep 0.3
+DKRC="$(sed -n 's/^rc=//p' "$SD/dkill.detach-status" 2>/dev/null)"
+[[ "$DKRC" == "143" ]] && ok "detach-status carries the signal status" || bad "killed worker published rc=$DKRC"
+WOUT="$(cd "$REPO" && CC_DETACH_WATCH_TIMEOUT=4 bash "$(dirname "$DRIVER")/detach-watch.sh" dkill "$DKPID" 0 2>&1)"; wrc=$?
+[[ "$wrc" -ne 0 ]] && ok "and the watcher calls it a failure, not DONE" || bad "watcher reported success for a killed dispatch"
+printf '%s' "$WOUT" | grep -q '^DONE' && bad "watcher printed DONE for a killed dispatch" || ok "and says FAILED instead"
+pkill -f "$SLOWBIN3/codex" 2>/dev/null
+rm -rf "$SLOWBIN3" "$SD"
 
 echo "== dispatch-fp is written on SUCCESS, and scoped for the plan gate =="
 rm -rf "$SD"
