@@ -126,6 +126,28 @@
 
 set -euo pipefail
 
+# ── the detached-child role ───────────────────────────────────────────────
+# "You are the re-exec'd child of a --detach launcher": redirect your reply into
+# the thread's detach sidecars, publish your PID to the READY file, own the
+# prompt tmpfile. It applies to exactly one process.
+#
+# It travels in argv (`--detach-child <ready> <prompt>`, internal), because argv
+# is NOT inherited and the environment is. Carried in exported variables, the
+# role was inherited by everything the worker started — including the bash Codex
+# runs — so a driver invoked from inside Codex (the model-invocable
+# second-opinion skill does exactly this, and so does the documented
+# direct-driver route) believed IT was the detached child. Reproduced: empty
+# stdout, the reply diverted into the sidecars, a stale READY file recreated,
+# and the OUTER launcher's prompt tmpfile deleted.
+#
+# Any such marker still arriving through the environment therefore belongs to an
+# ancestor, never to us. Erased before anything can read it, so neither a
+# pre-upgrade launcher still running nor Codex's own shell can capture a fresh
+# direct invocation.
+DETACH_PROMPT_FILE=""
+DETACH_READY_FILE=""
+unset CC_CODEX_PROMPT_TMPFILE CC_CODEX_READY_FILE
+
 # ── args ──────────────────────────────────────────────────────────────────
 FORCE_NEW=false
 ONESHOT=false
@@ -156,6 +178,11 @@ while (( $# )); do
     --new) FORCE_NEW=true; shift ;;
     --oneshot) ONESHOT=true; shift ;;
     --detach) DETACH=true; shift ;;
+    # INTERNAL, set only by this script's own detach launcher on the process it
+    # spawns. Deliberately not in --help or any command file.
+    --detach-child)
+      [[ $# -ge 3 ]] || { echo "--detach-child needs <ready-file> <prompt-file>" >&2; exit 1; }
+      DETACH_READY_FILE="$2"; DETACH_PROMPT_FILE="$3"; shift 3 ;;
     --require-existing) REQUIRE_EXISTING=true; shift ;;
     --model)  [[ $# -ge 2 ]] || { echo "--model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
     --effort) [[ $# -ge 2 ]] || { echo "--effort needs a value" >&2; exit 1; }; EFFORT="$2"; shift 2 ;;
@@ -447,8 +474,9 @@ if $DETACH; then
   cat > "$PROMPT_TMPFILE"      # persist stdin for the re-exec'd child
   READY_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.ready.XXXXXX")"
   SPAWNOUT_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/cc-codex-${THREAD}.spawnout.XXXXXX")"
-  export CC_CODEX_PROMPT_TMPFILE="$PROMPT_TMPFILE"
-  export CC_CODEX_READY_FILE="$READY_FILE"
+  # The child's role is handed to it in argv (--detach-child, on the spawn
+  # below), never in the environment: an exported marker would be inherited by
+  # every process the child later starts, Codex's own shell included.
   # log-offset baseline for detach-watch.sh, measured BEFORE the spawn: the
   # child cannot have appended anything yet, so a fast reply landing before
   # the watcher starts is still counted as growth. (Measuring after the
@@ -469,13 +497,13 @@ if $DETACH; then
   # tmpfile only ever captures PRE-LEASE output (usage errors, busy
   # refusals) and is removed by every launcher exit path.
   if [[ "$DETACH_ISOLATOR" == "setsid" ]]; then
-    setsid bash "$0" "${CHILD_ARGS[@]}" \
+    setsid bash "$0" "${CHILD_ARGS[@]}" --detach-child "$READY_FILE" "$PROMPT_TMPFILE" \
       < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   else
     # No `--` separator: with -c, sys.argv[0] is '-c' — the exec target is
     # sys.argv[1] ('bash').
     python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      bash "$0" "${CHILD_ARGS[@]}" \
+      bash "$0" "${CHILD_ARGS[@]}" --detach-child "$READY_FILE" "$PROMPT_TMPFILE" \
       < "$PROMPT_TMPFILE" > "$SPAWNOUT_TMPFILE" 2>&1 &
   fi
   SPAWN_PID=$!
@@ -594,8 +622,8 @@ cleanup() {
   fi
   # Detach hook: when a launcher exported a persisted-prompt tmpfile, this
   # (child) invocation owns it. NEVER remove a READY file — the parent owns it.
-  if [[ -n "${CC_CODEX_PROMPT_TMPFILE:-}" ]]; then
-    rm -f "$CC_CODEX_PROMPT_TMPFILE"
+  if [[ -n "$DETACH_PROMPT_FILE" ]]; then
+    rm -f "$DETACH_PROMPT_FILE"
   fi
 }
 trap 'abort_dispatch INT;  cleanup; trap - EXIT; exit 130' INT
@@ -749,7 +777,7 @@ if ! $ONESHOT; then
   # (a concurrent exit-10 loser never reaches this line). The stale status
   # record is removed BEFORE dispatch so the watcher can never read an old
   # verdict against this run's PID.
-  if [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+  if [[ -n "$DETACH_READY_FILE" ]]; then
     rm -f "$STATE_DIR/${THREAD}.detach-status"
     exec > "$STATE_DIR/${THREAD}.detach-output" 2> "$STATE_DIR/${THREAD}.detach-stderr"
     DETACH_CHILD=true
@@ -810,15 +838,15 @@ if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
 fi
 
 # ── detach handshake (child side) ─────────────────────────────────────────
-# A --detach launcher exported CC_CODEX_READY_FILE and is polling it for our
+# A --detach launcher handed us --detach-child and is polling that file for our
 # PID. Written only AFTER the lease is held (acquired above, before any
 # thread-state mutation) and every preflight passed, so a DETACHED report
 # proves /cleanup already sees this thread as in-use. The parent owns the
 # READY file and removes it — NEVER delete it here.
-if ! $ONESHOT && [[ -n "${CC_CODEX_READY_FILE:-}" ]]; then
+if ! $ONESHOT && [[ -n "$DETACH_READY_FILE" ]]; then
   # (The canonical sidecar boundary + status slate were established right
   # after lease acquisition, above — here we only publish the PID.)
-  printf '%s' "$$" > "$CC_CODEX_READY_FILE"
+  printf '%s' "$$" > "$DETACH_READY_FILE"
 fi
 
 # ── code state at dispatch time ───────────────────────────────────────────

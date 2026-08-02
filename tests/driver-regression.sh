@@ -28,6 +28,9 @@ for a in "$@"; do
 done
 # record argv so tests can assert the driver forwarded flags to codex
 printf '%s\0' "$@" > "${FAKE_CODEX_ARGV:-/dev/null}"
+# FAKE_CODEX_ENVDUMP=<path>: record the environment codex was handed, so a test
+# can assert what the driver did NOT pass on to it.
+[[ -n "${FAKE_CODEX_ENVDUMP:-}" ]] && env > "$FAKE_CODEX_ENVDUMP"
 # append one line per invocation so tests can COUNT dispatches (race tests)
 [[ -n "${FAKE_CODEX_CALLS:-}" ]] && echo "$$" >> "$FAKE_CODEX_CALLS"
 # The prompt is the whole point of a dispatch, so KEEP it when a test asks:
@@ -1078,6 +1081,32 @@ echo "== detach-status: published by the worker, pid + rc=0 =="
 { [[ "$(sed -n 's/^pid=//p' "$SD/p4.detach-status" 2>/dev/null)" == "$DP4" ]] \
   && [[ "$(sed -n 's/^rc=//p' "$SD/p4.detach-status" 2>/dev/null)" == "0" ]]; } \
   && ok "detach-status names the worker pid with rc=0" || bad "detach-status wrong: $(cat "$SD/p4.detach-status" 2>/dev/null)"
+
+echo "== the detached role travels in argv, never in the environment =="
+# The role markers used to be EXPORTED, so everything the worker started
+# inherited them — including the bash Codex runs. A driver invoked from inside
+# Codex (the model-invocable second-opinion skill does exactly this) then
+# believed IT was the detached child: empty stdout, reply diverted into the
+# sidecars, a stale READY file recreated, and the OUTER launcher's prompt
+# tmpfile deleted. argv is not inherited; the environment is.
+ENVOUT="$T/childenv"; rm -f "$ENVOUT"
+FAKE_CODEX_ENVDUMP="$ENVOUT" run pe --detach
+DPE="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
+i=0; while kill -0 "$DPE" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+[[ -s "$ENVOUT" ]] && ok "the detached worker really reached codex" || bad "env dump missing — the probe measured nothing"
+grep -q '^CC_CODEX_READY_FILE=\|^CC_CODEX_PROMPT_TMPFILE=' "$ENVOUT" 2>/dev/null \
+  && bad "codex inherited the detach control markers" || ok "codex sees no detach control markers"
+
+# And the other direction: markers arriving through the environment must not
+# capture a direct invocation.
+rm -rf "$SD"
+FAKEREADY="$T/fake.ready"; FAKEPROMPT="$T/fake.prompt"; : > "$FAKEPROMPT"; rm -f "$FAKEREADY"
+OUT="$(CC_CODEX_READY_FILE="$FAKEREADY" CC_CODEX_PROMPT_TMPFILE="$FAKEPROMPT" bash "$DRIVER" pe2 <<< "ping" 2>/dev/null)"
+[[ "$OUT" == "FAKE_REPLY" ]] && ok "an inherited marker does not divert the reply" || bad "inherited markers hijacked the dispatch (out='$OUT')"
+[[ ! -f "$FAKEREADY" ]] && ok "and no READY file is forged" || bad "forged a READY file for an ancestor"
+[[ -f "$FAKEPROMPT" ]] && ok "and the ancestor's prompt file survives" || bad "deleted an ancestor's prompt tmpfile"
+[[ ! -f "$SD/pe2.detach-output" ]] && ok "and nothing is written to the detach sidecars" || bad "reply diverted into detach sidecars"
+rm -rf "$SD"
 
 echo "== detach + strict mutation: worker exits 5 with a log append — watcher must FAIL, not DONE =="
 # B2 regression: log growth alone is not success. The stub mutates a tracked
