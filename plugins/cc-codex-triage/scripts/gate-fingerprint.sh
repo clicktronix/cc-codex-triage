@@ -107,14 +107,19 @@ trap 'rm -f "$IDX" "$IDX.lock"' EXIT
 # — 0.2 s here, seconds on a monorepo, twice per Stop with both gates armed,
 # against a 30 s hook timeout past which the gates stop evaluating at all.
 #
-# The cache is an optimisation only: a stale or corrupt one is repaired by the
-# `add -A` that follows, and concurrent runs each work on their own copy, so the
-# worst a race costs is a colder cache. Scoped runs keep the cold index — they
-# cover two directories, and a cache keyed on one scope would carry entries from
-# another.
+# A corrupt cache is NOT self-repairing: git rejects an invalid index outright,
+# so `add -A` fails, the run returns no fingerprint, and the same bad file is
+# recopied every turn — a permanent degradation to the dirty-tree predicate,
+# which is the "commit makes the gate go quiet" failure this branch removed. So
+# a failure on a seeded index discards the cache and retries once cold, and only
+# a cold failure is a real one. Concurrent runs each work on their own copy, so
+# the worst a race costs is a colder cache. Scoped runs keep the cold index —
+# they cover two directories, and a cache keyed on one scope would carry entries
+# from another.
 CACHE="$STATE_DIR/gate-index"
+SEEDED=0
 if [ "$#" -eq 0 ] && [ -f "$CACHE" ]; then
-  cp "$CACHE" "$IDX" 2>/dev/null || rm -f "$IDX"
+  if cp "$CACHE" "$IDX" 2>/dev/null; then SEEDED=1; else rm -f "$IDX"; fi
 fi
 export GIT_INDEX_FILE="$IDX"        # the repo's real index and worktree are never touched
 
@@ -139,7 +144,24 @@ else
   # Not `:(exclude)` on the add: naming an ignored path in a pathspec makes git
   # exit 1, and the state dir is meant to be gitignored. Drop it afterwards
   # instead, which also covers repos that never ignored it.
-  git add -A -- . >/dev/null 2>&1 || exit 0
+  if ! git add -A -- . >/dev/null 2>&1; then
+    # Seeded run failed: assume the cache and retry once from a cold index.
+    [ "$SEEDED" = "1" ] || exit 0
+    rm -f "$CACHE" 2>/dev/null
+    rm -f "$IDX" 2>/dev/null
+    SEEDED=0
+    git add -A -- . >/dev/null 2>&1 || exit 0
+  fi
+  # A file that became gitignored is still TRACKED in a seeded index — ignore
+  # rules do not evict existing entries — so it would keep contributing to the
+  # hash, contradicting the exclusion this script documents. Cold indexes never
+  # have the problem.
+  if [ "$SEEDED" = "1" ]; then
+    _ign="$(git ls-files -c -i --exclude-standard 2>/dev/null)" || exit 0
+    if [ -n "$_ign" ]; then
+      printf '%s\n' "$_ign" | git update-index --force-remove --stdin >/dev/null 2>&1 || exit 0
+    fi
+  fi
   # Status-checked like the rest: if this fails for a reason --ignore-unmatch
   # does not cover, the tree would include the state dir and the gate would
   # re-arm on the driver's own writes until the cap.

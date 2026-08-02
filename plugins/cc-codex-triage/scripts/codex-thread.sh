@@ -592,7 +592,27 @@ DETACH_CHILD=false
 # only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
 # so an abort recorded there would satisfy a plan gate with nothing behind it.
 abort_dispatch() { # $1=signal name
-  [[ -n "${CODEX_PID:-}" ]] && kill -TERM "$CODEX_PID" 2>/dev/null
+  # REAP the child before returning: cleanup releases the lease straight after,
+  # and a codex that delays or ignores TERM would then keep running — paid, and
+  # writing into temp files we are about to delete — while another dispatch
+  # acquires the same thread and resumes it concurrently. Bounded TERM wait,
+  # then KILL, the same escalation the detach launcher uses.
+  if [[ -n "${CODEX_PID:-}" ]]; then
+    kill -TERM "$CODEX_PID" 2>/dev/null
+    local _i=0
+    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 30 ]]; do
+      sleep 0.1
+      _i=$((_i+1))
+    done
+    if kill -0 "$CODEX_PID" 2>/dev/null; then
+      kill -KILL "$CODEX_PID" 2>/dev/null
+      _i=0
+      while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 20 ]]; do
+        sleep 0.1
+        _i=$((_i+1))
+      done
+    fi
+  fi
   if [[ "$ONESHOT" != true && -d "$STATE_DIR" ]]; then
     printf 'signal=%s\nthread=%s\nmode=%s\nat=%s\nnote=%s\n' \
       "$1" "$THREAD" "${MODE:-unresolved}" "$(date -u +%FT%TZ)" \
@@ -1052,11 +1072,18 @@ if ! $ONESHOT; then
       # byte here is newer than that cut, so the gate parses from 0 instead of
       # from an offset that now points into unrelated content.
       # No pipeline: `cat` on a missing file fails, and under `pipefail` that
-      # took the whole driver down with it AFTER a paid dispatch.
+      # took the whole driver down with it AFTER a paid dispatch. The grammar is
+      # strict for the same reason — `08` is not valid in shell arithmetic and
+      # a 20-digit value wraps, both of which would abort here, after the paid
+      # call but before the reply is logged or printed. Anything malformed is
+      # generation 0, so the count still advances.
       _gen="$(cat "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true)"
       _gen="${_gen//[^0-9]/}"
-      [[ -n "$_gen" ]] || _gen=0
-      printf '%s\n' "$(( _gen + 1 ))" > "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true
+      [[ "$_gen" =~ ^(0|[1-9][0-9]*)$ && "${#_gen}" -le 9 ]] || _gen=0
+      # Atomic: a reader must never see a half-written counter.
+      if printf '%s\n' "$(( _gen + 1 ))" > "$STATE_DIR/${THREAD}.log-gen.tmp" 2>/dev/null; then
+        mv -f "$STATE_DIR/${THREAD}.log-gen.tmp" "$STATE_DIR/${THREAD}.log-gen" 2>/dev/null || true
+      fi
     fi
   fi
   # Log format contract: the column-0 markers ([timestamp], PROMPT:, REPLY:,

@@ -397,6 +397,9 @@ v '  ## REQUEST_CHANGES'      REQUEST_CHANGES
 # the first of these, which is a REFUSAL to approve.
 v '  > APPROVE'                                     -
 v '  - APPROVE'                                     -
+v '  * APPROVE'                                     -
+v '  + APPROVE'                                     -
+v '  *   APPROVE'                                   -
 v '  > **APPROVE**'                                 -
 v '  ## Verdict: very close, but not quite APPROVE'  -
 v '  I would not give APPROVE here'                  -
@@ -497,6 +500,27 @@ WARM2="$(fp_now)"
 [[ "$WARM2" != "$WARM1" ]] && ok "and still sees an edit made since it was written" || bad "the cache hid an edit"
 rm -f "$SD/gate-index"
 [[ "$(fp_now)" == "$WARM2" ]] && ok "and a cold run agrees with the warm one again" || bad "cold and warm diverge after an edit"
+# A corrupt cache is not self-repairing — git rejects an invalid index outright,
+# so without the retry the run returns nothing and recopies the same bad file
+# every turn: a PERMANENT fall back to the dirty-tree predicate.
+COLD_GOOD="$(fp_now)"
+printf 'not an index at all' > "$SD/gate-index"
+[[ "$(fp_now)" == "$COLD_GOOD" ]] && ok "a corrupt cache is discarded and the run still answers" || bad "corrupt cache killed the fingerprint"
+[[ "$(fp_now)" == "$COLD_GOOD" ]] && ok "and the next run is not degraded either" || bad "corrupt cache persisted"
+# A file that becomes gitignored must leave the hash. Ignore rules do not evict
+# entries ALREADY in a seeded index, so the cache kept hashing it. The file has
+# to stay on disk for this: deleting it makes `add -A` drop the entry anyway,
+# which is why the first version of this test could not fail.
+rm -f "$SD/gate-index"
+echo "content" > cache-ignored.tmp
+WITH_FILE="$(fp_now)"                     # cold, then seeds the cache with it tracked
+echo "cache-ignored.tmp" >> .gitignore
+IGNORED_WARM="$(fp_now)"                  # warm cache, file still on disk, now ignored
+[[ "$IGNORED_WARM" != "$WITH_FILE" ]] && ok "a newly ignored file leaves the hash even from a warm cache" || bad "the cache kept hashing an ignored file"
+rm -f "$SD/gate-index"
+[[ "$(fp_now)" == "$IGNORED_WARM" ]] && ok "and a cold run agrees" || bad "warm and cold disagree on the ignored file"
+rm -f cache-ignored.tmp
+git checkout -q -- .gitignore 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 git checkout -q -- f.txt 2>/dev/null
 [[ ! -e "$SD/gate-index.$$" ]] && ok "no cache temp left behind" || bad "cache temp leaked"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
@@ -1002,6 +1026,19 @@ cat > "$T/steal-lock.sh" <<'STEAL'
 d="$1.lock"
 rm -rf "$d"; mkdir -p "$d"; printf 'replacement-owner' > "$d/owner"
 STEAL
+# The token stops the evicted holder DELETING the replacement's lock. It must
+# also stop it WRITING: acquisition proves ownership then, not now, so every
+# writer revalidates immediately before its rename.
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work for the write-after-eviction test" >> f.txt
+BEFORE_BLOCKS="$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")"
+CC_STOP_TEST_POST_LOCK_HOOK="$T/steal-lock.sh" run_hook
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "$BEFORE_BLOCKS" ]] \
+  && ok "a holder that lost the lock writes nothing" || bad "evicted holder still bumped the counter"
+grep -q "could not persist the blocks counter" "$ERR" && ok "and reports the counter as unpersisted" || bad "silent write-after-eviction"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 arm_review_fp main review-main 3 0 0 "$(fp_now)"
 echo "work for the steal test" >> f.txt
 CC_STOP_TEST_POST_LOCK_HOOK="$T/steal-lock.sh" run_hook
@@ -1146,6 +1183,33 @@ expect_allow "an idle turn consumes the verdict"
   && ok "and records the generation it consumed at" || bad "idle consumption left the generation stale"
 echo "brand new, reviewed by nobody" >> f.txt
 expect_block "the consumed verdict cannot release the NEXT cycle"
+[[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
+  && ok "and nothing is recorded as released" || bad "a re-spent verdict wrote released_fp"
+rm -f "$SD/autoreview.armed" "$SD/review-main.log" "$SD/review-main.log-gen" "$SD/review-main.dispatch-fp"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
+echo "== an EQUAL-SIZE rotation is still consumed, and the budget survives =="
+# The early exit compared the byte offset alone, so a rotation whose replacement
+# log happened to be exactly the stored size slipped through: the generation
+# stayed stale, and the next open cycle reset the cut to zero and re-spent the
+# verdict — repeatable, so revert/reapply kept refilling `blocks`.
+git add -A >/dev/null && git commit -qm "settle before equal-size test" >/dev/null 2>&1
+rm -f "$SD/review-main.log-gen"
+EQ_FP="$(fp_now)"
+printf '[t] mode=resume thread=review-main round=1 fp=%s\nPROMPT:\n  p\nREPLY:\n  APPROVE\n---\n' "$EQ_FP" > "$SD/review-main.log"
+EQ_SIZE="$(logsize "$SD/review-main.log")"
+printf '%s\n' "$EQ_FP" > "$SD/review-main.dispatch-fp"
+# Armed AT that size and generation 0 — then the driver rotates, and the
+# replacement log is byte-for-byte the same length.
+arm_review_fp main review-main 3 2 "$EQ_SIZE" "$EQ_FP" 0
+printf '1\n' > "$SD/review-main.log-gen"
+expect_allow "an idle turn with an equal-size rotation still allows"
+[[ "$(sed -n 's/^log_gen_at_arming=//p' "$SD/autoreview.armed")" == "1" ]] \
+  && ok "and the generation is consumed despite the identical byte count" || bad "equal-size rotation left the generation stale"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "2" ]] \
+  && ok "and the round budget is untouched by an idle pass" || bad "idle consumption refilled blocks"
+echo "new work nobody reviewed" >> f.txt
+expect_block "the consumed verdict cannot release the cycle that opens next"
 [[ -z "$(sed -n 's/^released_fp=//p' "$SD/autoreview.armed")" ]] \
   && ok "and nothing is recorded as released" || bad "a re-spent verdict wrote released_fp"
 rm -f "$SD/autoreview.armed" "$SD/review-main.log" "$SD/review-main.log-gen" "$SD/review-main.dispatch-fp"

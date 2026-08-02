@@ -39,10 +39,14 @@ _mtime_epoch() {
 ARMED_LOCK_TOKEN="$$.${RANDOM:-0}${RANDOM:-0}"
 
 armed_lock() {   # $1=armed file -> 0 if held
-  local d="$1.lock" i=0 now m1 m2
+  local d="$1.lock" i=0 now m1 m2 owner opid
   while [ "$i" -lt 25 ]; do
     if mkdir "$d" 2>/dev/null; then
-      printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null || true
+      # The token MUST land, or ownership cannot be proven before writing.
+      if ! printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null; then
+        rm -rf "$d" 2>/dev/null
+        return 1
+      fi
       return 0
     fi
     if [ "$(( i % 5 ))" -eq 0 ]; then
@@ -50,6 +54,15 @@ armed_lock() {   # $1=armed file -> 0 if held
       m1="$(_mtime_epoch "$d")"
       case "${m1:-}" in ''|*[!0-9]*) m1="" ;; esac
       if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
+        # A LIVE holder is slow, not dead — evicting it hands two writers the
+        # same lock.
+        owner="$(cat "$d/owner" 2>/dev/null)"
+        opid="${owner%%.*}"
+        case "$opid" in ''|*[!0-9]*) opid="" ;; esac
+        if [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null; then
+          sleep 0.05 2>/dev/null || sleep 1
+          i=$((i+1)); continue
+        fi
         m2="$(_mtime_epoch "$d")"
         if [ "$m1" = "$m2" ] && mv "$d" "$d.stale.$$" 2>/dev/null; then
           rm -rf "$d.stale.$$" 2>/dev/null
@@ -62,6 +75,10 @@ armed_lock() {   # $1=armed file -> 0 if held
   done
   return 1
 }
+
+# Do we STILL hold it? Checked before a write: an owner evicted after stalling
+# must not overwrite the new owner's state.
+armed_owned() { [ "$(cat "$1.lock/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ]; }
 
 armed_unlock() { # $1=armed file — releases ONLY our own lock
   [ "$(cat "$1.lock/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ] || return 0

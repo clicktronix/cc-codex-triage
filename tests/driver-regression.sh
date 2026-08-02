@@ -147,6 +147,20 @@ CC_CODEX_TRIAGE_LOG_CAP_BYTES=1000 run rot
 head -c 4000 /dev/zero | tr '\0' 'x' > "$SD/rot.log"
 CC_CODEX_TRIAGE_LOG_CAP_BYTES=1000 run rot
 [[ "$(cat "$SD/rot.log-gen" 2>/dev/null)" == "2" ]] && ok "each rotation advances it" || bad "second rotation: $(cat "$SD/rot.log-gen" 2>/dev/null)"
+# A malformed counter must not abort the driver: this runs AFTER the paid call
+# but BEFORE the reply is logged or printed, so an arithmetic error there loses
+# a reply that was already bought. `08` is the octal trap the hook guards
+# elsewhere; the 20-digit case wraps.
+for BADGEN in '08' 'garbage' '99999999999999999999' ''; do
+  printf '%s\n' "$BADGEN" > "$SD/rot.log-gen"
+  head -c 4000 /dev/zero | tr '\0' 'x' > "$SD/rot.log"
+  CC_CODEX_TRIAGE_LOG_CAP_BYTES=1000 run rot
+  [[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] \
+    && ok "counter [$BADGEN] does not cost the paid reply" || bad "counter [$BADGEN] lost the reply (rc=$RC out=[$OUT])"
+  [[ "$(cat "$SD/rot.log-gen")" == "1" ]] \
+    && ok "counter [$BADGEN] is treated as generation 0, advancing to 1" || bad "counter [$BADGEN] became $(cat "$SD/rot.log-gen")"
+done
+[[ -z "$(ls "$SD"/rot.log-gen.tmp 2>/dev/null)" ]] && ok "no counter temp left behind" || bad "counter temp leaked"
 unset CC_CODEX_TRIAGE_LOG_CAP_BYTES
 rm -rf "$SD"
 
@@ -588,6 +602,36 @@ for fn in abort_dispatch cleanup; do
     bad "$fn defined at line ${DEF_LINE:-?}, after the trap at ${TRAP_LINE:-?}"
   fi
 done
+
+echo "== a codex that IGNORES TERM is escalated before the lease is released =="
+# The handler sent one TERM and let cleanup release the lease immediately. A
+# codex that delays or ignores it keeps running — paid, writing into temp files
+# about to be deleted — while another dispatch can acquire the same thread. The
+# existing fake forwards TERM promptly, so it cannot show this.
+rm -rf "$SD"
+STUBBORN="$T/stubborn"; mkdir -p "$STUBBORN"
+printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 60\n' > "$STUBBORN/codex"
+chmod +x "$STUBBORN/codex"
+( cd "$REPO" && PATH="$STUBBORN:$PATH" bash "$DRIVER" stub1 <<< "hi" >/dev/null 2>&1 ) &
+i=0; while [ ! -f "$SD/stub1.active" ] && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)); done
+# The DRIVER's pid from the lease, not $!: `( … ) &` makes $! the subshell, and
+# signalling that leaves the driver untouched.
+DRVPID="$(cat "$SD/stub1.active" 2>/dev/null | tr -cd '0-9')"
+# The child starts a moment after the lease, once the pre-dispatch fingerprint
+# is done.
+i=0; CPID=""
+while [ -z "$CPID" ] && [ $i -lt 60 ]; do
+  CPID="$(pgrep -f "$STUBBORN/codex" | head -1)"
+  [ -n "$CPID" ] || { sleep 0.1; i=$((i+1)); }
+done
+[[ -n "$CPID" ]] && ok "a TERM-ignoring codex is running" || bad "no stubborn child to escalate against"
+kill -TERM "$DRVPID" 2>/dev/null
+i=0; while kill -0 "$DRVPID" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+[[ -n "$CPID" ]] && ! kill -0 "$CPID" 2>/dev/null \
+  && ok "it is KILLed rather than left running against a released lease" || bad "stubborn codex survived the driver"
+[[ ! -e "$SD/stub1.active" ]] && ok "and the lease is released only after that" || bad "lease left behind"
+pkill -f "$STUBBORN/codex" 2>/dev/null
+rm -rf "$STUBBORN" "$SD"
 
 echo "== a killed DETACHED worker publishes the signal status, not 0 =="
 # The traps run abort_dispatch before cleanup, and that clobbered $? — cleanup

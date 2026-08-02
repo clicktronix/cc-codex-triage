@@ -31,6 +31,10 @@ if [ "$VERB" = "write" ]; then BODY="$(cat)"; fi
 
 armed_lock "$FILE" || { echo "gate-state.sh: could not acquire $LOCK — nothing written." >&2; exit 2; }
 
+# Ownership is revalidated here, not just at acquisition: a holder evicted
+# after stalling past the staleness window must not write over its replacement.
+armed_owned "$FILE" || { armed_unlock "$FILE"; echo "gate-state.sh: lost the lock on $FILE before writing — nothing written." >&2; exit 2; }
+
 rc=0
 if [ "$VERB" = "write" ]; then
   # Per-writer temp + rename, as in the hook: no reader sees a half-written file.

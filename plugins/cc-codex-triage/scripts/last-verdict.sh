@@ -71,6 +71,11 @@ tail -c +"$(( OFF + 1 ))" "$LOG" 2>/dev/null | awk -v want="$WANT" '
     # Trim from the ENDS only: a global strip of "_" turns REQUEST_CHANGES into
     # REQUESTCHANGES and silently stops every change request being seen.
     line = $0
+    # A LIST ITEM is Codex quoting a verdict, not giving one. Rejected here,
+    # before any stripping, because a bullet `*` and an emphasis `**` are the
+    # same character: the marker must be followed by whitespace, which `**bold**`
+    # never is. Covers `*`, `+` and `-` alike.
+    if (line ~ /^[[:space:]]*[*+-][[:space:]]/) next
     # Headings, emphasis and indent only. NOT `>` or `-`: a blockquote or a
     # bullet is Codex QUOTING a verdict ("you told me earlier: > APPROVE"),
     # which must not release a gate — the same reason a verdict inside a PROMPT

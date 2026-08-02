@@ -119,6 +119,8 @@ has_field() { _field "$1" "$2"; [ "$HAS" -eq 1 ]; } # $1=file $2=key
 
 log_gen() { # $1=thread — how many times the driver has rotated this log
   local g
+  # Same grammar the driver writes with: a leading zero is not octal-safe in
+  # shell arithmetic, and anything malformed is generation 0.
   g="$(cat "$STATE_DIR/$1.log-gen" 2>/dev/null | tr -cd '0-9')"
   is_bounded_num "$g" || g=0
   printf '%s' "$g"
@@ -156,10 +158,16 @@ _lock_mtime() { # $1=lock dir
 }
 
 armed_lock() { # $1=armed file → 0 if held
-  local d="$1.lock" i=0 now m1 m2
+  local d="$1.lock" i=0 now m1 m2 owner opid
   while [ "$i" -lt 25 ]; do
     if mkdir "$d" 2>/dev/null; then
-      printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null || true
+      # The token MUST land: without it we cannot prove ownership later, and
+      # treating that as a successful acquisition meant writing under a lock we
+      # could neither verify nor release.
+      if ! printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null; then
+        rm -rf "$d" 2>/dev/null
+        return 1
+      fi
       # Test seam: stolen-and-replaced-while-held cannot be produced by timing.
       [ -n "${CC_STOP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_STOP_TEST_POST_LOCK_HOOK"
       return 0
@@ -170,10 +178,19 @@ armed_lock() { # $1=armed file → 0 if held
       now="$(date +%s 2>/dev/null)" || return 1
       m1="$(_lock_mtime "$d")"
       if [ -n "$m1" ] && [ "$(( now - m1 ))" -gt 30 ]; then
+        # A LIVE holder is slow, not dead: stealing from it hands two writers
+        # the same lock. Only an owner whose process is gone may be evicted.
+        owner="$(cat "$d/owner" 2>/dev/null)"
+        opid="${owner%%.*}"
+        case "$opid" in ''|*[!0-9]*) opid="" ;; esac
+        if [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null; then
+          sleep 0.05 2>/dev/null || sleep 1
+          i=$((i+1))
+          continue
+        fi
         # Steal only the lock we just measured stale: an unchanged mtime
         # identifies the same lock (a replacement is >30s newer), and the `mv`
-        # makes the removal single-winner. A blind `rm -rf` could delete a
-        # replacement owner's fresh lock.
+        # makes the removal single-winner.
         m2="$(_lock_mtime "$d")"
         if [ "$m1" = "$m2" ] && mv "$d" "$d.stale.$$" 2>/dev/null; then
           rm -rf "$d.stale.$$" 2>/dev/null
@@ -188,6 +205,12 @@ armed_lock() { # $1=armed file → 0 if held
   done
   return 1
 }
+
+# Do we STILL hold it? Checked immediately before every write, because holding
+# the lock at acquisition time is not the same as holding it now: an owner that
+# stalled past the staleness window gets evicted, and without this it would
+# resume and overwrite the new owner's counter or rebaseline.
+armed_owned() { [ "$(cat "$1.lock/owner" 2>/dev/null)" = "$ARMED_LOCK_TOKEN" ]; }
 armed_unlock() { # release ONLY our own lock
   # An owner that stalled past the staleness window and resumed must not delete
   # the replacement's lock. Not ours = leave it: that costs one staleness
@@ -215,6 +238,7 @@ bump_blocks() { # $1=file $2=current — rewrite with blocks incremented.
   cur="$(raw_field "$f" blocks)"
   is_bounded_num "$cur" || cur="$2"
   b=$(( cur + 1 ))
+  armed_owned "$f" || { armed_unlock "$f"; return 1; }
   { grep -v '^blocks=' "$f" 2>/dev/null
     echo "blocks=$b"
   } | armed_rewrite "$f" || { armed_unlock "$f"; return 1; }
@@ -332,22 +356,32 @@ consume_idle_verdicts() { # $1=armed file $2=thread
   # must not pay a lock cycle), and the offset is re-read inside it, since a
   # racing full-file rewrite would otherwise drop the other writer's field.
   # No lock, skip: a missed advance costs one blocked turn.
-  local f="$1" t="$2" now off
+  # The cut is a PAIR — byte offset AND rotation generation — so both the
+  # early exit and the write compare both halves. Testing the offset alone let
+  # a rotation whose replacement log happened to be the SAME SIZE slip through:
+  # the stored generation stayed stale, and when a cycle later opened, run_gate
+  # reset the cut to zero and re-spent the verdict this pass had consumed.
+  local f="$1" t="$2" now off gen_now gen_at
   off="$(raw_field "$f" log_bytes_at_arming)"
   is_bounded_num "$off" || return 0
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at=""
   now="$(log_size "$t")"
-  [[ "$now" -ne "$off" ]] || return 0
+  gen_now="$(log_gen "$t")"
+  [[ "$now" -ne "$off" || "$gen_now" != "$gen_at" ]] || return 0
   armed_lock "$f" || return 0
   off="$(raw_field "$f" log_bytes_at_arming)"
-  if is_bounded_num "$off" && [[ "$now" -ne "$off" ]]; then
-    # The cut is a PAIR — byte offset and rotation generation — so consuming
-    # idle growth has to move both. Advancing only the offset left the stored
-    # generation stale, and the next rotation made run_gate reset the offset to
-    # 0 and re-spend the verdict this pass had already consumed.
-    { grep -v -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
-      echo "log_bytes_at_arming=$now"
-      echo "log_gen_at_arming=$(log_gen "$t")"
-    } | armed_rewrite "$f" || true
+  gen_at="$(raw_field "$f" log_gen_at_arming)"
+  is_bounded_num "$gen_at" || gen_at=""
+  now="$(log_size "$t")"      # recomputed under the lock, like the offset
+  gen_now="$(log_gen "$t")"
+  if is_bounded_num "$off" && [[ "$now" -ne "$off" || "$gen_now" != "$gen_at" ]]; then
+    if armed_owned "$f"; then
+      { grep -v -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
+        echo "log_bytes_at_arming=$now"
+        echo "log_gen_at_arming=$gen_now"
+      } | armed_rewrite "$f" || true
+    fi
   fi
   armed_unlock "$f"
   return 0
@@ -368,6 +402,11 @@ rebaseline_cycle() { # $1=armed file $2=fingerprint $3=thread — start a new cy
   size="$(log_size "$3")"
   if ! armed_lock "$f"; then
     echo "cc-codex-triage: released, but the armed-state lock could not be acquired so the release was not recorded — the next turn re-evaluates from the previous baseline." >&2
+    return 1
+  fi
+  if ! armed_owned "$f"; then
+    armed_unlock "$f"
+    echo "cc-codex-triage: released, but the armed-state lock was lost before the release could be recorded — the next turn re-evaluates from the previous baseline." >&2
     return 1
   fi
   if ! { grep -v -e '^released_fp=' -e '^blocks=' -e '^log_bytes_at_arming=' -e '^log_gen_at_arming=' "$f" 2>/dev/null
@@ -426,7 +465,7 @@ if is_num "${NOW:-}"; then
          || [[ $(( NOW - armed_at )) -le "$GATE_TTL" ]]; then
         armed_unlock "$f"; continue              # re-armed while we waited
       fi
-      rm -f "$f" 2>/dev/null
+      armed_owned "$f" && rm -f "$f" 2>/dev/null
       armed_unlock "$f"
     fi
     # Lock unavailable or removal failed: same outcome — the file is still

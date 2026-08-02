@@ -12,6 +12,50 @@ verdict and finding header extracted per round, the divergent threads read in
 full.
 
 ### Fixed
+- **A gate never releases a state nothing recorded.** A verdict is paired with
+  the fingerprint stamped into its own log record; where no record and no
+  usable sidecar can say what was dispatched, the gate now answers "unknown"
+  and keeps blocking instead of falling back to the worktree at turn-end —
+  which would stamp bytes approved that were written after the review. The
+  plan gate takes the LATEST post-cut record instead of the verdict's, since it
+  releases on log growth rather than on a verdict. A pre-0.9 armed file is
+  exempt: it has no fingerprint model at all and keeps 0.8 semantics until its
+  first release, as documented. Refusing costs a round, not a deadlock — the
+  next dispatch stamps its own record and settles it.
+- **Every writer of armed state is serialized.** The Stop hook's three writers
+  (block counter, idle consumption, cycle rebaseline) plus TTL expiry take one
+  per-file mkdir mutex, re-read inside it, and write nothing when they cannot
+  get it. Arming and disarming go through new `scripts/gate-state.sh` rather
+  than writing the file straight from a command snippet, so a turn-end hook can
+  no longer overwrite a fresh arming or resurrect a gate just switched off.
+  Locks carry an owner token: a holder that stalls past the staleness window
+  and resumes cannot delete the replacement owner's lock.
+- **Dirty submodules are visible even when git is configured to hide them.**
+  The probe passes `--ignore-submodules=none`, overriding
+  `submodule.<name>.ignore` — a setting that exists to keep `git status` quiet,
+  which is exactly why a gate must not honour it — and `--no-optional-locks`,
+  since it runs at every turn end.
+- **A dispatch is no longer lost to the caller's timeout.** The Bash tool caps
+  a foreground call at 600 s — its maximum, not a setting — and a branch review
+  routinely runs longer. When the cap hit, the round vanished: the paid Codex
+  run finished into nowhere, and since the driver logs only on success it left
+  no trace anywhere. What hid it is that **bash defers a trap until the current
+  foreground child finishes**, so a TERM arriving mid-dispatch did nothing at
+  all. The three `codex exec` calls now run in the background with `wait`
+  (which IS interruptible), so TERM kills the child, frees the lease and
+  records `<thread>.last-abort` — a sidecar, never the log, since `/autoplan`
+  releases on log growth. New `scripts/dispatch.sh`, which every dispatching
+  command routes through, detaches the worker and then waits for it in the
+  foreground bounded below the caller's ceiling (`CC_DISPATCH_WAIT`, default
+  540 s): a short dispatch answers in-turn exactly as before, and only one that
+  would previously have been KILLED behaves differently — it **exits 20 and
+  hands off**, worker untouched, re-runnable through the watcher. Its stdout is
+  byte-identical to the reply (`/review --json` pipes it into `jq`), status goes
+  to stderr, and the driver's exit codes survive rather than collapsing, so a
+  caller can still tell a resume failure from a mutation refusal. 20 and 21
+  deliberately avoid the driver's range: reusing 3 would make a LIVE dispatch
+  indistinguishable from a dead one. `--oneshot` cannot detach (no thread state
+  to hand off) and keeps the old ceiling; a throwaway is cheap to repeat.
 
 - **The gates no longer go quiet at the moment the next round is owed.**
   `/autoreview` and `/autoplan` decided "is there work?" from
@@ -188,50 +232,6 @@ a container root, stokli frontend/backend). Plan:
   A concurrent exit-10 loser can no longer truncate or interleave the
   winner's sidecars. `/review`/`/plan` `--background` steps wire the
   watcher up explicitly.
-- **A gate never releases a state nothing recorded.** A verdict is paired with
-  the fingerprint stamped into its own log record; where no record and no
-  usable sidecar can say what was dispatched, the gate now answers "unknown"
-  and keeps blocking instead of falling back to the worktree at turn-end —
-  which would stamp bytes approved that were written after the review. The
-  plan gate takes the LATEST post-cut record instead of the verdict's, since it
-  releases on log growth rather than on a verdict. A pre-0.9 armed file is
-  exempt: it has no fingerprint model at all and keeps 0.8 semantics until its
-  first release, as documented. Refusing costs a round, not a deadlock — the
-  next dispatch stamps its own record and settles it.
-- **Every writer of armed state is serialized.** The Stop hook's three writers
-  (block counter, idle consumption, cycle rebaseline) plus TTL expiry take one
-  per-file mkdir mutex, re-read inside it, and write nothing when they cannot
-  get it. Arming and disarming go through new `scripts/gate-state.sh` rather
-  than writing the file straight from a command snippet, so a turn-end hook can
-  no longer overwrite a fresh arming or resurrect a gate just switched off.
-  Locks carry an owner token: a holder that stalls past the staleness window
-  and resumes cannot delete the replacement owner's lock.
-- **Dirty submodules are visible even when git is configured to hide them.**
-  The probe passes `--ignore-submodules=none`, overriding
-  `submodule.<name>.ignore` — a setting that exists to keep `git status` quiet,
-  which is exactly why a gate must not honour it — and `--no-optional-locks`,
-  since it runs at every turn end.
-- **A dispatch is no longer lost to the caller's timeout.** The Bash tool caps
-  a foreground call at 600 s — its maximum, not a setting — and a branch review
-  routinely runs longer. When the cap hit, the round vanished: the paid Codex
-  run finished into nowhere, and since the driver logs only on success it left
-  no trace anywhere. What hid it is that **bash defers a trap until the current
-  foreground child finishes**, so a TERM arriving mid-dispatch did nothing at
-  all. The three `codex exec` calls now run in the background with `wait`
-  (which IS interruptible), so TERM kills the child, frees the lease and
-  records `<thread>.last-abort` — a sidecar, never the log, since `/autoplan`
-  releases on log growth. New `scripts/dispatch.sh`, which every dispatching
-  command routes through, detaches the worker and then waits for it in the
-  foreground bounded below the caller's ceiling (`CC_DISPATCH_WAIT`, default
-  540 s): a short dispatch answers in-turn exactly as before, and only one that
-  would previously have been KILLED behaves differently — it **exits 20 and
-  hands off**, worker untouched, re-runnable through the watcher. Its stdout is
-  byte-identical to the reply (`/review --json` pipes it into `jq`), status goes
-  to stderr, and the driver's exit codes survive rather than collapsing, so a
-  caller can still tell a resume failure from a mutation refusal. 20 and 21
-  deliberately avoid the driver's range: reusing 3 would make a LIVE dispatch
-  indistinguishable from a dead one. `--oneshot` cannot detach (no thread state
-  to hand off) and keeps the old ceiling; a throwaway is cheap to repeat.
 - **Mutating utilities hard-fail outside a git repository (exit 7, driver
   parity).** `cleanup.sh` and `ledger.sh` previously fell back to the
   caller's cwd — archiving/writing state the driver could never have put
