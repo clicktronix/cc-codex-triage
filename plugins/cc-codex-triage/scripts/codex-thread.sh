@@ -597,15 +597,19 @@ abort_dispatch() { # $1=signal name
   # writing into temp files we are about to delete — while another dispatch
   # acquires the same thread and resumes it concurrently. Bounded TERM wait,
   # then KILL, the same escalation the detach launcher uses.
+  # `|| true` on both kills: run_codex clears CODEX_PID only AFTER `wait`
+  # returns, so a signal landing in that window kills an already-reaped PID.
+  # Under `set -e` an unguarded failing kill aborts the trap itself, and neither
+  # `cleanup 143` nor the last-abort marker below would run.
   if [[ -n "${CODEX_PID:-}" ]]; then
-    kill -TERM "$CODEX_PID" 2>/dev/null
+    kill -TERM "$CODEX_PID" 2>/dev/null || true
     local _i=0
     while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 30 ]]; do
       sleep 0.1
       _i=$((_i+1))
     done
     if kill -0 "$CODEX_PID" 2>/dev/null; then
-      kill -KILL "$CODEX_PID" 2>/dev/null
+      kill -KILL "$CODEX_PID" 2>/dev/null || true
       _i=0
       while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 20 ]]; do
         sleep 0.1

@@ -68,15 +68,52 @@ DIRTY_SUBS="$(printf '%s\n' "$SUB_RAW" | awk -F'\t' '/^:160000/ {print $2}')"
 # invisible to the plan gate — the one place where a plan document living in a
 # submodule is not exotic at all.
 #
-# The test is a path-prefix one in both directions (a submodule under a scoped
-# directory, or a scoped path inside a submodule), which is what the pathspecs
-# this runs with actually are: directory names from CC_CODEX_PLAN_PATHS.
-if [ "$#" -gt 0 ] && [ -n "$DIRTY_SUBS" ]; then
-  _keep=""
+# The two path-prefix directions need OPPOSITE treatment:
+#
+#   submodule UNDER a scoped directory — its gitlink is inside the scoped tree
+#     already, so a clean one is fully described and only a dirty one needs
+#     folding in whole. Same rule as whole-tree mode.
+#
+#   scoped path INSIDE a submodule — git cannot descend into a gitlink, so the
+#     scoped tree contains NOTHING of it, dirty or clean. Two things follow.
+#     (a) The recursion must carry the pathspec down, rewritten relative to the
+#         submodule root; folding the submodule in whole made any edit anywhere
+#         inside it move the plan fingerprint, so the hook demanded a paid plan
+#         round for a change that touched no plan document.
+#     (b) It must be folded in on EVERY run, not only when the submodule reads
+#         as dirty — otherwise an out-of-scope edit still moves the fingerprint
+#         by adding the fold line itself, which is (a) again by another route.
+#         So these are found from the pathspecs, not from the dirty list.
+#
+# Kept entries are `path` (whole) or `path<TAB>relspec relspec...` (scoped).
+if [ "$#" -gt 0 ]; then
   set -f
+  # (b): ancestor prefixes of every scoped path, asked about in ONE ls-files
+  # call. Only prefixes can be gitlinks in THIS repo; anything deeper belongs to
+  # the submodule's own index and the recursion finds it there.
+  # Newline-separated, like DIRTY_SUBS: a pathspec containing a space must reach
+  # git as ONE argument.
+  _prefixes=""
+  for _spec in "$@"; do
+    _p="${_spec%/}"
+    while [ "${_p%/*}" != "$_p" ]; do
+      _p="${_p%/*}"
+      _prefixes="$_prefixes$_p
+"
+    done
+  done
+  _keep=""
   OLD_IFS="$IFS"; IFS='
 '
+  _gitlinks=""
+  if [ -n "$_prefixes" ]; then
+    # shellcheck disable=SC2086 — splitting on newline into pathspecs is intended
+    _ls="$(git --no-optional-locks ls-files -s -- $_prefixes 2>/dev/null)" || exit 0
+    _gitlinks="$(printf '%s\n' "$_ls" | awk -F'\t' '/^160000 /{print $2}')"
+  fi
+
   for _s in $DIRTY_SUBS; do
+    [ -n "$_s" ] || continue
     IFS="$OLD_IFS"
     for _spec in "$@"; do
       _spec="${_spec%/}"
@@ -84,11 +121,29 @@ if [ "$#" -gt 0 ] && [ -n "$DIRTY_SUBS" ]; then
         "$_spec"|"$_spec"/*) _keep="$_keep$_s
 "; break ;;
       esac
+    done
+    IFS='
+'
+  done
+  for _s in $_gitlinks; do
+    [ -n "$_s" ] || continue
+    IFS="$OLD_IFS"
+    # A submodule kept whole above wins — do not fold it twice.
+    case "
+$_keep" in *"
+$_s
+"*) IFS='
+'; continue ;;
+    esac
+    _rel=""
+    for _spec in "$@"; do
+      _spec="${_spec%/}"
       case "$_spec" in
-        "$_s"/*) _keep="$_keep$_s
-"; break ;;
+        "$_s"/*) _rel="$_rel ${_spec#"$_s"/}" ;;
       esac
     done
+    [ -z "$_rel" ] || _keep="$_keep$_s	${_rel# }
+"
     IFS='
 '
   done
@@ -185,11 +240,22 @@ if [ -n "${DIRTY_SUBS:-}" ]; then
 '
   for sub in $DIRTY_SUBS; do
     IFS="$OLD_IFS"
+    subspecs=""
+    case "$sub" in
+      *"	"*) subspecs="${sub#*	}"; sub="${sub%%	*}" ;;
+    esac
+    # A submodule whose worktree directory is GONE (a `:160000 … D` line: the
+    # removal is not committed yet) has no content left to hash, and its gitlink
+    # deletion is already in TREE. Aborting the whole fingerprint here disabled
+    # the cycle model for both gates until the removal was committed — the very
+    # "commit makes the gate go quiet" failure this file exists to remove.
+    [ -d "$sub" ] || continue
     # `env -u`, not `GIT_INDEX_FILE=`: git falls back to .git/index only when
     # the variable is ABSENT. Set to the empty string it is a literal index
     # path, so the child probed an empty index, saw no gitlinks, and a dirty
     # NESTED submodule was folded in as unchanged.
-    child="$( cd "$sub" 2>/dev/null && env -u GIT_INDEX_FILE bash "$SELF" 2>/dev/null )" || exit 0
+    # shellcheck disable=SC2086 — splitting $subspecs into pathspecs is intended
+    child="$( cd "$sub" 2>/dev/null && set -f && env -u GIT_INDEX_FILE bash "$SELF" $subspecs 2>/dev/null )" || exit 0
     [ -n "$child" ] || exit 0          # a submodule we cannot hash means an unknown state
     SUB_FP="$SUB_FP$sub $child
 "

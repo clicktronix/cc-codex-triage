@@ -610,7 +610,17 @@ echo "== a codex that IGNORES TERM is escalated before the lease is released =="
 # existing fake forwards TERM promptly, so it cannot show this.
 rm -rf "$SD"
 STUBBORN="$T/stubborn"; mkdir -p "$STUBBORN"
-printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 60\n' > "$STUBBORN/codex"
+# It announces itself only AFTER `trap "" TERM` is installed. Waiting on pgrep
+# instead signalled the driver during the child's startup window, so the child
+# died of a plain TERM it had not yet learned to ignore and the escalation was
+# never entered — the assertion below passed with the whole KILL block deleted.
+rm -f "$STUBBORN/ready"
+cat > "$STUBBORN/codex" <<S
+#!/usr/bin/env bash
+trap "" TERM
+printf '%s' "\$\$" > "$STUBBORN/ready"
+sleep 60
+S
 chmod +x "$STUBBORN/codex"
 ( cd "$REPO" && PATH="$STUBBORN:$PATH" bash "$DRIVER" stub1 <<< "hi" >/dev/null 2>&1 ) &
 i=0; while [ ! -f "$SD/stub1.active" ] && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)); done
@@ -618,10 +628,10 @@ i=0; while [ ! -f "$SD/stub1.active" ] && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)
 # signalling that leaves the driver untouched.
 DRVPID="$(cat "$SD/stub1.active" 2>/dev/null | tr -cd '0-9')"
 # The child starts a moment after the lease, once the pre-dispatch fingerprint
-# is done.
+# is done. Wait for its own announcement, not for the process table.
 i=0; CPID=""
-while [ -z "$CPID" ] && [ $i -lt 60 ]; do
-  CPID="$(pgrep -f "$STUBBORN/codex" | head -1)"
+while [ -z "$CPID" ] && [ $i -lt 100 ]; do
+  CPID="$(cat "$STUBBORN/ready" 2>/dev/null | tr -cd '0-9')"
   [ -n "$CPID" ] || { sleep 0.1; i=$((i+1)); }
 done
 [[ -n "$CPID" ]] && ok "a TERM-ignoring codex is running" || bad "no stubborn child to escalate against"
@@ -782,11 +792,19 @@ done
 # manager, which is not in this farm — the shim then exits 127 and the test
 # fails on the maintainer's own machine while the product path is fine.
 PY_REAL="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3 2>/dev/null || true)"
-[[ -n "$PY_REAL" ]] && ln -sf "$PY_REAL" "$T/nosetsid/python3"
-PATH="$T/bin:$T/nosetsid" run d4 --detach
-[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "python-isolator handshake completed" || bad "python isolator rc=$RC out=$OUT err=$(cat "$T/err")"
-i=0; while ! grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
-grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && ok "reply landed via the python isolator" || bad "no reply via python isolator ($(cat "$SD/d4.detach-output" 2>/dev/null))"
+# No python3 at all is a MISSING FIXTURE, not a product failure — the driver's
+# own message for that case is exit 8, which is correct behaviour. Reporting it
+# as a failure made a minimal Linux box (no python3 installed) look broken.
+if [[ -z "$PY_REAL" ]]; then
+  skip "python3 absent — the python-isolator path did NOT run"
+  skip "python3 absent — its reply delivery did NOT run"
+else
+  ln -sf "$PY_REAL" "$T/nosetsid/python3"
+  PATH="$T/bin:$T/nosetsid" run d4 --detach
+  [[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "python-isolator handshake completed" || bad "python isolator rc=$RC out=$OUT err=$(cat "$T/err")"
+  i=0; while ! grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
+  grep -q FAKE_REPLY "$SD/d4.log" 2>/dev/null && ok "reply landed via the python isolator" || bad "no reply via python isolator ($(cat "$SD/d4.detach-output" 2>/dev/null))"
+fi
 
 echo "== detach: instant child -> READY still observed, no false timeout =="
 rm -rf "$SD"
@@ -1055,11 +1073,21 @@ mkdir -p "$T/dtmp9" "$T/delayisol"
 # A fake isolator that IGNORES the real child and becomes a delayed sleeper:
 # it records its PID, waits, then would recreate READY and keep living —
 # unless the launcher's abort path actually terminates it.
+# It must read the READY path out of ARGV, as the real child now does: the
+# driver stopped exporting CC_CODEX_READY_FILE (the role travels in
+# `--detach-child <ready> <prompt>`), so a fixture still reading the env var
+# could never recreate the file and the assertion below could not fail.
 cat > "$T/delayisol/setsid" <<S
 #!/usr/bin/env bash
 echo \$\$ > "$T/sleeper.pid"
+ready=""; prev=""
+for a in "\$@"; do
+  [[ "\$prev" == "--detach-child" ]] && { ready="\$a"; break; }
+  prev="\$a"
+done
+printf '%s' "\$ready" > "$T/d9.readypath"
 sleep 2
-printf '%s' "\$\$" > "\$CC_CODEX_READY_FILE"
+printf '%s' "\$\$" > "\$ready"
 sleep 30
 S
 chmod +x "$T/delayisol/setsid"
@@ -1068,6 +1096,10 @@ TMPDIR="$T/dtmp9" PATH="$T/delayisol:$PATH" bash "$DRIVER" d9 --detach <<< "ping
 LPID9=$!
 i=0; while [[ ! -s "$T/sleeper.pid" && $i -lt 50 ]]; do sleep 0.1; i=$((i+1)); done
 [[ -s "$T/sleeper.pid" ]] && ok "delayed child spawned and reported its PID" || bad "child never spawned"
+# Without this the resurrection below is impossible for the wrong reason, and
+# the "no READY resurrection" check passes with the launcher's guard deleted.
+[[ -s "$T/d9.readypath" ]] && ok "and it can name the READY file it would resurrect" \
+  || bad "fixture found no --detach-child ready path in argv"
 kill -TERM "$LPID9" 2>/dev/null
 wait "$LPID9" 2>/dev/null
 SLEEPER="$(cat "$T/sleeper.pid" 2>/dev/null)"

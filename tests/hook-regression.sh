@@ -511,16 +511,21 @@ printf 'not an index at all' > "$SD/gate-index"
 # entries ALREADY in a seeded index, so the cache kept hashing it. The file has
 # to stay on disk for this: deleting it makes `add -A` drop the entry anyway,
 # which is why the first version of this test could not fail.
+# The rule goes in .git/info/exclude, NOT .gitignore: .gitignore is itself part
+# of the tree, so editing it moves the hash whether or not the purge works and
+# the comparison below could not fail.
 rm -f "$SD/gate-index"
 echo "content" > cache-ignored.tmp
 WITH_FILE="$(fp_now)"                     # cold, then seeds the cache with it tracked
-echo "cache-ignored.tmp" >> .gitignore
+EXCL="$(git rev-parse --git-path info/exclude)"; mkdir -p "$(dirname "$EXCL")"
+echo "cache-ignored.tmp" >> "$EXCL"
 IGNORED_WARM="$(fp_now)"                  # warm cache, file still on disk, now ignored
 [[ "$IGNORED_WARM" != "$WITH_FILE" ]] && ok "a newly ignored file leaves the hash even from a warm cache" || bad "the cache kept hashing an ignored file"
 rm -f "$SD/gate-index"
 [[ "$(fp_now)" == "$IGNORED_WARM" ]] && ok "and a cold run agrees" || bad "warm and cold disagree on the ignored file"
 rm -f cache-ignored.tmp
-git checkout -q -- .gitignore 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+: > "$EXCL"
+git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 git checkout -q -- f.txt 2>/dev/null
 [[ ! -e "$SD/gate-index.$$" ]] && ok "no cache temp left behind" || bad "cache temp leaked"
 git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
@@ -536,6 +541,12 @@ SUBT="$(mktemp -d "${TMPDIR:-/tmp}/cc-sub.XXXXXX")"
 ( git init -q -b main "$SUBT/lib2" >/dev/null 2>&1
   cd "$SUBT/lib2" && git config user.email t@t.t && git config user.name t \
     && echo lib2 > lib2.txt && git add -A && git commit -qm init ) >/dev/null 2>&1
+# Holds a plan document AND unrelated content, so a scoped run mounted over it
+# can be shown to distinguish the two.
+( git init -q -b main "$SUBT/docsrepo" >/dev/null 2>&1
+  cd "$SUBT/docsrepo" && git config user.email t@t.t && git config user.name t \
+    && mkdir -p plans && echo "# plan" > plans/p.md && echo "api reference" > reference.md \
+    && git add -A && git commit -qm init ) >/dev/null 2>&1
 if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" vendor ) >/dev/null 2>&1; then
   git commit -qm "add submodule" >/dev/null 2>&1
   S_CLEAN="$(fp_now)"
@@ -631,6 +642,49 @@ if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" v
     skip "scoped submodule fixture unavailable — that coverage did NOT run"
   fi
   rm -rf docs
+
+  # The OTHER direction: the scoped path lives INSIDE a submodule. Folding the
+  # submodule in whole made any edit anywhere in it move the plan fingerprint,
+  # so the hook demanded a paid plan round for a change that touched no plan
+  # document — while dirty_plans() (`git status -- docs/plans`) saw nothing.
+  if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/docsrepo" docs ) >/dev/null 2>&1; then
+    git commit -qm "add docs submodule" >/dev/null 2>&1
+    D_CLEAN="$(fp_now docs/plans docs/PLANS)"
+    echo "an API note, not a plan" >> docs/reference.md
+    [[ "$(fp_now docs/plans docs/PLANS)" == "$D_CLEAN" ]] \
+      && ok "an out-of-scope edit inside a submodule leaves the scoped fingerprint alone" \
+      || bad "the whole submodule was folded into the plan scope"
+    echo "a real plan edit" >> docs/plans/p.md
+    [[ "$(fp_now docs/plans docs/PLANS)" != "$D_CLEAN" ]] \
+      && ok "and an in-scope edit inside it still moves the scoped fingerprint" \
+      || bad "the scoped pathspec was not carried into the submodule"
+    git submodule deinit -qf docs >/dev/null 2>&1; git rm -qf docs >/dev/null 2>&1
+    rm -rf .gitmodules .git/modules/docs
+    git add -A >/dev/null 2>&1; git commit -qm "drop docs submodule" >/dev/null 2>&1
+  else
+    skip "scope-inside-submodule fixture unavailable — that coverage did NOT run"
+  fi
+  rm -rf docs
+
+  # A submodule whose worktree DIRECTORY is gone (removal not committed yet):
+  # `cd` into it fails, and aborting the whole run there disabled the cycle
+  # model for both gates until the removal was committed — the exact "commit
+  # makes the gate go quiet" degradation the fingerprint exists to remove.
+  if ( cd "$T" && git -c protocol.file.allow=always submodule add -q "$SUBT/lib" gone ) >/dev/null 2>&1; then
+    git commit -qm "add doomed submodule" >/dev/null 2>&1
+    G_CLEAN="$(fp_now)"
+    rm -rf gone
+    G_GONE="$(fp_now)"
+    [[ -n "$G_GONE" ]] && ok "a deleted submodule does not abort the fingerprint" \
+      || bad "removing a submodule silently disabled the cycle model"
+    [[ "$G_GONE" != "$G_CLEAN" ]] && ok "and the removal itself is visible in it" \
+      || bad "the deletion left the fingerprint unchanged"
+    git submodule deinit -qf gone >/dev/null 2>&1; git rm -qf gone >/dev/null 2>&1
+    rm -rf .gitmodules .git/modules/gone
+    git add -A >/dev/null 2>&1; git commit -qm "drop doomed submodule" >/dev/null 2>&1
+  else
+    skip "deleted-submodule fixture unavailable — that coverage did NOT run"
+  fi
 else
   skip "submodule fixtures unavailable — ELEVEN dirty-submodule assertions did NOT run"
 fi
@@ -1259,12 +1313,23 @@ echo "== the plan scope has ONE definition, and everything follows it =="
 # The default lived in four files (hook, driver, /status, the arming command).
 # A change that misses one leaves the dirt predicate and the fingerprint
 # disagreeing about what a plan document IS — a gate that can never release.
-rm -rf docs custom-plans; mkdir -p custom-plans
+rm -rf docs custom-plans; mkdir -p custom-plans docs/plans
 git add -A >/dev/null && git commit -qm "settle before scope test" >/dev/null 2>&1
 [[ "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan-paths)" == "custom-plans" ]] \
   && ok "the canonical script reports the configured scope" || bad "--plan-paths ignored CC_CODEX_PLAN_PATHS"
-[[ "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan)" == "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" custom-plans)" ]] \
+# BOTH scopes must hold content, and different content. With them empty every
+# hash here is the empty-tree hash, so a --plan that ignored the env var and
+# hardcoded docs/plans would still match — the drift this section exists to
+# catch would ship green.
+echo "# configured-scope doc" > custom-plans/p.md
+echo "# default-scope doc" > docs/plans/d.md
+CUSTOM_FP="$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan)"
+[[ "$CUSTOM_FP" == "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" custom-plans)" ]] \
   && ok "--plan hashes exactly that scope" || bad "--plan and the explicit pathspec disagree"
+[[ -n "$CUSTOM_FP" && "$CUSTOM_FP" != "$(bash "$FPSH" --plan)" ]] \
+  && ok "and follows the configured scope rather than the default one" || bad "--plan ignored CC_CODEX_PLAN_PATHS"
+rm -rf docs
+git add -A >/dev/null && git commit -qm "settle scope fixture" >/dev/null 2>&1
 : > "$SD/plan-main.log"
 arm_plan_fp main plan-main 3 0 0 "$(CC_CODEX_PLAN_PATHS='custom-plans' bash "$FPSH" --plan)"
 echo "# a plan doc in a NON-default location" > custom-plans/p.md

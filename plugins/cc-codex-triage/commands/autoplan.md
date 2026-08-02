@@ -37,7 +37,11 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # canonical script for the plan scope rather than restating what it is —
    # the hook and /status resolve it from the same place, so they cannot
    # disagree (a disagreement is a gate that can never release).
+   # An EMPTY answer must not be armed: the hook reads a missing fp_at_arming as
+   # a pre-0.9 file and silently falls back to 0.8 dirty-tree semantics — the
+   # exact behaviour this field exists to replace. Refuse instead.
    FP=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" --plan)
+   [ -n "$FP" ] || { echo "cannot fingerprint the plan scope — not arming"; exit 1; }
    # armed_at: the hook auto-expires a gate armed more than 14 days ago.
    # log_gen_at_arming: how many times the driver has rotated this thread's log.
    # The cut above is a byte offset into the log as it is NOW, so a later
@@ -52,18 +56,27 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
      | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoplan.armed" || exit 1
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Already-changed plan docs to stress-test now? Ask the canonical script for
-   # the scope — a bare `$PLAN_PATHS` here expanded to NOTHING once the variable
-   # moved, so `git status --` inspected the WHOLE repository and armed a paid
-   # plan dispatch on code-only changes.
+   # the scope, and keep the SAME empty-answer fallback the hook (plan_paths())
+   # and /status keep: an empty list leaves `git status --` with NO pathspec,
+   # which git reads as the WHOLE repository — that armed a paid plan dispatch
+   # on code-only changes once already.
    # set -f: pass the pathspecs to git unexpanded (no shell globbing first).
    PLAN_PATHS=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-fingerprint.sh" --plan-paths)
+   [ -n "$PLAN_PATHS" ] || PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
    ( set -f; git status --porcelain -uall -- $PLAN_PATHS | grep -q . ) \
      && echo "PLANS DIRTY: stress-testing now" || echo "no changed plan docs yet; gate armed for future"
    ```
 
 3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `off` — `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed` (from the repo root — `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7` first; the guard keeps a failed resolve from touching the wrong directory) and confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back.
+4. `off` — from the repo root, `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed || { echo "could not disarm — the armed file is still in place"; exit 1; }`, then confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
+
+   ```bash
+   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed \
+     || { echo "could not disarm — the armed file is still in place"; exit 1; }
+   echo "autoplan disarmed."
+   ```
 
 5. `status` — cat the armed file (or "not armed"). Same repo-root anchoring.
 

@@ -62,6 +62,10 @@ Two lines each, so the copies are cheap; what drifts is the convention —
 
 - **Gitignored files are outside every fingerprint**, deliberately: a gate
   firing on `.env` or build output would be unusable.
+- **The acquisition-token guard has no test.** `armed_lock` must not count a
+  lock as acquired when the owner-token write fails (a full or read-only state
+  dir); the branch is reasoned about but not reproduced by any fixture, so it
+  is stated here rather than claimed as covered.
 
 ## Status
 

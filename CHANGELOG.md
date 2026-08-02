@@ -4,6 +4,44 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **The plan scope is followed at the third call site too.** `/autoplan on`
+  asked `gate-fingerprint.sh --plan-paths` for the scope but, unlike the hook
+  and `/status`, kept no fallback for an empty answer — which leaves
+  `git status --` with no pathspec at all, i.e. the whole repository, and armed
+  a paid plan dispatch on code-only changes.
+- **An unfingerprintable worktree is no longer armed.** Both arming commands
+  wrote whatever `gate-fingerprint.sh` printed into `fp_at_arming`, and an
+  empty value makes the hook read a brand-new gate as a pre-0.9 one and fall
+  back to 0.8 dirty-tree semantics — silently, at arming time. They now refuse.
+- **A disarm that did not happen is no longer reported as one.** `gate-state.sh
+  remove` exits 2 having deleted nothing when the mutex is held; the `off`
+  snippets ignored its status, so the gate kept blocking every turn while the
+  user had been told it was off.
+- **A scoped fingerprint no longer moves for out-of-scope work.** When a plan
+  path lives inside a submodule, the recursion carries the pathspec down
+  instead of hashing the submodule whole, and it is folded in on every run
+  rather than only when the submodule reads as dirty — either alone let an edit
+  that touched no plan document open a paid plan cycle.
+- **Removing a submodule no longer disables both gates.** A submodule whose
+  worktree directory is gone made the recursion's `cd` fail and aborted the
+  whole fingerprint, degrading to the dirty-tree predicate until the removal was
+  committed — the "commit makes the gate go quiet" failure 0.9 exists to remove.
+- **A signal landing between the child's reap and its PID being cleared no
+  longer breaks the abort path.** Under `set -e` the unguarded `kill` in
+  `abort_dispatch` aborted the trap itself, so the signal exit status and the
+  last-abort marker were both lost.
+
+### Tests
+- Four assertions could not fail and now can, each verified by mutation: the
+  TERM/KILL escalation (the fixture announced itself only after installing its
+  trap), `--plan` scope drift (both scopes were empty, so both sides were the
+  empty-tree hash), the seeded-index ignore purge (the rule moved to
+  `.git/info/exclude`, which is not part of the tree), and READY resurrection
+  (the fixture read an env var the driver had stopped exporting).
+- New coverage for the two submodule fixes above, and the python-isolator case
+  reports SKIP instead of FAIL when `python3` is absent.
+
 ## [0.9.0] - 2026-08-01
 
 Closes the gaps that stopped the review loop rather than loosened it, found by
