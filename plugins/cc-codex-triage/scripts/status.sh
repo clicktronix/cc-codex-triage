@@ -14,18 +14,15 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 . "$SELF_DIR/lib.sh"
 
-# Anchor to the RESOLVED repo root (mirrors the driver's rule): a
-# CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
-# the repo ROOT. Read-only script → outside a repo it NO-OPS with a clear
-# message (exit 0) instead of reporting whatever local .claude/codex-threads
-# the caller's cwd happens to contain — that state cannot be the driver's
-# (it refuses to run outside a repo).
+# Anchor to the resolved repo before resolving its common Git state. Read-only
+# outside a repo: no arbitrary cwd-local directory can be mistaken for state.
 if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
   echo "Not inside a git repository — no thread state to report."
   exit 0
 fi
 cd "$ROOT" || { echo "Not inside a git repository — no thread state to report."; exit 0; }
-STATE_DIR=".claude/codex-threads"
+STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
+GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh" --read-only)" || exit $?
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
 # Last verdict from a thread log — whole log, no offset, informational. Same
@@ -60,7 +57,7 @@ echo "  repo branch : $BRANCH"
 plan_paths="$(bash "$FP_SH" --plan-paths 2>/dev/null)"
 [ -n "$plan_paths" ] || plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
 if $IN_GIT; then
-  code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
+  code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF '.claude/codex-threads/' | grep -c . | tr -d ' ')
   # Word-split the pathspecs (intentional) but disable shell globbing so they
   # reach git unexpanded — git does its own pathspec matching. shellcheck disable=SC2086
   plan_changes=$( set -f; git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ' )
@@ -89,15 +86,10 @@ else
   echo "  codex CLI   : NOT FOUND on PATH — install: npm install -g @openai/codex"
 fi
 
-if $IN_GIT; then
-  if git check-ignore -q "$STATE_DIR/x" 2>/dev/null; then
-    echo "  state dir   : gitignored OK"
-  else
-    echo "  state dir   : WARNING not gitignored — add '.claude/codex-threads/' to .gitignore"
-  fi
-fi
+echo "  state dir   : $STATE_DIR (shared across worktrees)"
+echo "  gate dir    : $GATE_DIR (current worktree only)"
 
-if [ ! -d "$STATE_DIR" ]; then
+if [ ! -d "$STATE_DIR" ] && [ ! -d "$GATE_DIR" ]; then
   echo
   echo "No threads or gates in this repo yet."
   exit 0
@@ -108,7 +100,7 @@ echo
 echo "Armed gates:"
 shown=0
 for kind in autoreview autoplan; do
-  f="$STATE_DIR/$kind.armed"
+  f="$GATE_DIR/$kind.armed"
   [ -f "$f" ] || continue
   shown=1
   base="${kind#auto}"   # autoreview->review, autoplan->plan

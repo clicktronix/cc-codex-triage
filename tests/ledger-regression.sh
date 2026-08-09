@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 set -u
 LEDGER="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/ledger.sh"

@@ -45,7 +45,7 @@ if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/d
   exit 7
 fi
 cd "$ROOT" || exit 7
-STATE_DIR=".claude/codex-threads"
+STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --read-only)" || exit $?
 LOG="$STATE_DIR/$THREAD.log"
 DIAG="$STATE_DIR/$THREAD.last-error.jsonl"
 SIDE="$STATE_DIR/$THREAD.detach-output"

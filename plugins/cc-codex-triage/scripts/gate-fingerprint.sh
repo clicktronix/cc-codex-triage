@@ -33,7 +33,9 @@
 #
 # Cost: each run rehashes the worktree from an empty index with no stat cache.
 set -u
-STATE_DIR=".claude/codex-threads"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit 0
+LEGACY_STATE_DIR=".claude/codex-threads"
 
 # Plan-doc locations, configurable via CC_CODEX_PLAN_PATHS (space-separated).
 PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
@@ -171,7 +173,7 @@ trap 'rm -f "$IDX" "$IDX.lock"' EXIT
 # the worst a race costs is a colder cache. Scoped runs keep the cold index —
 # they cover two directories, and a cache keyed on one scope would carry entries
 # from another.
-CACHE="$STATE_DIR/gate-index"
+CACHE="$GATE_DIR/gate-index"
 SEEDED=0
 if [ "$#" -eq 0 ] && [ -f "$CACHE" ]; then
   if cp "$CACHE" "$IDX" 2>/dev/null; then SEEDED=1; else rm -f "$IDX"; fi
@@ -220,14 +222,14 @@ else
   # Status-checked like the rest: if this fails for a reason --ignore-unmatch
   # does not cover, the tree would include the state dir and the gate would
   # re-arm on the driver's own writes until the cap.
-  git rm -r --cached --ignore-unmatch -q -- "$STATE_DIR" >/dev/null 2>&1 || exit 0
+  git rm -r --cached --ignore-unmatch -q -- "$LEGACY_STATE_DIR" >/dev/null 2>&1 || exit 0
 fi
 
 TREE="$(git write-tree 2>/dev/null)" || exit 0
 [ -n "$TREE" ] || exit 0
 
 # Refresh the cache with the index we just built, atomically.
-if [ "$#" -eq 0 ] && [ -d "$STATE_DIR" ]; then
+if [ "$#" -eq 0 ] && [ -d "$GATE_DIR" ]; then
   cp "$IDX" "$CACHE.$$" 2>/dev/null && mv -f "$CACHE.$$" "$CACHE" 2>/dev/null || rm -f "$CACHE.$$" 2>/dev/null
 fi
 

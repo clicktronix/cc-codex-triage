@@ -39,6 +39,6 @@ Arbitrary named-thread variant of `/review` and `/plan` — a plain passthrough 
 
 ## Notes
 
-- Thread state at `.claude/codex-threads/<name>.id`.
+- Thread state is in the repository common Git directory reported by `state-dir.sh`.
 - `/thread-list` shows all active named threads.
 - `/thread-new <name>` forces a fresh exec (loses prior memory).

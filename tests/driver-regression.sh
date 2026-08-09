@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 # Regression suite for scripts/codex-thread.sh. No real Codex — a stub `codex`
 # on PATH emits a canned JSONL stream and writes the -o file.
 # Usage: bash tests/driver-regression.sh   (exit 0 = all pass)

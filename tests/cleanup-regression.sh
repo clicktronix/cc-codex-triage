@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 # Regression suite for scripts/cleanup.sh — synthetic state fixtures, no Codex.
 # Usage: bash tests/cleanup-regression.sh   (exit 0 = all pass)
 set -u
@@ -385,6 +387,24 @@ printf '%s' "$DEAD1" > "$SD/tc3.active.lock/owner"
 OUT="$(bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
 [[ ! -e "$SD/tc3.id" && -f "$(last_archive)/tc3.id" ]] && ok "dead-owner lock reclaimed, unit archived" || bad "dead-owner reclaim failed: $OUT"
 [[ ! -d "$SD/tc3.active.lock" ]] && ok "reclaimed lock released after apply" || bad "lock left behind"
+
+echo "== shared thread targeted by another worktree gate is never archived =="
+MW="$T/multi-worktree"; WT="$T/multi-linked"
+mkdir -p "$MW" && (
+  cd "$MW" && git init -q -b main . && git config user.email t@t.t && git config user.name t \
+    && echo x > f.txt && git add f.txt && git commit -qm init && git branch linked
+) || exit 1
+git -C "$MW" worktree add -q "$WT" linked || exit 1
+SHARED_SD="$(cd "$MW" && env -u CC_CODEX_STATE_DIR bash "$(dirname "$CLEANUP")/state-dir.sh")"
+LINKED_GD="$(cd "$WT" && env -u CC_CODEX_GATE_DIR bash "$(dirname "$CLEANUP")/gate-dir.sh")"
+echo u > "$SHARED_SD/cross.id"; echo l > "$SHARED_SD/cross.log"; old "$SHARED_SD/cross.id" "$SHARED_SD/cross.log"
+printf 'branch=linked\nthread=cross\nlens=correctness\ncap=3\nblocks=0\nlog_bytes_at_arming=0\n' \
+  > "$LINKED_GD/autoreview.armed"
+OUT="$(cd "$MW" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+[[ "$RC" -eq 0 && -f "$SHARED_SD/cross.id" && -f "$SHARED_SD/cross.log" ]] \
+  && grep -q 'targeted by an armed gate' <<<"$OUT" \
+  && ok "other-worktree gate protects shared thread during apply" \
+  || bad "shared thread ignored other-worktree gate (rc=$RC out=$OUT)"
 
 echo "== hard root anchoring: cleanup outside a git repo -> exit 7, nothing moved =="
 NONGIT="$T/nongit"; mkdir -p "$NONGIT/.claude/codex-threads"

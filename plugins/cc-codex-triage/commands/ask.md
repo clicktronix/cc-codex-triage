@@ -29,7 +29,7 @@ This is the **informational** command — collaborative, not adversarial. For cr
    <the question>
    ```
 
-3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. It is a resume when `.claude/codex-threads/<THREAD>.id` exists.
+3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. Resolve `STATE_DIR` with `state-dir.sh`; it is a resume when `$STATE_DIR/<THREAD>.id` exists.
 
    ```bash
    # initial dispatch (no .id yet):
@@ -57,7 +57,7 @@ The default `ask` thread is repo-wide — right for "is there already a helper f
 
 ## Notes
 
-- Thread state: `.claude/codex-threads/<thread>.id`; audit log `.claude/codex-threads/<thread>.log`. Default thread: `ask`.
+- Thread state is in the repository common Git directory reported by `state-dir.sh`; default thread: `ask`.
 - A thread created with the read-only default never trips the tracked-file mutation guard.
 - Need write access (e.g. "try this fix")? That is a different intent — use `/thread <name>` without the read-only default, or `/review`.
 - Force-reset: `/thread-new <thread>`.

@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # /thread-list
 
-Lists threads under `.claude/codex-threads/` in the current repo.
+Lists threads in the current repository's shared state directory.
 
 ## Steps
 
@@ -17,4 +17,3 @@ Lists threads under `.claude/codex-threads/` in the current repo.
    ```
 
 2. Show output verbatim. Columns: thread, rounds, log size, last activity, topic. A `[busy]` marker means a dispatch is in flight on that thread — targeting it now would be refused (exit 10).
-

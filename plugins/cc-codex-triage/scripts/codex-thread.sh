@@ -25,7 +25,7 @@
 #                           immediately. Needs `setsid` or `python3` on PATH.
 #                           Mutually exclusive with --oneshot.
 #
-# Storage (under .claude/codex-threads/ — git-ignore this directory):
+# Storage (under the repository common Git directory, resolved by state-dir.sh):
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
@@ -51,7 +51,9 @@
 #                             write is capped to the LAST 64 KB of the stream).
 #   <thread>.findings.jsonl   /review's findings ledger (per-task; reset by --new).
 #   <thread>.scope            /review's pinned scope (per-task; reset by --new).
-#   <thread>.approved         /review's last-APPROVE baseline (per-task; reset by --new).
+#   <thread>.candidate        exact clean candidate captured by required /review.
+#   <thread>.review-state     latest machine-readable review/gate result.
+#   <thread>.approved         last gate-eligible exact-candidate APPROVE.
 #   <thread>.active           PID lease held while a dispatch is in flight —
 #                             acquired BEFORE any existing-thread mutation
 #                             (--new's sidecar reset, the invalid-ID discard),
@@ -125,6 +127,7 @@
 #       remove it manually)
 
 set -euo pipefail
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── the detached-child role ───────────────────────────────────────────────
 # "You are the re-exec'd child of a --detach launcher": redirect the reply into
@@ -249,7 +252,7 @@ if ! $ONESHOT; then
   # before any check could produce the diagnostic below.
   if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
     echo "not inside a git repository (candidate: ${CLAUDE_PROJECT_DIR:-$PWD})." >&2
-    echo "Persistent threads anchor their state to the repo root. Fix one of:" >&2
+    echo "Persistent threads anchor their state to the repository common Git directory. Fix one of:" >&2
     echo "  - cd into the target repository," >&2
     echo "  - point CLAUDE_PROJECT_DIR at (or inside) a git repository," >&2
     echo "  - or use --oneshot for a state-less dispatch." >&2
@@ -278,7 +281,12 @@ if $DETACH; then
 fi
 
 # ── paths ─────────────────────────────────────────────────────────────────
-STATE_DIR=".claude/codex-threads"
+if $ONESHOT; then
+  STATE_DIR="${TMPDIR:-/tmp}/cc-codex-triage-oneshot-state"
+else
+  STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
+  GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?
+fi
 # Create the state dir only for persistent modes. --oneshot leaves no trace in
 # the repo, so it must not even create an empty directory; its failure diag goes
 # to a temp path instead.
@@ -290,6 +298,9 @@ ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
 FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
 SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
 APPROVED_FILE="$STATE_DIR/${THREAD}.approved"
+CANDIDATE_FILE="$STATE_DIR/${THREAD}.candidate"
+REVIEW_STATE_FILE="$STATE_DIR/${THREAD}.review-state"
+REVIEW_LOOP_FILE="$STATE_DIR/${THREAD}.review-loop"
 LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
@@ -319,14 +330,6 @@ if $ONESHOT; then
 else
   mkdir -p "$STATE_DIR"
   DIAG_FILE="$STATE_DIR/${THREAD}.last-error.jsonl"
-  # One-time hygiene nudge: thread state should never be committed. Warn once
-  # per repo (marker file suppresses repeats), only when inside a git repo.
-  if git -C . rev-parse --show-toplevel >/dev/null 2>&1 \
-     && ! git -C . check-ignore -q "$STATE_DIR/x" 2>/dev/null \
-     && [[ ! -f "$STATE_DIR/.gitignore-warned" ]]; then
-    echo "HINT: $STATE_DIR is not gitignored — add '.claude/codex-threads/' to .gitignore (these are transient session logs; a 'git add -A' would stage them)." >&2
-    touch "$STATE_DIR/.gitignore-warned"
-  fi
 fi
 
 # Live foreign lease detector: prints the owning PID and returns 0 when
@@ -628,7 +631,7 @@ abort_dispatch() { # $1=signal name
 # Which thread the plan gate watches, if any — the plan sidecar belongs to that
 # thread alone, so an unrelated dispatch must not clear it.
 raw_plan_thread() {
-  sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1
+  sed -n 's/^thread=//p' "$GATE_DIR/autoplan.armed" 2>/dev/null | head -1
 }
 
 cleanup() {
@@ -830,6 +833,7 @@ if $FORCE_NEW; then
   # sidecar intact.
   # last-abort belongs to the incarnation being discarded.
   rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" \
+        "$CANDIDATE_FILE" "$REVIEW_STATE_FILE" "$REVIEW_LOOP_FILE" \
         "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
 fi
 
@@ -868,7 +872,7 @@ if ! $ONESHOT && [[ -s "$ID_FILE" ]]; then
 fi
 
 if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
-  echo "No existing thread '$THREAD' (.claude/codex-threads/${THREAD}.id not found or invalid)." >&2
+  echo "No existing thread '$THREAD' ($STATE_DIR/${THREAD}.id not found or invalid)." >&2
   echo "--require-existing refuses to create one. Start a thread first with /ask, /review, /plan, or /thread." >&2
   exit 6
 fi
@@ -897,7 +901,7 @@ if ! $ONESHOT && [[ -n "$REPO_ROOT" ]]; then
   [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
   if [[ -f "$_fpsh" ]]; then
     PRE_FP="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
-    if [[ "$(sed -n 's/^thread=//p' "$STATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
+    if [[ "$(sed -n 's/^thread=//p' "$GATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
       PRE_FP_PLAN="$( cd "$REPO_ROOT" && bash "$_fpsh" --plan 2>/dev/null || true )"
     fi
   fi

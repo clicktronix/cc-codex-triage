@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /thread-new
 
-Drops the saved session UUID for the named thread so the next dispatch starts fresh. The Codex-side rollout file in `~/.codex/sessions/` is NOT deleted (Codex CLI manages those) — only the local pointer is cleared.
+Drops the saved session UUID for the named thread so the next dispatch starts fresh. The Codex-side rollout file in `~/.codex/sessions/` is NOT deleted (Codex CLI manages those) — only shared repository state is cleared.
 
 ## Steps
 
@@ -17,10 +17,11 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 
    ```bash
    cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; HARD-FAIL outside a repo (a fail-soft cd would mutate state in the wrong directory)
-   D=".claude/codex-threads"
+   D=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh") || exit $?
    # Reset the pointer/counter AND the per-task sidecars, so a reused thread
    # name never inherits the previous task's findings/scope/approval baseline.
-   rm -f "$D/<NAME>.id" "$D/<NAME>.rounds" "$D/<NAME>.findings.jsonl" "$D/<NAME>.scope" "$D/<NAME>.approved" "$D/<NAME>.topic"
+   rm -f "$D/<NAME>.id" "$D/<NAME>.rounds" "$D/<NAME>.findings.jsonl" "$D/<NAME>.scope" \
+     "$D/<NAME>.candidate" "$D/<NAME>.review-state" "$D/<NAME>.review-loop" "$D/<NAME>.approved" "$D/<NAME>.topic"
    echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
    ```
 

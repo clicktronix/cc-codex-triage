@@ -88,7 +88,8 @@ if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/d
   exit 7
 fi
 cd "$ROOT" || exit 7
-STATE_DIR=".claude/codex-threads"
+STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
+GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?
 
 [ -d "$STATE_DIR" ] || { echo "No state directory ($STATE_DIR) — nothing to clean."; exit 0; }
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
@@ -98,7 +99,7 @@ NOW="$(date +%s)"
 # Every known per-thread state file (deduplicated — the extensions are
 # distinct). Kept in ONE place so the dormant file-set and the mtime scan can
 # never drift apart.
-THREAD_EXTS="id log log.1 rounds findings.jsonl scope approved last-error.jsonl detach-output detach-stderr detach-status dispatch-fp dispatch-fp-plan topic last-abort log-gen active"
+THREAD_EXTS="id log log.1 rounds findings.jsonl scope candidate review-state review-loop approved last-error.jsonl detach-output detach-stderr detach-status dispatch-fp dispatch-fp-plan topic last-abort log-gen active"
 
 # Existing member paths of a thread's file-set, one per line.  $1=thread
 thread_files() {
@@ -140,11 +141,32 @@ lease_pid() { cat "$STATE_DIR/$1.active" 2>/dev/null; }
 
 # Rail 2: true when either armed gate's thread= names this thread.
 armed_target() {
-  local k
-  for k in autoreview autoplan; do
-    [ -f "$STATE_DIR/$k.armed" ] || continue
-    [ "$(field "$STATE_DIR/$k.armed" thread)" = "$1" ] && return 0
-  done
+  local k gate_dir worktree
+  if [ -n "${CC_CODEX_GATE_DIR:-}" ]; then
+    GATE_DIRS="$GATE_DIR"
+  else
+    GATE_DIRS=""
+    while IFS= read -r worktree; do
+      [ -n "$worktree" ] || continue
+      gate_dir="$(CLAUDE_PROJECT_DIR="$worktree" bash "$SELF_DIR/gate-dir.sh" --read-only 2>/dev/null || true)"
+      [ -n "$gate_dir" ] || continue
+      case "
+$GATE_DIRS
+" in *"
+$gate_dir
+"*) ;; *) GATE_DIRS="${GATE_DIRS}${GATE_DIRS:+
+}$gate_dir" ;; esac
+    done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  fi
+  while IFS= read -r gate_dir; do
+    [ -n "$gate_dir" ] || continue
+    for k in autoreview autoplan; do
+      [ -f "$gate_dir/$k.armed" ] || continue
+      [ "$(field "$gate_dir/$k.armed" thread)" = "$1" ] && return 0
+    done
+  done <<EOF
+$GATE_DIRS
+EOF
   return 1
 }
 
@@ -268,7 +290,7 @@ echo
 echo "Armed gates:"
 shown=0
 for kind in autoreview autoplan; do
-  f="$STATE_DIR/$kind.armed"
+  f="$GATE_DIR/$kind.armed"
   [ -f "$f" ] || continue
   shown=1
   ab="$(field "$f" branch)"

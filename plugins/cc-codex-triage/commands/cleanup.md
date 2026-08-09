@@ -35,7 +35,8 @@ class through one shared rail check:
    returns): the thread is skipped unconditionally. A dead-PID or malformed
    lease is itself stale state and joins the archivable set in every class.
 2. **Armed targets** — a thread named by `autoreview.armed`/`autoplan.armed`
-   `thread=` lines is never archived, whichever class flagged it.
+   `thread=` lines in any registered worktree is never archived, whichever
+   class flagged it.
 3. **Revalidate before move** — on `--apply`, EVERY target (flat file or
    dormant set) is re-checked immediately before moving: the lease/armed rails
    re-run per thread, and mtimes are re-stat'ed; anything that changed since

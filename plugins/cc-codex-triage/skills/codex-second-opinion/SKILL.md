@@ -7,7 +7,7 @@ allowed-tools: Bash
 
 # Codex second opinion
 
-Every slash command in this plugin is `disable-model-invocation`, because each spends real money and minutes and the user should decide. This skill is the exception: **one** bounded dispatch you may reach for yourself. It is not the review loop — for that, read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps.
+Most slash commands in this plugin are `disable-model-invocation`, because each spends real money and minutes. `/review` is the deliberate exception for an owning workflow with an explicit review gate. This skill remains a different escape hatch: **one** bounded dispatch for a decision fork, never an iterative review loop.
 
 ## Use it when
 

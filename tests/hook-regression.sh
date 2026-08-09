@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 # Regression suite for hooks/stop-hook.sh. No Codex needed — synthetic state.
 # Usage: bash tests/hook-regression.sh   (exit 0 = all pass)
 set -u
@@ -1300,7 +1302,9 @@ echo "== /status keeps a plan-scope fallback when the script is missing =="
 # every change in the tree was counted as a plan-doc change.
 SSH_DIR="$T/status-only"; mkdir -p "$SSH_DIR"
 cp "$(dirname "$HOOK")/../scripts/status.sh" "$(dirname "$HOOK")/../scripts/lib.sh" \
-   "$(dirname "$HOOK")/../scripts/last-verdict.sh" "$SSH_DIR/"     # deliberately NO gate-fingerprint.sh
+   "$(dirname "$HOOK")/../scripts/last-verdict.sh" \
+   "$(dirname "$HOOK")/../scripts/state-dir.sh" \
+   "$(dirname "$HOOK")/../scripts/gate-dir.sh" "$SSH_DIR/"       # deliberately NO gate-fingerprint.sh
 rm -rf docs; echo "a code change" >> f.txt
 SOUT="$(bash "$SSH_DIR/status.sh" 2>/dev/null | grep 'working tree')"
 printf '%s' "$SOUT" | grep -q '0 plan-doc change' \

@@ -11,9 +11,9 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 
 ## Steps
 
-1. Parse `$ARGUMENTS`: if the first token names an existing thread (`.claude/codex-threads/<token>.id` exists — thread state ALWAYS lives at the repo ROOT, so `cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)"` first: this resolves a `CLAUDE_PROJECT_DIR` that names a repo SUBDIR up to the root, exactly like the driver does — a raw `cd "$CLAUDE_PROJECT_DIR"` would check the wrong place), that is the target thread; the rest is the directive. Otherwise derive the default the SAME way `/review` does: `review-<branch-slug>`, where `<branch-slug>` is the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` (`tr -c 'a-zA-Z0-9_.-' '-'`). Fallback chain: the slug thread's `.id` exists → target it; else a bare `review` thread's `.id` exists → target that WITH a one-line warning to the user ("legacy default thread — consider a per-task thread"); else proceed with the slug default and let `--require-existing` (step 4) exit 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/ask`, `/review`, or `/plan`.
+1. Resolve `STATE_DIR` with `state-dir.sh`. Parse `$ARGUMENTS`: if the first token names an existing thread (`$STATE_DIR/<token>.id` exists), that is the target thread; the rest is the directive. Otherwise derive the default the SAME way `/review` does: `review-<branch-slug>`, where `<branch-slug>` is the current branch with every character outside `[a-zA-Z0-9_.-]` replaced by `-` (`tr -c 'a-zA-Z0-9_.-' '-'`). Fallback chain: the slug thread's `.id` exists → target it; else a bare `review` thread's `.id` exists → target that WITH a one-line warning to the user ("legacy default thread — consider a per-task thread"); else proceed with the slug default and let `--require-existing` (step 4) exit 6 rather than silently starting a new thread. If that happens, tell the user to start one first with `/ask`, `/review`, or `/plan`.
 
-2. Recover Codex's last message: read the tail of `.claude/codex-threads/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
+2. Recover Codex's last message: read the tail of `$STATE_DIR/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 
 3. Classify what Codex's last message needs, then **follow the "Answering Codex back" rules in skill `codex-triage`**:
    - **Question** → answer it from project state (TodoWrite, plan, recent conversation).
@@ -39,4 +39,4 @@ Sends a reply from Claude Code into an existing Codex thread. This is the one pl
 ## Notes
 
 - `/reply` only makes sense for a thread that already exists. If none does, you probably want `/ask`, `/review`, or `/plan` to start one.
-- Thread state: `.claude/codex-threads/<thread>.id` / `.log`.
+- Thread state is in the repository common Git directory reported by `state-dir.sh`.
