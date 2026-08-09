@@ -16,19 +16,17 @@ Drops the saved session UUID for the named thread so the next dispatch starts fr
 2. If no further text after the name → just drop the pointer:
 
    ```bash
-   cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; HARD-FAIL outside a repo (a fail-soft cd would mutate state in the wrong directory)
-   D=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh") || exit $?
-   # Reset the pointer/counter AND the per-task sidecars, so a reused thread
-   # name never inherits the previous task's findings/scope/approval baseline.
-   rm -f "$D/<NAME>.id" "$D/<NAME>.rounds" "$D/<NAME>.findings.jsonl" "$D/<NAME>.scope" \
-     "$D/<NAME>.candidate" "$D/<NAME>.review-state" "$D/<NAME>.review-loop" "$D/<NAME>.approved" "$D/<NAME>.topic"
-   echo "Thread '<NAME>' reset. Next /thread <NAME>, /review, or /plan invocation starts fresh."
+   # The driver holds the same active lease used by dispatch for the complete
+   # reset. A concurrent dispatch therefore wins or loses before any sidecar is
+   # removed; there is no reset-review-state, then delete-pointer TOCTOU gap.
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --reset-only </dev/null
+   echo "Thread '$THREAD' reset. Next /thread, /review, or /plan invocation starts fresh."
    ```
 
 3. If an additional prompt is given on the same line → drop the pointer AND immediately fire the prompt with `--new`:
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <NAME> --new <<< "<REST_OF_ARGUMENTS>"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --new <<< "$PROMPT"
    ```
 
 4. Show Codex's reply (if step 3 ran) or the reset confirmation (if step 2 ran).

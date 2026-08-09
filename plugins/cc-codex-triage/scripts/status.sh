@@ -144,8 +144,8 @@ for kind in autoreview autoplan; do
   # Cycle state: a clean tree is not what the gate compares against.
   if [ -n "$(gate_baseline "$f")" ]; then
     case "$kind" in
-      autoplan) fp_now="$(bash "$FP_SH" --plan 2>/dev/null)" ;;
-      *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
+      autoplan) fp_now="$(bash "$FP_SH" --read-only --plan 2>/dev/null)" ;;
+      *)        fp_now="$(bash "$FP_SH" --read-only 2>/dev/null)" ;;
     esac
     fp_base="$(gate_baseline "$f")"
     if [ -z "$fp_now" ]; then

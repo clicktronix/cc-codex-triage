@@ -2,9 +2,9 @@
 
 Claude Code plugin for **persistent triage dialogue** with the OpenAI Codex CLI.
 
-Adds slash commands `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/autoreview`, `/autoplan`, `/thread`, `/thread-list`, `/thread-new` that talk to **named Codex threads** via `codex exec resume <UUID>` — Codex retains full conversation memory across Claude Code turns. Unlike `claude-review-loop` (one-shot) or `adversarial-review` (5-round approve/revise fix loop), this plugin is for **open-ended cross-agent triage**: paste, ask follow-ups, dig in, no fixed round cap (only the opt-in `/autoreview`/`/autoplan` gates are capped).
+Adds slash commands `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/autoreview`, `/autoplan`, `/thread`, `/thread-list`, `/thread-new` that talk to **named Codex threads** via `codex exec resume <UUID>` — Codex retains full conversation memory across Claude Code turns. Unlike `claude-review-loop` (one-shot), this plugin supports continued cross-agent triage; iterative review/plan loops and opt-in gates use explicit caps so a workflow cannot spend without a bound.
 
-`/review --required` is model-invocable for owning delivery workflows: it iterates in the foreground and records `APPROVE` only for the exact unchanged clean candidate HEAD/tree/fingerprint. Thread state lives in the repository common Git directory, so it survives disposable-worktree cleanup.
+`/review --required` is model-invocable for owning delivery workflows: each invocation runs one claimed foreground round and returns `REQUEST_CHANGES` to the owner for fix/test/commit. It records `APPROVE` only for the exact unchanged clean candidate HEAD/tree/fingerprint. Thread state lives in the repository common Git directory, so it survives disposable-worktree cleanup.
 
 Plus a skill (`codex-triage`) that frames third-party reviews in **Judge mode** to suppress sycophantic capitulation (arXiv 2509.16533), requires validating Codex's own findings against the code before applying them, and enforces fix-the-neighborhood on accepted findings.
 
@@ -55,6 +55,8 @@ plugins/
     hooks/hooks.json                  # Stop hook wiring
     hooks/stop-hook.sh                # self-verification gate (fail-open)
     scripts/codex-thread.sh           # bash driver — codex exec / exec resume
+    scripts/review-state.sh           # exact-candidate required-review gate
+    scripts/state-dir.sh              # common-Git thread-state resolver/migration
     skills/codex-triage/references/   # review/plan lens templates
 tests/
   scenarios/codex-triage/             # RED→GREEN eval scenarios
@@ -62,6 +64,7 @@ tests/
   driver-regression.sh                # driver suite with a stubbed codex CLI
   ledger-regression.sh                # findings-ledger suite (jq required)
   cleanup-regression.sh               # /cleanup suite — detection classes + safety rails
+  review-contract-regression.sh       # required-review, migration, and locking suite
   manifest-lint.sh                    # command/skill frontmatter + code-fence structure
 CHANGELOG.md
 LICENSE                               # MIT

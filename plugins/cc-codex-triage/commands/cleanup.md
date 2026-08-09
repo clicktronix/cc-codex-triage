@@ -21,8 +21,10 @@ Detection classes:
 - **Dormant threads** — only with `--older-than <days>` (integer **≥ 1**, max
   5 digits; `0`, negatives, non-numbers, and longer values are rejected — a
   leading-zero value like `08` is read base-10 as 8): a thread's whole file-set
-  (`id, log, log.1, rounds, findings.jsonl, scope, approved, last-error.jsonl,
-  detach-output, detach-stderr, detach-status, active`) qualifies when its
+  (`id, log, log.1, log-gen, rounds, findings.jsonl, scope, candidate,
+  review-state, review-loop, approved, last-error.jsonl, detach-output,
+  detach-stderr, detach-status, dispatch-fp, dispatch-fp-plan, topic,
+  last-abort, active`) qualifies when its
   NEWEST member is older than N days. Listed on dry run, moved wholesale on `--apply`.
 - **Generic threads** — `review`/`plan` default threads. Listed only, never
   auto-archived.
@@ -34,15 +36,23 @@ class through one shared rail check:
    flight (a resume waiting inside `codex exec` may write nothing until it
    returns): the thread is skipped unconditionally. A dead-PID or malformed
    lease is itself stale state and joins the archivable set in every class.
-2. **Armed targets** — a thread named by `autoreview.armed`/`autoplan.armed`
+2. **Fresh required claim** — a coherent `PENDING` candidate/review-state pair
+   is protected for its recorded one-hour pre-dispatch TTL. Malformed or expired
+   sidecars remain archivable.
+3. **Complete worktree discovery** — if `git worktree list` or any worktree's
+   read-only gate resolution fails, cleanup aborts before archive moves; an
+   undiscovered gate is never treated as absent.
+4. **Armed targets** — a thread named by `autoreview.armed`/`autoplan.armed`
    `thread=` lines in any registered worktree is never archived, whichever
-   class flagged it.
-3. **Revalidate before move** — on `--apply`, EVERY target (flat file or
+   class flagged it. The final rail check and moves hold the same armed-file
+   mutexes as gate publication, so a concurrent arming cannot land between
+   the check and archive.
+5. **Revalidate before move** — on `--apply`, EVERY target (flat file or
    dormant set) is re-checked immediately before moving: the lease/armed rails
    re-run per thread, and mtimes are re-stat'ed; anything that changed since
    detection (a re-armed gate, a refreshed diag, a woken thread) is skipped
    with a note.
-4. Generic `review`/`plan` threads stay list-only (rule above), in every class.
+6. Generic `review`/`plan` threads stay list-only (rule above), in every class.
 
 ## Steps
 

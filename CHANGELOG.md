@@ -4,7 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Required review is an exact-candidate delivery gate.** Model-invocable
+  `/review --required` claims one foreground round at a time and binds its
+  result to the clean candidate HEAD, tree, content fingerprint, canonical
+  base, and tracked spec. Only the self-verified machine marker is approval;
+  timeout, background work, `REQUEST_CHANGES`, cap, divergence, stale scope,
+  or candidate movement fails closed. Shared thread/review state survives
+  disposable worktree removal, while gate state remains worktree-owned.
+  Per-attempt claim tokens prevent another worktree from accidentally consuming
+  a round; failed/UUID-less calls still consume the explicit cap, and cleanup
+  protects a coherent pre-dispatch claim until its bounded TTL expires.
+
 ### Fixed
+- **Required-review state now fails closed across its full lifecycle.** Strict
+  decimal parsing covers the driver counter, loop metadata, and candidate
+  offsets without Bash octal fallthrough; completed rounds cannot be aborted or
+  overwritten by a stale hard-stop claim. Thread reset is one leased driver
+  operation, cleanup serializes with candidate publication, read-only status
+  paths no longer create caches, and legacy migration is recorded per source
+  worktree so retained compatibility files may safely diverge afterwards.
+- **Approval publication and cleanup rails are generation-safe.** A partial
+  approval rename cannot combine a new status with an older candidate, cleanup
+  aborts if any worktree gate cannot be discovered, and its final rail check
+  holds the same gate mutexes as arming through the archive moves.
 - **The plan scope is followed at the third call site too.** `/autoplan on`
   asked `gate-fingerprint.sh --plan-paths` for the scope but, unlike the hook
   and `/status`, kept no fallback for an empty answer — which leaves
@@ -33,6 +56,11 @@ All notable changes to this project are documented in this file.
   last-abort marker were both lost.
 
 ### Tests
+- Required-review regressions cover exact scope/verdict parsing, fenced and
+  non-final verdict rejection, malformed persisted decimals, claim/cap
+  ownership, stale-lock contention, partial approval publication, cleanup/gate
+  publication races, fail-closed worktree discovery, read-only state resolution,
+  and legacy migration across worktrees.
 - Four assertions could not fail and now can, each verified by mutation: the
   TERM/KILL escalation (the fixture announced itself only after installing its
   trap), `--plan` scope drift (both scopes were empty, so both sides were the

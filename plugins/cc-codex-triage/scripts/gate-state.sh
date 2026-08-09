@@ -23,17 +23,40 @@ case "$VERB" in write|remove) ;; *) echo "usage: gate-state.sh {write|remove} <a
 [ -n "$FILE" ] || { echo "usage: gate-state.sh {write|remove} <armed-file>" >&2; exit 1; }
 
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK="$FILE.lock"
 
 # stdin BEFORE the lock: waiting on a pipe while holding it would pin the mutex.
 BODY=""
-if [ "$VERB" = "write" ]; then BODY="$(cat)"; fi
+TARGET_THREAD=""
+TARGET_ANCHOR=""
+if [ "$VERB" = "write" ]; then
+  BODY="$(cat)"
+  TARGET_THREAD="$(printf '%s\n' "$BODY" | sed -n 's/^thread=//p' | head -1)"
+  case "$TARGET_THREAD" in *[!a-zA-Z0-9_.-]*|'')
+    echo "gate-state.sh: write body needs one valid thread= value" >&2
+    exit 1
+    ;;
+  esac
+  STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
+  for extension in id log candidate review-state review-loop approved; do
+    if [ -f "$STATE_DIR/$TARGET_THREAD.$extension" ]; then
+      TARGET_ANCHOR="$STATE_DIR/$TARGET_THREAD.$extension"
+      break
+    fi
+  done
+fi
 
 armed_lock "$FILE" || { echo "gate-state.sh: could not acquire $LOCK — nothing written." >&2; exit 2; }
 
 # Ownership is revalidated here, not just at acquisition: a holder evicted
 # after stalling past the staleness window must not write over its replacement.
 armed_owned "$FILE" || { armed_unlock "$FILE"; echo "gate-state.sh: lost the lock on $FILE before writing — nothing written." >&2; exit 2; }
+if [ -n "$TARGET_ANCHOR" ] && [ ! -f "$TARGET_ANCHOR" ]; then
+  armed_unlock "$FILE"
+  echo "gate-state.sh: thread '$TARGET_THREAD' was archived while gate publication waited — nothing written." >&2
+  exit 2
+fi
 
 rc=0
 if [ "$VERB" = "write" ]; then

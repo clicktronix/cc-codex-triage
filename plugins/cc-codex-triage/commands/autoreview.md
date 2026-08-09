@@ -69,7 +69,7 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
      || echo "CLEAN: nothing to review yet; gate will engage when you make changes"
    ```
 
-3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Invoke model-callable `/review --once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost). Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
+3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Invoke model-callable `/cc-codex-triage:review --once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost). Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
 
 4. `off` — resolve `GATE_DIR`, then remove `$GATE_DIR/autoreview.armed` through `gate-state.sh`; confirm only on success. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
 

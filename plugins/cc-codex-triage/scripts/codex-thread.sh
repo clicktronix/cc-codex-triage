@@ -7,9 +7,11 @@
 # memory across turns.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing] [--detach]
+#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
 #       --new               fresh persistent thread, discarding the existing one.
+#       --reset-only        atomically clear persistent thread state under the
+#                           dispatch lease, without starting a Codex call.
 #       --oneshot           throwaway: ignores thread state, runs an ephemeral
 #                           exec (no .id, no rollout, no audit log). Mutually
 #                           exclusive with --new.
@@ -81,6 +83,9 @@
 #                             release removes the lock only while <lock>/owner
 #                             still names this PID. cleanup() releases a
 #                             still-held lock on every exit path.
+#   <thread>.active.lock-reclaim
+#                             recoverable mkdir mutex that serializes stale
+#                             active-lock takeover across driver and cleanup.
 #   <thread>.detach-output    raw STDOUT of the LATEST --detach child (the
 #                             reply echo). Truncated per launch BY THE CHILD
 #                             after lease arbitration (only the lease owner
@@ -128,6 +133,7 @@
 
 set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROUND_HELPER="$SELF_DIR/round-counter.sh"
 
 # ── the detached-child role ───────────────────────────────────────────────
 # "You are the re-exec'd child of a --detach launcher": redirect the reply into
@@ -144,6 +150,7 @@ unset CC_CODEX_PROMPT_TMPFILE CC_CODEX_READY_FILE
 
 # ── args ──────────────────────────────────────────────────────────────────
 FORCE_NEW=false
+RESET_ONLY=false
 ONESHOT=false
 REQUIRE_EXISTING=false
 DETACH=false
@@ -171,6 +178,7 @@ while (( $# )); do
   case "$1" in
     --new) FORCE_NEW=true; shift ;;
     --oneshot) ONESHOT=true; shift ;;
+    --reset-only) RESET_ONLY=true; shift ;;
     --detach) DETACH=true; shift ;;
     # INTERNAL, set only by this script's own detach launcher on the process it
     # spawns. Deliberately not in --help or any command file.
@@ -197,7 +205,7 @@ while (( $# )); do
 done
 
 [[ -z "$THREAD" ]] && {
-  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot] [--require-existing] [--detach]" >&2
+  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach]" >&2
   echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
@@ -221,6 +229,11 @@ if $FORCE_NEW && $REQUIRE_EXISTING; then
   echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
   exit 1
 fi
+if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH \
+    || [ -n "$MODEL$EFFORT$SCHEMA$TOPIC$DETACH_READY_FILE" ]; }; then
+  echo "--reset-only accepts only a persistent thread name" >&2
+  exit 1
+fi
 if [[ -n "$EFFORT" ]]; then
   case "$EFFORT" in none|minimal|low|medium|high|xhigh) ;; *)
     echo "--effort must be none|minimal|low|medium|high|xhigh" >&2; exit 1 ;;
@@ -233,10 +246,10 @@ fi
 [[ -n "$SCHEMA" && "$SCHEMA" != /* ]] && SCHEMA="$PWD/$SCHEMA"
 [[ -z "$SCHEMA" || -f "$SCHEMA" ]] || { echo "--schema file not found: $SCHEMA" >&2; exit 1; }
 
-command -v codex >/dev/null 2>&1 || {
+if ! $RESET_ONLY && ! command -v codex >/dev/null 2>&1; then
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
   exit 2
-}
+fi
 
 # ── anchor cwd ────────────────────────────────────────────────────────────
 # State paths are repo-relative, but the Bash tool's cwd persists across calls
@@ -285,7 +298,7 @@ if $ONESHOT; then
   STATE_DIR="${TMPDIR:-/tmp}/cc-codex-triage-oneshot-state"
 else
   STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
-  GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?
+  if $RESET_ONLY; then GATE_DIR=""; else GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?; fi
 fi
 # Create the state dir only for persistent modes. --oneshot leaves no trace in
 # the repo, so it must not even create an empty directory; its failure diag goes
@@ -297,10 +310,6 @@ ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
 # here so --new can reset them with the rest of the thread's state.
 FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
 SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
-APPROVED_FILE="$STATE_DIR/${THREAD}.approved"
-CANDIDATE_FILE="$STATE_DIR/${THREAD}.candidate"
-REVIEW_STATE_FILE="$STATE_DIR/${THREAD}.review-state"
-REVIEW_LOOP_FILE="$STATE_DIR/${THREAD}.review-loop"
 LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
@@ -308,7 +317,9 @@ LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
 # mkdir mutex serializing lease acquisition; HAVE_LEASE_LOCK tracks whether
 # THIS process acquired it so the release helper below runs on every path.
 LEASE_LOCK="$STATE_DIR/${THREAD}.active.lock"
+LEASE_RECLAIM_LOCK="$STATE_DIR/${THREAD}.active.lock-reclaim"
 HAVE_LEASE_LOCK=false
+HAVE_LEASE_RECLAIM_LOCK=false
 
 # Ownership-checked mutex release — the ONE rule for every removal of the
 # lock: this process removes it ONLY while <lock>/owner still records $$.
@@ -324,6 +335,120 @@ release_lease_lock() {
   fi
   HAVE_LEASE_LOCK=false
   return 0
+}
+lease_lock_mtime() {
+  local value
+  value="$(stat -c '%Y' "$1" 2>/dev/null)" && [[ -n "$value" ]] \
+    && { printf '%s' "$value"; return 0; }
+  stat -f '%m' "$1" 2>/dev/null
+}
+lease_lock_safe() {
+  local lock="$1"
+  [[ ! -L "$lock" && ( ! -e "$lock" || -d "$lock" ) ]] || return 1
+  [[ ! -e "$lock/owner" || ( ! -L "$lock/owner" && -f "$lock/owner" ) ]]
+}
+lease_lock_stale() {
+  local lock="$1" owner now modified
+  owner="$(cat "$lock/owner" 2>/dev/null || true)"
+  if [[ "$owner" =~ ^[1-9][0-9]{0,11}$ ]]; then
+    kill -0 "$owner" 2>/dev/null && return 1
+    return 0
+  fi
+  if [[ -z "$owner" && ! -e "$lock/owner" ]]; then
+    now="$(date +%s 2>/dev/null || true)"
+    modified="$(lease_lock_mtime "$lock" || true)"
+    [[ "$now" =~ ^[0-9]+$ && "$modified" =~ ^[0-9]+$ ]] \
+      && (( now - modified > 60 ))
+    return $?
+  fi
+  return 0
+}
+release_lease_reclaim_lock() {
+  [[ "$HAVE_LEASE_RECLAIM_LOCK" == true ]] || return 0
+  if [[ "$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
+    rm -f "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null || true
+    rmdir "$LEASE_RECLAIM_LOCK" 2>/dev/null || true
+  fi
+  HAVE_LEASE_RECLAIM_LOCK=false
+  return 0
+}
+acquire_lease_reclaim_lock() {
+  local tries=0 sampled moved stale
+  while (( tries < 100 )); do
+    lease_lock_safe "$LEASE_RECLAIM_LOCK" || return 1
+    if mkdir "$LEASE_RECLAIM_LOCK" 2>/dev/null; then
+      if (set -C; printf '%s\n' "$$" > "$LEASE_RECLAIM_LOCK/owner") 2>/dev/null \
+          && [[ "$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
+        HAVE_LEASE_RECLAIM_LOCK=true
+        return 0
+      fi
+      return 1
+    fi
+    if lease_lock_stale "$LEASE_RECLAIM_LOCK"; then
+      sampled="$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null || true)"
+      stale="$LEASE_RECLAIM_LOCK.stale.$$.$tries"
+      [[ ! -e "$stale" && ! -L "$stale" ]] || return 1
+      if mv "$LEASE_RECLAIM_LOCK" "$stale" 2>/dev/null; then
+        moved="$(cat "$stale/owner" 2>/dev/null || true)"
+        if [[ "$moved" != "$sampled" ]]; then
+          if [[ ! -e "$LEASE_RECLAIM_LOCK" && ! -L "$LEASE_RECLAIM_LOCK" ]]; then
+            mv "$stale" "$LEASE_RECLAIM_LOCK" 2>/dev/null || true
+          else
+            rm -f "$stale/owner" 2>/dev/null || true
+            rmdir "$stale" 2>/dev/null || true
+          fi
+          return 1
+        fi
+        rm -f "$stale/owner" 2>/dev/null || true
+        rmdir "$stale" 2>/dev/null || true
+        tries=$((tries + 1))
+        continue
+      fi
+    fi
+    return 1
+  done
+  return 1
+}
+try_reclaim_lease_lock() {
+  local owner stale moved
+  acquire_lease_reclaim_lock || return 1
+  if ! lease_lock_safe "$LEASE_LOCK"; then
+    release_lease_reclaim_lock
+    return 1
+  fi
+  if [[ ! -d "$LEASE_LOCK" ]]; then
+    release_lease_reclaim_lock
+    return 0
+  fi
+  owner="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
+  if ! lease_lock_stale "$LEASE_LOCK"; then
+    release_lease_reclaim_lock
+    return 1
+  fi
+  stale="$LEASE_LOCK.stale.$$"
+  if [[ -e "$stale" || -L "$stale" ]]; then
+    release_lease_reclaim_lock
+    return 1
+  fi
+  if mv "$LEASE_LOCK" "$stale" 2>/dev/null; then
+    moved="$(cat "$stale/owner" 2>/dev/null || true)"
+    if [[ "$moved" != "$owner" ]]; then
+      if [[ ! -e "$LEASE_LOCK" && ! -L "$LEASE_LOCK" ]]; then
+        mv "$stale" "$LEASE_LOCK" 2>/dev/null || true
+      else
+        rm -f "$stale/owner" 2>/dev/null || true
+        rmdir "$stale" 2>/dev/null || true
+      fi
+      release_lease_reclaim_lock
+      return 1
+    fi
+    rm -f "$stale/owner" 2>/dev/null || true
+    rmdir "$stale" 2>/dev/null || true
+    release_lease_reclaim_lock
+    return 0
+  fi
+  release_lease_reclaim_lock
+  return 1
 }
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
@@ -654,6 +779,7 @@ cleanup() {
   # failed verify). A normal acquisition releases it inline first. The
   # helper is ownership-checked: a robbed acquirer leaves the new owner's
   # lock intact.
+  release_lease_reclaim_lock
   release_lease_lock
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
@@ -698,8 +824,12 @@ SCHEMA_ARGS=()
 [[ -n "$SCHEMA" ]] && SCHEMA_ARGS+=( --output-schema "$SCHEMA" )
 
 # ── read prompt from stdin ────────────────────────────────────────────────
-PROMPT="$(cat)"
-[[ -z "$PROMPT" ]] && { echo "empty prompt on stdin" >&2; exit 1; }
+if $RESET_ONLY; then
+  PROMPT=""
+else
+  PROMPT="$(cat)"
+  [[ -z "$PROMPT" ]] && { echo "empty prompt on stdin" >&2; exit 1; }
+fi
 
 # ── active lease ──────────────────────────────────────────────────────────
 # In-flight marker for /cleanup: while this file names a live PID, the thread
@@ -717,13 +847,12 @@ PROMPT="$(cat)"
 # and the tmp write + mv + verification. The winner publishes its PID into
 # <lock>/owner with a noclobber (O_EXCL) write — an existing token means the
 # directory was reclaimed from a stalled pre-token acquirer, which loses —
-# and takeover is OWNERSHIP-gated: a lock with a LIVE recorded
-# owner is never stolen regardless of age (an acquirer merely paused inside
-# the critical section must not be robbed — age-only stealing reopened the
-# exact double-dispatch race the mutex closes); a dead/invalid owner is
-# reclaimed at once; an ownerless lock older than 60s (its acquirer crashed
-# between mkdir and the token write) is reclaimed too. cleanup() releases a
-# still-held mutex on every exit path.
+# and takeover is OWNERSHIP-gated under a separate reclaim mutex: a lock with
+# a LIVE recorded owner is never stolen regardless of age; a dead/invalid
+# owner is reclaimed at once; an ownerless lock older than 60s is reclaimed.
+# Serializing and generation-checking the takeover prevents two stale-lock
+# contenders from deleting a newly acquired generation. cleanup() releases
+# every still-held mutex on every exit path.
 if ! $ONESHOT; then
   if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
     LOCK_OWNER="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
@@ -732,24 +861,7 @@ if ! $ONESHOT; then
       echo "thread $THREAD is busy (lease acquisition mutex $LEASE_LOCK is held by live pid=$LOCK_OWNER) — wait for it or use a different --thread" >&2
       exit 10
     fi
-    STEAL=false
-    if [[ -e "$LEASE_LOCK/owner" ]]; then
-      STEAL=true   # owner recorded but dead (or token garbage): acquirer is gone
-    else
-      # Ownerless lock: only a crash between mkdir and the token write leaves
-      # this state, and that window is a couple of builtins wide — an
-      # ownerless lock older than 60s can only be a crashed acquirer.
-      LOCK_MTIME="$(stat -c '%Y' "$LEASE_LOCK" 2>/dev/null || stat -f '%m' "$LEASE_LOCK" 2>/dev/null || true)"
-      NOW_EPOCH="$(date +%s)"
-      if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - LOCK_MTIME > 60 )); then
-        STEAL=true
-      fi
-    fi
-    if [[ "$STEAL" == true ]]; then
-      rm -f "$LEASE_LOCK/owner" 2>/dev/null || true
-      rmdir "$LEASE_LOCK" 2>/dev/null || true
-    fi
-    if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
+    if ! try_reclaim_lease_lock || ! mkdir "$LEASE_LOCK" 2>/dev/null; then
       echo "thread $THREAD is busy (concurrent lease acquisition holds $LEASE_LOCK) — retry shortly, or use a different --thread" >&2
       exit 10
     fi
@@ -826,15 +938,20 @@ if ! $ONESHOT; then
 fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
-if $FORCE_NEW; then
+if $FORCE_NEW || $RESET_ONLY; then
   # Reset the per-task sidecars too, so a reused thread name does not inherit
   # the previous task's findings ledger / scope / approval baseline. Runs
   # while HOLDING the lease — a busy thread was refused above with every
   # sidecar intact.
   # last-abort belongs to the incarnation being discarded.
-  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" "$APPROVED_FILE" \
-        "$CANDIDATE_FILE" "$REVIEW_STATE_FILE" "$REVIEW_LOOP_FILE" \
+  CC_CODEX_REVIEW_RESET_LEASE_PID="$$" \
+    bash "$SELF_DIR/review-state.sh" reset "$THREAD" >/dev/null || exit $?
+  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" \
         "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
+  if $RESET_ONLY; then
+    echo "RESET thread $THREAD"
+    exit 0
+  fi
 fi
 
 # Porcelain status with our own state dir filtered out — its .id/.log churn is
@@ -1029,13 +1146,10 @@ if ! $ONESHOT; then
   # default aborts AFTER the paid call — zero-byte log, reply never printed.
   ROUND=0
   if [[ -s "$ID_FILE" ]]; then
-    # Validate before arithmetic: a corrupted/CRLF .rounds would otherwise be
-    # an arithmetic error under set -e — killing the script AFTER the paid
-    # dispatch succeeded, losing the reply. Garbage resets the counter to 0.
-    # Leading zeros count as garbage too: bash arithmetic parses 08 as invalid
-    # octal — the exact trap the hook's is_num guards against.
-    PREV_ROUNDS="$(cat "$ROUNDS_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "$PREV_ROUNDS" =~ ^(0|[1-9][0-9]*)$ ]] || PREV_ROUNDS=0
+    # Driver and required-review state use the same strict decimal parser.
+    # Missing, multiline, mixed, leading-zero, or oversized content normalizes
+    # to 0, so Bash can never reinterpret a persisted value as octal.
+    PREV_ROUNDS="$(bash "$ROUND_HELPER" "$ROUNDS_FILE")" || exit $?
     ROUND=$(( PREV_ROUNDS + 1 ))
     echo "$ROUND" > "$ROUNDS_FILE"
     # Written HERE, not before the dispatch: a failed run would otherwise pin

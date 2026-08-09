@@ -114,4 +114,15 @@ for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
 done
 
+echo "== required runtime helpers =="
+for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh; do
+  path="$ROOT/plugins/cc-codex-triage/$helper"
+  if [[ -f "$path" && -x "$path" ]] \
+      && git -C "$ROOT" ls-files --error-unmatch -- "plugins/cc-codex-triage/$helper" >/dev/null 2>&1; then
+    ok
+  else
+    bad "plugins/cc-codex-triage/$helper must be tracked and executable"
+  fi
+done
+
 summary

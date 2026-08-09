@@ -7,6 +7,10 @@ set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 CLEANUP="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/cleanup.sh"
+REVIEW_STATE="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/review-state.sh"
+STATUS="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/status.sh"
+FINGERPRINT="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/gate-fingerprint.sh"
+GATE_STATE="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/gate-state.sh"
 [[ -f "$CLEANUP" ]] || { echo "cleanup script not found: $CLEANUP"; exit 1; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-cleanup-test.XXXXXX")"
@@ -58,6 +62,68 @@ run
 run --apply
 [[ "$RC" -eq 0 && ! -e "$SD/x1.last-error.jsonl" && -f "$(last_archive)/x1.last-error.jsonl" ]] \
   && ok "--apply archived the orphan diag" || bad "orphan diag not archived (rc=$RC out=$OUT)"
+
+echo "== required-review sidecars distinguish fresh claims from stale orphans =="
+reset_state
+for ext in candidate review-state review-loop; do echo state > "$SD/pre-dispatch.$ext"; done
+run
+grep -q 'ORPHAN  pre-dispatch  (sidecar' <<<"$OUT" \
+  && ok "pre-dispatch required-review sidecars are detected" || bad "required sidecars invisible: $OUT"
+run --apply
+a="$(last_archive)"; moved=true
+for ext in candidate review-state review-loop; do
+  [[ ! -e "$SD/pre-dispatch.$ext" && -f "$a/pre-dispatch.$ext" ]] || moved=false
+done
+$moved && ok "required-review orphan sidecars archive as one unit" || bad "required sidecars not archived"
+
+reset_state
+claim=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expires=$(( $(date +%s) + 3600 ))
+printf 'claim_token=%s\nclaim_expires_at=%s\n' "$claim" "$expires" > "$SD/live-claim.candidate"
+printf 'status=PENDING\nclaim_token=%s\nclaim_expires_at=%s\n' "$claim" "$expires" > "$SD/live-claim.review-state"
+echo loop > "$SD/live-claim.review-loop"
+run --apply
+[[ -f "$SD/live-claim.candidate" && -f "$SD/live-claim.review-state" && -f "$SD/live-claim.review-loop" ]] \
+  && grep -q 'fresh required-review claim pending dispatch' <<<"$OUT" \
+  && ok "fresh coherent PENDING claim is never archived" || bad "fresh PENDING claim was not protected: $OUT"
+expired=$(( $(date +%s) - 1 ))
+sed -i.bak "s/claim_expires_at=$expires/claim_expires_at=$expired/" "$SD/live-claim.candidate" "$SD/live-claim.review-state"
+rm -f "$SD/live-claim.candidate.bak" "$SD/live-claim.review-state.bak"
+run --apply
+a="$(last_archive)"
+[[ ! -e "$SD/live-claim.candidate" && -f "$a/live-claim.candidate" ]] \
+  && ok "expired PENDING claim becomes archivable" || bad "expired PENDING claim remained protected"
+
+echo "== begin publication and cleanup apply serialize on the review mutex =="
+reset_state
+cat > "$T/pause-begin.sh" <<HOOK
+: > "$T/begin-paused"
+while [ ! -e "$T/begin-release" ]; do sleep 0.01; done
+HOOK
+rm -f "$T/begin-paused" "$T/begin-release" "$T/begin.out" "$T/begin.err" "$T/cleanup-race.out"
+CC_REVIEW_STATE_TEST_AFTER_LOOP_HOOK="$T/pause-begin.sh" \
+  bash "$REVIEW_STATE" begin cleanup-race --base HEAD --spec f.txt --cap 5 \
+  > "$T/begin.out" 2> "$T/begin.err" & BEGIN_PID=$!
+for _i in {1..500}; do [ -e "$T/begin-paused" ] && break; sleep 0.01; done
+bash "$CLEANUP" --apply > "$T/cleanup-race.out" 2>&1 & CLEAN_PID=$!
+sleep 0.2
+touch "$T/begin-release"
+set +e; wait "$BEGIN_PID"; BEGIN_RC=$?; wait "$CLEAN_PID"; CLEAN_RC=$?
+claim_candidate="$(sed -n 's/^claim_token=//p' "$SD/cleanup-race.candidate" 2>/dev/null | head -1)"
+claim_state="$(sed -n 's/^claim_token=//p' "$SD/cleanup-race.review-state" 2>/dev/null | head -1)"
+[[ "$BEGIN_RC" -eq 0 && "$CLEAN_RC" -eq 0 && -f "$SD/cleanup-race.review-loop" \
+    && -n "$claim_candidate" && "$claim_candidate" == "$claim_state" \
+    && "$(sed -n 's/^status=//p' "$SD/cleanup-race.review-state")" == PENDING ]] \
+  && ok "cleanup cannot archive a partially published required-review claim" \
+  || bad "begin/cleanup race broke the claim (begin=$BEGIN_RC cleanup=$CLEAN_RC out=$(cat "$T/cleanup-race.out"))"
+
+reset_state
+echo x > "$SD/foo.review-state.id"
+echo state > "$SD/foo.review-state.candidate"
+run --apply
+[[ -f "$SD/foo.review-state.id" && -f "$SD/foo.review-state.candidate" ]] \
+  && ok "sidecar suffix parsing preserves a live dotted thread name" \
+  || bad "sidecar scan truncated a dotted thread name"
 
 echo "== recovered diag (.log newer than the diag) flagged =="
 reset_state
@@ -228,6 +294,24 @@ echo "== rails matrix: generic review/plan are list-only in EVERY class =="
 reset_state; echo l > "$SD/review.log"                              # orphan-log class
 run --apply
 grep -q 'GENERIC review' <<<"$OUT" && [[ -f "$SD/review.log" ]] && ok "orphan-log class lists a generic thread only" || bad "orphan-log generic rail: $OUT"
+
+echo "== dry-run/status/fingerprint read paths create no repository state =="
+READ_REPO="$T/read-only-repo"
+mkdir -p "$READ_REPO" && cd "$READ_REPO"
+git init -q -b main . && git config user.email t@t.t && git config user.name t
+echo x > f.txt && git add f.txt && git commit -qm init
+unset CC_CODEX_STATE_DIR CC_CODEX_GATE_DIR
+bash "$CLEANUP" >/dev/null 2>&1
+bash "$STATUS" >/dev/null 2>&1
+fp="$(bash "$FINGERPRINT" --read-only)"
+if [[ -n "$fp" && ! -e .git/cc-codex-triage && ! -e .claude ]]; then
+  ok "read-only commands do not create, migrate, or cache repository state"
+else
+  bad "read-only command mutated repository state"
+fi
+cd "$REPO"
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 reset_state; echo s > "$SD/plan.scope"                              # sidecar-only class
 run --apply
 grep -q 'GENERIC plan' <<<"$OUT" && [[ -f "$SD/plan.scope" ]] && ok "sidecar class lists a generic thread only" || bad "sidecar generic rail: $OUT"
@@ -388,6 +472,41 @@ OUT="$(bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
 [[ ! -e "$SD/tc3.id" && -f "$(last_archive)/tc3.id" ]] && ok "dead-owner lock reclaimed, unit archived" || bad "dead-owner reclaim failed: $OUT"
 [[ ! -d "$SD/tc3.active.lock" ]] && ok "reclaimed lock released after apply" || bad "lock left behind"
 
+echo "== apply mutex: crashed active-lock reclaimer is recoverable =="
+reset_state
+echo u > "$SD/tc4.id"; echo l > "$SD/tc4.log"; old "$SD/tc4.id" "$SD/tc4.log"
+mkdir -p "$SD/tc4.active.lock" "$SD/tc4.active.lock-reclaim"
+printf '%s' "$DEAD1" > "$SD/tc4.active.lock/owner"
+printf '%s' "$DEAD1" > "$SD/tc4.active.lock-reclaim/owner"
+OUT="$(bash "$CLEANUP" --older-than 30 --apply 2>&1)"; RC=$?
+[[ "$RC" -eq 0 && ! -e "$SD/tc4.id" && -f "$(last_archive)/tc4.id" ]] \
+  && ok "cleanup recovers a dead active-lock reclaimer" \
+  || bad "dead active-lock reclaimer blocked cleanup: $OUT"
+[[ ! -e "$SD/tc4.active.lock" && ! -e "$SD/tc4.active.lock-reclaim" ]] \
+  && ok "cleanup releases the recovered active locks" || bad "recovered active locks leaked"
+
+echo "== gate publication after the final rail check cannot leave a dangling gate =="
+reset_state
+echo u > "$SD/gate-race.id"; echo l > "$SD/gate-race.log"
+old "$SD/gate-race.id" "$SD/gate-race.log"
+cat > "$T/pause-after-rail.sh" <<HOOK
+: > "$T/rail-paused"
+while [ ! -e "$T/rail-release" ]; do sleep 0.01; done
+HOOK
+rm -f "$T/rail-paused" "$T/rail-release" "$T/cleanup-gate-race.out" "$T/gate-race.out"
+CC_CLEANUP_TEST_POST_RAIL_HOOK="$T/pause-after-rail.sh" \
+  bash "$CLEANUP" --older-than 1 --apply > "$T/cleanup-gate-race.out" 2>&1 & CLEAN_GATE_PID=$!
+for _i in {1..500}; do [ -e "$T/rail-paused" ] && break; sleep 0.01; done
+printf 'branch=main\nthread=gate-race\ncap=3\n' \
+  | bash "$GATE_STATE" write "$SD/autoreview.armed" > "$T/gate-race.out" 2>&1 & GATE_PID=$!
+sleep 0.1
+touch "$T/rail-release"
+set +e; wait "$CLEAN_GATE_PID"; CLEAN_GATE_RC=$?; wait "$GATE_PID"; GATE_RC=$?
+[[ "$CLEAN_GATE_RC" -eq 0 && "$GATE_RC" -eq 2 && ! -e "$SD/autoreview.armed" \
+    && ! -e "$SD/gate-race.id" && -f "$(last_archive)/gate-race.id" ]] \
+  && ok "gate writer loses cleanly when cleanup archives its pre-lock target" \
+  || bad "gate/cleanup serialization left dangling state (cleanup=$CLEAN_GATE_RC gate=$GATE_RC cleanup_out=$(cat "$T/cleanup-gate-race.out") gate_out=$(cat "$T/gate-race.out"))"
+
 echo "== shared thread targeted by another worktree gate is never archived =="
 MW="$T/multi-worktree"; WT="$T/multi-linked"
 mkdir -p "$MW" && (
@@ -405,6 +524,37 @@ OUT="$(cd "$MW" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR bash "$CLEANUP
   && grep -q 'targeted by an armed gate' <<<"$OUT" \
   && ok "other-worktree gate protects shared thread during apply" \
   || bad "shared thread ignored other-worktree gate (rc=$RC out=$OUT)"
+
+echo "== worktree/gate discovery failures fail closed before apply =="
+echo u > "$SHARED_SD/discovery-git.id"; echo l > "$SHARED_SD/discovery-git.log"
+old "$SHARED_SD/discovery-git.id" "$SHARED_SD/discovery-git.log"
+printf 'branch=linked\nthread=discovery-git\n' > "$LINKED_GD/autoreview.armed"
+FAIL_GIT="$T/fail-git"; mkdir -p "$FAIL_GIT"
+REAL_GIT="$(command -v git)"
+cat > "$FAIL_GIT/git" <<GIT
+#!/usr/bin/env bash
+if [ "\${1:-}" = worktree ] && [ "\${2:-}" = list ]; then exit 42; fi
+exec "$REAL_GIT" "\$@"
+GIT
+chmod +x "$FAIL_GIT/git"
+OUT="$(cd "$MW" && PATH="$FAIL_GIT:$PATH" env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  bash "$CLEANUP" --older-than 1 --apply 2>&1)"; RC=$?
+[[ "$RC" -eq 7 && -f "$SHARED_SD/discovery-git.id" && -f "$SHARED_SD/discovery-git.log" ]] \
+  && grep -q 'cannot discover every worktree gate' <<<"$OUT" \
+  && ok "git worktree discovery failure leaves shared thread state untouched" \
+  || bad "git worktree discovery failed open (rc=$RC out=$OUT)"
+
+echo u > "$SHARED_SD/discovery-gate.id"; echo l > "$SHARED_SD/discovery-gate.log"
+old "$SHARED_SD/discovery-gate.id" "$SHARED_SD/discovery-gate.log"
+mkdir -p "$T/gate-outside"
+ln -s "$T/gate-outside" "$WT/.claude"
+OUT="$(cd "$MW" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  bash "$CLEANUP" --older-than 1 --apply 2>&1)"; RC=$?
+[[ "$RC" -eq 7 && -f "$SHARED_SD/discovery-gate.id" && -f "$SHARED_SD/discovery-gate.log" ]] \
+  && grep -q 'cannot discover every worktree gate' <<<"$OUT" \
+  && ok "gate-dir discovery failure leaves shared thread state untouched" \
+  || bad "gate-dir discovery failed open (rc=$RC out=$OUT)"
+rm -f "$WT/.claude"
 
 echo "== hard root anchoring: cleanup outside a git repo -> exit 7, nothing moved =="
 NONGIT="$T/nongit"; mkdir -p "$NONGIT/.claude/codex-threads"
