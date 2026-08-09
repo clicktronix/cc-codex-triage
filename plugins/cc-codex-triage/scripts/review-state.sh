@@ -366,16 +366,24 @@ case "$VERB" in
           && die 10 "$LAST_STATUS: reset the thread before starting another required review"
         ;;
     esac
-    if [ -f "$LOOP_STATE" ] \
-      && { { [ -z "$LAST_STATUS" ] && [ ! -f "$CANDIDATE" ]; } \
-        || [ "$LAST_STATUS" = REQUEST_CHANGES ] || [ "$LAST_STATUS" = NO_DECISION ] \
-        || [ "$LAST_STATUS" = STALE ] || [ "$LAST_STATUS" = ABORTED ] \
-        || [ "$LAST_STATUS" = BACKGROUND_SINGLE_PASS ]; } \
-      && [ "$(field "$LOOP_STATE" base_sha)" = "$BASE_SHA" ] \
-      && [ "$(field "$LOOP_STATE" spec_path)" = "$SPEC_PATH" ] \
-      && [ "$(field "$LOOP_STATE" cap)" = "$CAP" ]; then
+    if [ -f "$LOOP_STATE" ]; then
+      LOOP_BASE_SHA="$(field "$LOOP_STATE" base_sha)"
+      LOOP_SPEC_PATH="$(field "$LOOP_STATE" spec_path)"
+      LOOP_CAP="$(field "$LOOP_STATE" cap)"
       LOOP_START="$(field "$LOOP_STATE" start_round)"
       ATTEMPTS="$(field "$LOOP_STATE" attempts)"
+      [ -n "$LOOP_BASE_SHA" ] && [ -n "$LOOP_SPEC_PATH" ] \
+        || { echo "invalid required review loop contract" >&2; exit 1; }
+      case "$LOOP_CAP" in
+        1|2|3|4|5) ;;
+        *) echo "invalid required review loop cap" >&2; exit 1 ;;
+      esac
+      valid_decimal "$LOOP_START" 7 \
+        || { echo "invalid required review loop state" >&2; exit 1; }
+      [ "$LOOP_BASE_SHA" = "$BASE_SHA" ] \
+        && [ "$LOOP_SPEC_PATH" = "$SPEC_PATH" ] \
+        && [ "$LOOP_CAP" = "$CAP" ] \
+        || die 10 "REVIEW_CONTRACT_CHANGED: reset the thread before changing required-review base, spec, or cap"
     else
       LOOP_START="$CURRENT_ROUND"
       ATTEMPTS=0
@@ -494,7 +502,7 @@ case "$VERB" in
           exit 10
         fi
         write_state REQUEST_CHANGES REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$C_FP" "$(round_now)" blocking_findings_open || exit 1
-        echo "REQUEST_CHANGES: fix, test, commit a new candidate, then begin and review again" >&2
+        echo "REQUEST_CHANGES: commit valid fixes as a new candidate, or keep the same candidate for refuted/deferred findings; then begin and review again" >&2
         exit 10
         ;;
       *)

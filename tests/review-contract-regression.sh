@@ -252,6 +252,77 @@ append_verdict review-loop APPROVE
 record_review review-loop >/dev/null
 bash "$STATE" check review-loop >/dev/null && ok "new candidate APPROVE releases" || bad "follow-up APPROVE rejected"
 
+echo "== refuted or deferred findings may re-review the same candidate =="
+new_repo "$T/same-candidate-loop"
+SAME_CANDIDATE_HEAD="$(git rev-parse HEAD)"
+begin_review review-same-candidate 3 >/dev/null
+append_verdict review-same-candidate REQUEST_CHANGES
+run_rc record_review review-same-candidate
+[[ "$RC" -eq 10 && "$(state_field review-same-candidate status)" == REQUEST_CHANGES ]] \
+  || bad "same-candidate setup did not persist REQUEST_CHANGES"
+SAME_BEGIN="$(begin_review review-same-candidate 3)"
+[[ "$SAME_BEGIN" == *"attempt=2/3"* \
+    && "$(candidate_field review-same-candidate head)" == "$SAME_CANDIDATE_HEAD" ]] \
+  && ok "refuted/deferred finding spends a fresh round on the same immutable candidate" \
+  || bad "same-candidate re-review reset the loop or changed the candidate: $SAME_BEGIN"
+append_verdict review-same-candidate APPROVE
+record_review review-same-candidate >/dev/null
+[[ "$(git rev-parse HEAD)" == "$SAME_CANDIDATE_HEAD" ]] \
+  && bash "$STATE" check review-same-candidate >/dev/null \
+  && ok "same-candidate re-review can earn fresh approval without a fake commit" \
+  || bad "same-candidate re-review did not earn exact approval"
+APPROVED_LOOP="$(cat "$(thread_dir)/review-same-candidate.review-loop")"
+run_rc begin_review review-same-candidate 4
+[[ "$RC" -eq 10 \
+    && "$(state_field review-same-candidate status)" == APPROVED \
+    && "$(cat "$(thread_dir)/review-same-candidate.review-loop")" == "$APPROVED_LOOP" ]] \
+  && ok "approval does not silently unpin the required-review contract" \
+  || bad "approved lifecycle accepted a different cap without reset"
+
+echo "== required-review contract stays pinned until explicit reset =="
+new_repo "$T/contract-pinning"
+PINNED_BASE="$TEST_BASE"
+printf '# Alternate spec\n' > spec-alt.md
+git add spec-alt.md && git commit -qm alternate-spec
+ALTERNATE_BASE="$(git rev-parse HEAD)"
+bash "$STATE" begin review-contract-pinning \
+  --base "$PINNED_BASE" --spec spec.md --cap 2 >/dev/null
+append_verdict review-contract-pinning REQUEST_CHANGES
+run_rc record_review review-contract-pinning
+[[ "$RC" -eq 10 ]] || bad "contract-pinning setup did not persist REQUEST_CHANGES"
+PINNED_LOOP="$(cat "$(thread_dir)/review-contract-pinning.review-loop")"
+PINNED_CANDIDATE="$(cat "$(thread_dir)/review-contract-pinning.candidate")"
+for changed_contract in cap spec base; do
+  case "$changed_contract" in
+    cap)
+      run_rc bash "$STATE" begin review-contract-pinning \
+        --base "$PINNED_BASE" --spec spec.md --cap 3
+      ;;
+    spec)
+      run_rc bash "$STATE" begin review-contract-pinning \
+        --base "$PINNED_BASE" --spec spec-alt.md --cap 2
+      ;;
+    base)
+      run_rc bash "$STATE" begin review-contract-pinning \
+        --base "$ALTERNATE_BASE" --spec spec.md --cap 2
+      ;;
+  esac
+  [[ "$RC" -eq 10 \
+      && "$(cat "$(thread_dir)/review-contract-pinning.review-loop")" == "$PINNED_LOOP" \
+      && "$(cat "$(thread_dir)/review-contract-pinning.candidate")" == "$PINNED_CANDIDATE" \
+      && "$(state_field review-contract-pinning status)" == REQUEST_CHANGES ]] \
+    && ok "changing pinned $changed_contract fails closed without resetting attempts" \
+    || bad "changing pinned $changed_contract replaced required-review lifecycle state"
+done
+bash "$STATE" reset review-contract-pinning >/dev/null
+RESET_BEGIN="$(bash "$STATE" begin review-contract-pinning \
+  --base "$ALTERNATE_BASE" --spec spec-alt.md --cap 3)"
+[[ "$RESET_BEGIN" == *"attempt=1/3"* \
+    && "$(candidate_field review-contract-pinning base_sha)" == "$ALTERNATE_BASE" \
+    && "$(candidate_field review-contract-pinning spec_path)" == spec-alt.md ]] \
+  && ok "explicit reset permits a new required-review contract" \
+  || bad "explicit reset did not permit a new required-review contract: $RESET_BEGIN"
+
 echo "== single-pass and hard stops are never approvals =="
 new_repo "$T/non-gates"
 begin_review review-bg >/dev/null
@@ -313,6 +384,15 @@ for bad_attempts in 08 12x 12+1; do
     && ok "non-canonical loop attempts '$bad_attempts' fail closed before arithmetic" \
     || bad "non-canonical loop attempts '$bad_attempts' reached required-review arithmetic"
 done
+
+new_repo "$T/loop-legacy-attempts"
+mkdir -p "$(thread_dir)"
+printf 'version=1\nbase_sha=%s\nspec_path=spec.md\ncap=5\nstart_round=0\n' \
+  "$TEST_BASE" > "$(thread_dir)/review-loop-legacy.review-loop"
+LEGACY_BEGIN="$(begin_review review-loop-legacy)"
+[[ "$LEGACY_BEGIN" == *"attempt=1/5"* ]] \
+  && ok "legacy loop without attempts derives its paid count from the round counter" \
+  || bad "legacy loop without attempts lost backward compatibility: $LEGACY_BEGIN"
 
 new_repo "$T/candidate-octal"
 begin_review review-candidate-octal >/dev/null

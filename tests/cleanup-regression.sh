@@ -525,6 +525,64 @@ OUT="$(cd "$MW" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR bash "$CLEANUP
   && ok "other-worktree gate protects shared thread during apply" \
   || bad "shared thread ignored other-worktree gate (rc=$RC out=$OUT)"
 
+echo "== a worktree added after discovery cannot publish a dangling gate =="
+LATE_MAIN="$T/late-worktree-main"; LATE_WT="$T/late-worktree-linked"
+mkdir -p "$LATE_MAIN" && (
+  cd "$LATE_MAIN" && git init -q -b main . && git config user.email t@t.t \
+    && git config user.name t && echo x > f.txt && git add f.txt \
+    && git commit -qm init && git branch late-race
+) || exit 1
+LATE_SD="$(cd "$LATE_MAIN" && env -u CC_CODEX_STATE_DIR bash "$(dirname "$CLEANUP")/state-dir.sh")"
+echo u > "$LATE_SD/late-race.id"; echo l > "$LATE_SD/late-race.log"
+old "$LATE_SD/late-race.id" "$LATE_SD/late-race.log"
+cat > "$T/late-anchor-hook.sh" <<'HOOK'
+: > "$LATE_ANCHOR_READY"
+HOOK
+cat > "$T/add-late-worktree-hook.sh" <<'HOOK'
+if [ ! -e "$LATE_HOOK_ONCE" ]; then
+  : > "$LATE_HOOK_ONCE"
+  git worktree add -q "$LATE_WT" late-race || exit 91
+  late_git_dir="$(git -C "$LATE_WT" rev-parse --absolute-git-dir)" || exit 92
+  late_gate_dir="$late_git_dir/cc-codex-triage/gates"
+  mkdir -p "$late_gate_dir" || exit 93
+  (
+    printf 'branch=late-race\nthread=late-race\ncap=3\n' \
+      | env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+          CLAUDE_PROJECT_DIR="$LATE_WT" \
+          CC_GATE_STATE_TEST_AFTER_ANCHOR_HOOK="$LATE_ANCHOR_HOOK" \
+          LATE_ANCHOR_READY="$LATE_ANCHOR_READY" \
+          bash "$LATE_GATE_STATE" write "$late_gate_dir/autoreview.armed" \
+          > "$LATE_GATE_OUT" 2>&1
+    printf '%s\n' "$?" > "$LATE_GATE_RC"
+  ) &
+  for _late_i in {1..500}; do
+    [ -e "$LATE_ANCHOR_READY" ] && break
+    sleep 0.01
+  done
+  [ -e "$LATE_ANCHOR_READY" ] || exit 94
+fi
+HOOK
+rm -f "$T/late-hook-once" "$T/late-anchor-ready" "$T/late-gate.rc" \
+  "$T/late-gate.out" "$T/late-cleanup.out"
+OUT="$(
+  cd "$LATE_MAIN" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+    CC_CLEANUP_TEST_POST_RAIL_HOOK="$T/add-late-worktree-hook.sh" \
+    LATE_HOOK_ONCE="$T/late-hook-once" LATE_WT="$LATE_WT" \
+    LATE_GATE_STATE="$GATE_STATE" LATE_ANCHOR_HOOK="$T/late-anchor-hook.sh" \
+    LATE_ANCHOR_READY="$T/late-anchor-ready" LATE_GATE_RC="$T/late-gate.rc" \
+    LATE_GATE_OUT="$T/late-gate.out" \
+    bash "$CLEANUP" --older-than 30 --apply 2>&1
+)"; RC=$?
+for _i in {1..500}; do [ -e "$T/late-gate.rc" ] && break; sleep 0.01; done
+LATE_GATE_RC="$(cat "$T/late-gate.rc" 2>/dev/null || echo missing)"
+LATE_GIT_DIR="$(git -C "$LATE_WT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+LATE_GATE="$LATE_GIT_DIR/cc-codex-triage/gates/autoreview.armed"
+LATE_ARCHIVE="$(ls -td "$LATE_SD"/.archive-* 2>/dev/null | head -1)"
+[[ "$RC" -eq 0 && "$LATE_GATE_RC" == 2 && ! -e "$LATE_GATE" \
+    && ! -e "$LATE_SD/late-race.id" && -f "$LATE_ARCHIVE/late-race.id" ]] \
+  && ok "repository registry closes discovery-to-publication across new worktrees" \
+  || bad "late worktree left a dangling gate (cleanup=$RC gate=$LATE_GATE_RC gate_out=$(cat "$T/late-gate.out" 2>/dev/null) cleanup_out=$OUT)"
+
 echo "== worktree/gate discovery failures fail closed before apply =="
 echo u > "$SHARED_SD/discovery-git.id"; echo l > "$SHARED_SD/discovery-git.log"
 old "$SHARED_SD/discovery-git.id" "$SHARED_SD/discovery-git.log"
@@ -543,6 +601,41 @@ OUT="$(cd "$MW" && PATH="$FAIL_GIT:$PATH" env -u CC_CODEX_STATE_DIR -u CC_CODEX_
   && grep -q 'cannot discover every worktree gate' <<<"$OUT" \
   && ok "git worktree discovery failure leaves shared thread state untouched" \
   || bad "git worktree discovery failed open (rc=$RC out=$OUT)"
+
+echo u > "$SHARED_SD/discovery-recheck.id"; echo l > "$SHARED_SD/discovery-recheck.log"
+old "$SHARED_SD/discovery-recheck.id" "$SHARED_SD/discovery-recheck.log"
+FAIL_RECHECK="$T/fail-git-recheck"; mkdir -p "$FAIL_RECHECK"
+cat > "$FAIL_RECHECK/git" <<GIT
+#!/usr/bin/env bash
+if [ "\${1:-}" = worktree ] && [ "\${2:-}" = list ]; then
+  if [ -e "\$DISCOVERY_COUNTER" ]; then exit 42; fi
+  : > "\$DISCOVERY_COUNTER"
+fi
+exec "$REAL_GIT" "\$@"
+GIT
+chmod +x "$FAIL_RECHECK/git"
+rm -f "$T/discovery-counter"
+OUT="$(cd "$MW" && PATH="$FAIL_RECHECK:$PATH" DISCOVERY_COUNTER="$T/discovery-counter" \
+  env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  bash "$CLEANUP" --older-than 1 --apply 2>&1)"; RC=$?
+DISCOVERY_REGISTRY="$(cd "$MW" && env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  bash "$(dirname "$CLEANUP")/gate-dir.sh" --registry-path)"
+MAIN_GD="$(cd "$MW" && env -u CC_CODEX_GATE_DIR bash "$(dirname "$CLEANUP")/gate-dir.sh" --read-only)"
+RECHECK_LOCKS_LEFT=false
+for lock_path in \
+  "$DISCOVERY_REGISTRY.lock" \
+  "$SHARED_SD/discovery-recheck.active.lock" \
+  "$SHARED_SD/discovery-recheck.review-lock" \
+  "$SHARED_SD/discovery-recheck.review-lock-reclaim" \
+  "$MAIN_GD/autoreview.armed.lock" "$MAIN_GD/autoplan.armed.lock" \
+  "$LINKED_GD/autoreview.armed.lock" "$LINKED_GD/autoplan.armed.lock"; do
+  [ ! -e "$lock_path" ] || RECHECK_LOCKS_LEFT=true
+done
+[[ "$RC" -eq 7 && -f "$SHARED_SD/discovery-recheck.id" \
+    && -f "$SHARED_SD/discovery-recheck.log" && "$RECHECK_LOCKS_LEFT" == false ]] \
+  && grep -q 'cannot rediscover every worktree gate under the registry lock' <<<"$OUT" \
+  && ok "apply-time rediscovery failure releases every acquired lock" \
+  || bad "apply-time discovery failure leaked locks or moved state (rc=$RC locks=$RECHECK_LOCKS_LEFT out=$OUT)"
 
 echo u > "$SHARED_SD/discovery-gate.id"; echo l > "$SHARED_SD/discovery-gate.log"
 old "$SHARED_SD/discovery-gate.id" "$SHARED_SD/discovery-gate.log"

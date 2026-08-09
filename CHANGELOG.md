@@ -20,14 +20,19 @@ All notable changes to this project are documented in this file.
 - **Required-review state now fails closed across its full lifecycle.** Strict
   decimal parsing covers the driver counter, loop metadata, and candidate
   offsets without Bash octal fallthrough; completed rounds cannot be aborted or
-  overwritten by a stale hard-stop claim. Thread reset is one leased driver
-  operation, cleanup serializes with candidate publication, read-only status
-  paths no longer create caches, and legacy migration is recorded per source
-  worktree so retained compatibility files may safely diverge afterwards.
+  overwritten by a stale hard-stop claim, and base/spec/cap stay pinned until an
+  explicit reset so changing arguments cannot restart the paid-round budget.
+  Thread reset is one leased driver operation, cleanup serializes with candidate
+  publication, read-only status paths no longer create caches, and legacy
+  migration is recorded per source worktree so retained compatibility files may
+  safely diverge afterwards.
 - **Approval publication and cleanup rails are generation-safe.** A partial
   approval rename cannot combine a new status with an older candidate, cleanup
-  aborts if any worktree gate cannot be discovered, and its final rail check
-  holds the same gate mutexes as arming through the archive moves.
+  aborts if any worktree gate cannot be discovered, and a repository-common
+  registry serializes gate migration/publication with discovery, final rail
+  checks, and archive moves. Armed-lock owner tokens use atomic noclobber
+  publication, so a resumed pre-token loser cannot overwrite or remove the
+  replacement generation.
 - **The plan scope is followed at the third call site too.** `/autoplan on`
   asked `gate-fingerprint.sh --plan-paths` for the scope but, unlike the hook
   and `/status`, kept no fallback for an empty answer — which leaves
@@ -58,9 +63,11 @@ All notable changes to this project are documented in this file.
 ### Tests
 - Required-review regressions cover exact scope/verdict parsing, fenced and
   non-final verdict rejection, malformed persisted decimals, claim/cap
-  ownership, stale-lock contention, partial approval publication, cleanup/gate
-  publication races, fail-closed worktree discovery, read-only state resolution,
-  and legacy migration across worktrees.
+  ownership and contract pinning, same-candidate re-review after a documented
+  disposition, stale-lock contention, partial approval publication,
+  cleanup/gate publication races (including late worktrees), fail-closed
+  worktree discovery, read-only state resolution, and serialized legacy gate
+  migration across worktrees.
 - Four assertions could not fail and now can, each verified by mutation: the
   TERM/KILL escalation (the fixture announced itself only after installing its
   trap), `--plan` scope drift (both scopes were empty, so both sides were the

@@ -158,11 +158,18 @@ armed_lock() { # $1=armed file → 0 if held
   local d="$1.lock" i=0 now m1 m2 owner opid
   while [ "$i" -lt 25 ]; do
     if mkdir "$d" 2>/dev/null; then
+      # Test seam for the exact pre-token race: the directory can be reclaimed
+      # and replaced while this process is paused between mkdir and publication.
+      [ -n "${CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK:-}" ] \
+        && . "$CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK"
       # The token MUST land: without it we cannot prove ownership later, and
       # treating that as a successful acquisition meant writing under a lock we
-      # could neither verify nor release.
-      if ! printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null; then
-        rm -rf "$d" 2>/dev/null
+      # could neither verify nor release. Noclobber is load-bearing: if a
+      # reclaimer already published the replacement generation's owner, a
+      # resumed pre-token acquirer must lose without overwriting or removing
+      # that foreign generation.
+      if ! (set -C; printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner") 2>/dev/null \
+          || [ "$(cat "$d/owner" 2>/dev/null)" != "$ARMED_LOCK_TOKEN" ]; then
         return 1
       fi
       # Test seam: stolen-and-replaced-while-held cannot be produced by timing.

@@ -4,7 +4,7 @@ Claude Code plugin for **persistent triage dialogue** with the OpenAI Codex CLI.
 
 Adds slash commands `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/autoreview`, `/autoplan`, `/thread`, `/thread-list`, `/thread-new` that talk to **named Codex threads** via `codex exec resume <UUID>` — Codex retains full conversation memory across Claude Code turns. Unlike `claude-review-loop` (one-shot), this plugin supports continued cross-agent triage; iterative review/plan loops and opt-in gates use explicit caps so a workflow cannot spend without a bound.
 
-`/review --required` is model-invocable for owning delivery workflows: each invocation runs one claimed foreground round and returns `REQUEST_CHANGES` to the owner for fix/test/commit. It records `APPROVE` only for the exact unchanged clean candidate HEAD/tree/fingerprint. Thread state lives in the repository common Git directory, so it survives disposable-worktree cleanup.
+`/review --required` is model-invocable for owning delivery workflows: each invocation runs one claimed foreground round. Valid blocking findings return to the owner for fix/test/commit; refuted or explicitly deferred findings get a fresh review round on the same immutable candidate. The first round pins base/spec/cap until reset, and `APPROVE` is recorded only for the exact unchanged clean candidate HEAD/tree/fingerprint. Thread state lives in the repository common Git directory, so it survives disposable-worktree cleanup.
 
 Plus a skill (`codex-triage`) that frames third-party reviews in **Judge mode** to suppress sycophantic capitulation (arXiv 2509.16533), requires validating Codex's own findings against the code before applying them, and enforces fix-the-neighborhood on accepted findings.
 

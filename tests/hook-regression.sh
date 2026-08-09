@@ -1074,6 +1074,30 @@ expect_allow "a foreign lock blocks the write and the turn ends"
 rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
 git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
 
+# The harder interleaving happens BEFORE the original owner token exists: A
+# wins mkdir and stalls, a reclaimer replaces the directory and publishes B's
+# token, then A resumes. A plain `> owner` clobbers B; noclobber must make A
+# lose without deleting the replacement generation.
+cat > "$T/replace-pre-token-lock.sh" <<'REPLACE_PRE_TOKEN'
+d="$1.lock"
+rm -rf "$d"
+mkdir -p "$d"
+printf 'replacement-pre-token-owner' > "$d/owner"
+REPLACE_PRE_TOKEN
+arm_review_fp main review-main 3 0 0 "$(fp_now)"
+echo "work for the pre-token replacement test" >> f.txt
+BEFORE_BLOCKS="$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")"
+CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK="$T/replace-pre-token-lock.sh" run_hook
+[[ "$RC" -eq 0 && -z "$OUT" ]] \
+  && ok "a resumed pre-token loser fails open" || bad "pre-token loser did not fail open (rc=$RC out=${OUT:-empty})"
+[[ "$(sed -n 's/^blocks=//p' "$SD/autoreview.armed")" == "$BEFORE_BLOCKS" ]] \
+  && ok "a resumed pre-token loser writes nothing" || bad "pre-token loser still bumped the counter"
+[[ "$(cat "$SD/autoreview.armed.lock/owner" 2>/dev/null)" == "replacement-pre-token-owner" ]] \
+  && ok "a resumed pre-token loser cannot clobber or remove the replacement owner" \
+  || bad "pre-token loser damaged the replacement owner"
+rm -rf "$SD/autoreview.armed.lock"; rm -f "$SD/autoreview.armed" "$SD/review-main.log"
+git checkout -q -- f.txt 2>/dev/null; git add -A >/dev/null && git commit -qm settle >/dev/null 2>&1
+
 # The interleaving the token actually defends against: our lock is stolen and
 # REPLACED while we hold it, and on releasing we must not delete the
 # replacement. It cannot be produced by timing from outside, so it is injected
@@ -1113,6 +1137,16 @@ AF="$SD/gs-test.armed"
 rm -f "$AF"; rm -rf "$AF.lock"
 printf 'branch=main\nthread=t\ncap=3\n' | bash "$GSH" write "$AF" >/dev/null 2>&1
 [[ "$(sed -n 's/^cap=//p' "$AF" 2>/dev/null)" == "3" ]] && ok "write creates the armed file" || bad "gate-state write did not land"
+# lib.sh must implement the same pre-token ownership rule as the sourceless
+# Stop-hook copy.
+printf 'branch=main\nthread=t\ncap=99\n' \
+  | CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK="$T/replace-pre-token-lock.sh" bash "$GSH" write "$AF" >/dev/null 2>&1; GRC=$?
+[[ "$GRC" -eq 2 ]] && ok "gate-state pre-token loser exits 2" || bad "gate-state pre-token loser rc=$GRC"
+[[ "$(sed -n 's/^cap=//p' "$AF" 2>/dev/null)" == "3" ]] \
+  && ok "gate-state pre-token loser writes nothing" || bad "gate-state pre-token loser overwrote armed state"
+[[ "$(cat "$AF.lock/owner" 2>/dev/null)" == "replacement-pre-token-owner" ]] \
+  && ok "gate-state pre-token loser preserves the replacement owner" || bad "gate-state pre-token loser damaged the replacement lock"
+rm -rf "$AF.lock"
 mkdir -p "$AF.lock"; printf 'held-elsewhere' > "$AF.lock/owner"
 printf 'branch=main\nthread=t\ncap=99\n' | bash "$GSH" write "$AF" >/dev/null 2>&1; GRC=$?
 [[ "$GRC" -eq 2 ]] && ok "a locked-out write exits 2" || bad "locked-out write rc=$GRC"
@@ -1124,6 +1158,86 @@ rm -rf "$AF.lock"
 bash "$GSH" remove "$AF" >/dev/null 2>&1
 [[ ! -f "$AF" ]] && ok "remove disarms once the lock is free" || bad "gate-state remove did not disarm"
 [[ -z "$(ls -d "$AF".* 2>/dev/null)" ]] && ok "and leaves no lock or temp behind" || bad "gate-state leftovers: $(ls -d "$AF".* 2>/dev/null)"
+
+echo "== incomplete gate migration keeps legacy visible until marker publication =="
+GDSH="$(cd "$(dirname "$HOOK")/../scripts" && pwd)/gate-dir.sh"
+INCOMPLETE_REPO="$T/.git/incomplete-gate-migration"
+mkdir -p "$INCOMPLETE_REPO" && (
+  cd "$INCOMPLETE_REPO" && git init -q -b main . && git config user.email t@t.t \
+    && git config user.name t && echo x > f.txt && git add f.txt && git commit -qm init
+) || exit 1
+INCOMPLETE_REPO="$(cd "$INCOMPLETE_REPO" && pwd -P)"
+INCOMPLETE_GIT_DIR="$(git -C "$INCOMPLETE_REPO" rev-parse --absolute-git-dir)"
+INCOMPLETE_NEW="$INCOMPLETE_GIT_DIR/cc-codex-triage/gates"
+INCOMPLETE_LEGACY="$INCOMPLETE_REPO/.claude/codex-threads"
+mkdir -p "$INCOMPLETE_NEW" "$INCOMPLETE_LEGACY"
+printf 'branch=main\nthread=legacy-visible\n' > "$INCOMPLETE_LEGACY/autoreview.armed"
+INCOMPLETE_READ="$(env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  CLAUDE_PROJECT_DIR="$INCOMPLETE_REPO" bash "$GDSH" --read-only)"; GRC=$?
+[[ "$GRC" -eq 0 && "$INCOMPLETE_READ" == "$INCOMPLETE_LEGACY" \
+    && -f "$INCOMPLETE_READ/autoreview.armed" ]] \
+  && ok "read-only lookup keeps legacy gates visible before migration marker" \
+  || bad "incomplete migration hid legacy state (rc=$GRC path=$INCOMPLETE_READ)"
+env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR CLAUDE_PROJECT_DIR="$INCOMPLETE_REPO" \
+  bash "$GDSH" >/dev/null 2>&1; GRC=$?
+INCOMPLETE_AFTER="$(env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  CLAUDE_PROJECT_DIR="$INCOMPLETE_REPO" bash "$GDSH" --read-only)"
+[[ "$GRC" -eq 0 && "$INCOMPLETE_AFTER" == "$INCOMPLETE_NEW" \
+    && -f "$INCOMPLETE_NEW/.legacy-migrated" \
+    && "$(sed -n 's/^thread=//p' "$INCOMPLETE_NEW/autoreview.armed")" == legacy-visible ]] \
+  && ok "marker publication switches read-only lookup to migrated gates" \
+  || bad "completed migration did not publish the new source (rc=$GRC path=$INCOMPLETE_AFTER)"
+
+echo "== a stalled gate migrator cannot overwrite a fresher gate writer =="
+MIGRATOR_REPO="$T/.git/stalled-gate-migrator"
+mkdir -p "$MIGRATOR_REPO" && (
+  cd "$MIGRATOR_REPO" && git init -q -b main . && git config user.email t@t.t \
+    && git config user.name t && echo x > f.txt && git add f.txt && git commit -qm init
+) || exit 1
+MIGRATOR_REPO="$(cd "$MIGRATOR_REPO" && pwd -P)"
+MIGRATOR_GIT_DIR="$(git -C "$MIGRATOR_REPO" rev-parse --absolute-git-dir)"
+MIGRATOR_NEW="$MIGRATOR_GIT_DIR/cc-codex-triage/gates"
+mkdir -p "$MIGRATOR_REPO/.claude/codex-threads"
+printf 'branch=main\nthread=legacy-stale\n' \
+  > "$MIGRATOR_REPO/.claude/codex-threads/autoreview.armed"
+cat > "$T/pause-gate-migrator.sh" <<'HOOK'
+: > "$MIGRATOR_PAUSED"
+while [ ! -e "$MIGRATOR_RELEASE" ]; do sleep 0.01; done
+HOOK
+cat > "$T/gate-writer-ready.sh" <<'HOOK'
+: > "$GATE_WRITER_READY"
+HOOK
+rm -f "$T/migrator-paused" "$T/migrator-release" "$T/gate-writer-ready" \
+  "$T/migrator.out" "$T/migrator.err" "$T/migration-writer.out" "$T/migration-writer.err"
+env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  CLAUDE_PROJECT_DIR="$MIGRATOR_REPO" \
+  CC_GATE_DIR_TEST_AFTER_REGISTRY_LOCK_HOOK="$T/pause-gate-migrator.sh" \
+  MIGRATOR_PAUSED="$T/migrator-paused" MIGRATOR_RELEASE="$T/migrator-release" \
+  bash "$GDSH" > "$T/migrator.out" 2> "$T/migrator.err" & MIGRATOR_PID=$!
+for _i in {1..500}; do [ -e "$T/migrator-paused" ] && break; sleep 0.01; done
+printf 'branch=main\nthread=fresh-writer\ncap=3\n' \
+  | env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+      CLAUDE_PROJECT_DIR="$MIGRATOR_REPO" \
+      CC_GATE_STATE_TEST_AFTER_ANCHOR_HOOK="$T/gate-writer-ready.sh" \
+      GATE_WRITER_READY="$T/gate-writer-ready" \
+      bash "$GSH" write "$MIGRATOR_NEW/autoreview.armed" \
+      > "$T/migration-writer.out" 2> "$T/migration-writer.err" & MIGRATION_WRITER_PID=$!
+for _i in {1..500}; do [ -e "$T/gate-writer-ready" ] && break; sleep 0.01; done
+WRITER_BLOCKED=false
+if [ -e "$T/migrator-paused" ] && [ -e "$T/gate-writer-ready" ] \
+    && kill -0 "$MIGRATION_WRITER_PID" 2>/dev/null \
+    && [ ! -e "$MIGRATOR_NEW/autoreview.armed" ]; then
+  WRITER_BLOCKED=true
+fi
+touch "$T/migrator-release"
+wait "$MIGRATOR_PID"; MIGRATOR_RC=$?; wait "$MIGRATION_WRITER_PID"; MIGRATION_WRITER_RC=$?
+MIGRATION_REGISTRY="$(env -u CC_CODEX_STATE_DIR -u CC_CODEX_GATE_DIR \
+  CLAUDE_PROJECT_DIR="$MIGRATOR_REPO" bash "$GDSH" --registry-path)"
+[[ "$WRITER_BLOCKED" == true && "$MIGRATOR_RC" -eq 0 && "$MIGRATION_WRITER_RC" -eq 0 \
+    && "$(sed -n 's/^thread=//p' "$MIGRATOR_NEW/autoreview.armed")" == fresh-writer \
+    && -f "$MIGRATOR_NEW/.legacy-migrated" && ! -e "$MIGRATION_REGISTRY.lock" ]] \
+  && ok "migration publishes before the blocked writer, whose fresh gate wins afterward" \
+  || bad "stalled migrator overwrote or raced the writer (blocked=$WRITER_BLOCKED migrator=$MIGRATOR_RC writer=$MIGRATION_WRITER_RC migrator_err=$(cat "$T/migrator.err") writer_err=$(cat "$T/migration-writer.err"))"
 
 echo "== a stale lock is stolen, but only the one that was measured stale =="
 # A blind `rm -rf` deleted whatever was there, so a writer preempted between the

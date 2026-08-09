@@ -98,9 +98,11 @@ cd "$ROOT" || exit 7
 if $APPLY; then
   STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
   GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?
+  GATE_REGISTRY="$(bash "$SELF_DIR/gate-dir.sh" --registry-path)" || exit $?
 else
   STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
   GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh" --read-only)" || exit $?
+  GATE_REGISTRY=""
 fi
 
 [ -d "$STATE_DIR" ] || { echo "No state directory ($STATE_DIR) — nothing to clean."; exit 0; }
@@ -167,7 +169,8 @@ pending_claim_live() {
   [ "${#st_exp}" -le 12 ] && [ "$st_exp" -gt "$NOW" ]
 }
 
-# Rail 2: true when either armed gate's thread= names this thread.
+# Rail 3/4 support: discover every worktree gate directory, then check whether
+# either armed gate names the thread.
 discover_gate_dirs() {
   local worktree_list worktrees gate_dir worktree
   if [ -n "${CC_CODEX_GATE_DIR:-}" ]; then
@@ -376,6 +379,34 @@ unit_reclaim_lock() { # $1=active acquisition lock
 }
 REVIEW_UNIT_HELD=false
 GATE_RAIL_LOCKS=""
+GATE_REGISTRY_HELD=false
+gate_registry_unlock() {
+  $GATE_REGISTRY_HELD && armed_unlock "$GATE_REGISTRY"
+  GATE_REGISTRY_HELD=false
+}
+gate_registry_lock() {
+  local parent original_hook original_hook_set=false rc=0
+  parent="$(dirname -- "$GATE_REGISTRY")"
+  [ ! -L "$parent" ] || return 1
+  [ ! -e "$parent" ] || [ -d "$parent" ] || return 1
+  mkdir -p "$parent" 2>/dev/null || return 1
+  [ ! -L "$GATE_REGISTRY.lock" ] || return 1
+
+  # Keep the armed-file pre-token test seam attached to armed-file locks.
+  original_hook="${CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK:-}"
+  [ "${CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK+x}" = x ] && original_hook_set=true
+  unset CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK
+  armed_lock "$GATE_REGISTRY" || rc=1
+  if $original_hook_set; then
+    CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK="$original_hook"
+    export CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK
+  else
+    unset CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  GATE_REGISTRY_HELD=true
+  armed_owned "$GATE_REGISTRY" || { gate_registry_unlock; return 1; }
+}
 gate_rails_unlock() {
   local gate
   [ -n "$GATE_RAIL_LOCKS" ] || return 0
@@ -463,6 +494,7 @@ CURRENT_UNIT=""
 all_unit_unlock() {
   local thread="${1:-$CURRENT_UNIT}"
   gate_rails_unlock
+  gate_registry_unlock
   review_reclaim_unlock
   [ -n "$thread" ] || return 0
   review_unit_unlock "$thread"
@@ -511,7 +543,7 @@ thread_of() {
 # Collect targets to archive. add_archive dedups — a stale diag can be flagged
 # both by its own class and as part of an orphan/dormant set; it must be
 # queued (and counted) exactly once. The detection-time mtime is recorded per
-# target so --apply can re-stat every one of them before moving (rail 4).
+# target so --apply can re-stat every one of them before moving (rail 5).
 declare -a ARCHIVE=()
 declare -a ARCHIVE_MTIMES=()
 declare -a DORMANT_NAMES=()
@@ -697,7 +729,7 @@ if [ "$APPLY" = true ]; then
     if [ -e "$dest/$b" ]; then echo "  SKIP (name clash, not overwritten): $b"; return 0; fi
     if mv "$1" "$dest/"; then moved=$((moved+1)); echo "  archived: $b"; else echo "  FAILED to move: $b"; fi
   }
-  # Apply-time revalidation (rail 4), organized as per-thread UNITS: every
+  # Apply-time revalidation (rail 5), organized as per-thread UNITS: every
   # target belonging to a thread — flat or dormant — is applied as ONE unit,
   # with the rail check and the freshness re-stat run immediately adjacent to
   # its moves. NO cross-unit caching: a lease or armed gate appearing while
@@ -729,20 +761,28 @@ if [ "$APPLY" = true ]; then
     n="$(thread_of "$p")"
     if [ -z "$n" ]; then
       # Not thread-owned (armed gate files): a unit of one — re-stat
-      # immediately before the move, under the same per-file mutex used by
-      # every gate writer.
+      # immediately before the move, under the common publication/migration
+      # registry and the same per-file mutex used by every gate writer.
+      if ! gate_registry_lock; then
+        echo "  SKIP (gate registry busy): ${p#"$STATE_DIR"/}"
+        continue
+      fi
       if ! armed_lock "$p"; then
+        gate_registry_unlock
         echo "  SKIP (gate writer active): ${p#"$STATE_DIR"/}"
         continue
       fi
+      GATE_RAIL_LOCKS="$p"
       cur="$(_mtime_epoch "$p")"
       if [ "$cur" != "$det" ]; then
         echo "  SKIP (changed since detection): ${p#"$STATE_DIR"/}"
-        armed_unlock "$p"
+        gate_rails_unlock
+        gate_registry_unlock
         continue
       fi
       move_one "$p"
-      armed_unlock "$p"
+      gate_rails_unlock
+      gate_registry_unlock
       continue
     fi
     is_dormant "$n" && continue      # superseded: moves with its whole set below
@@ -752,9 +792,15 @@ if [ "$APPLY" = true ]; then
     # rails INSIDE the lock → move → unlock. Without the lock, a dispatch
     # could acquire the lease between the rail check and the moves.
     if ! unit_lock "$n"; then apply_rail_note "$n" 1; continue; fi
-    if ! review_unit_lock "$n"; then unit_unlock "$n"; apply_rail_note "$n" 1; continue; fi
-    if ! gate_rails_lock; then all_unit_unlock "$n"; echo "  SKIP (gate rails busy): thread $n"; continue; fi
     CURRENT_UNIT="$n"
+    if ! review_unit_lock "$n"; then all_unit_unlock "$n"; apply_rail_note "$n" 1; continue; fi
+    if ! gate_registry_lock; then all_unit_unlock "$n"; echo "  SKIP (gate registry busy): thread $n"; continue; fi
+    if ! discover_gate_dirs; then
+      echo "cleanup.sh: cannot rediscover every worktree gate under the registry lock" >&2
+      all_unit_unlock "$n"
+      exit 7
+    fi
+    if ! gate_rails_lock; then all_unit_unlock "$n"; echo "  SKIP (gate rails busy): thread $n"; continue; fi
     # Test seam: lets the regression suite inject state (e.g. a live lease)
     # between lock acquisition and the under-lock re-check, proving the
     # re-check runs after the last possible legitimate write.
@@ -784,9 +830,15 @@ if [ "$APPLY" = true ]; then
     # Same lock discipline as the flat units above: rails re-checked and the
     # whole set moved under the thread's acquisition mutex.
     if ! unit_lock "$n"; then apply_rail_note "$n" 1; continue; fi
-    if ! review_unit_lock "$n"; then unit_unlock "$n"; apply_rail_note "$n" 1; continue; fi
-    if ! gate_rails_lock; then all_unit_unlock "$n"; echo "  SKIP (gate rails busy): thread $n"; continue; fi
     CURRENT_UNIT="$n"
+    if ! review_unit_lock "$n"; then all_unit_unlock "$n"; apply_rail_note "$n" 1; continue; fi
+    if ! gate_registry_lock; then all_unit_unlock "$n"; echo "  SKIP (gate registry busy): thread $n"; continue; fi
+    if ! discover_gate_dirs; then
+      echo "cleanup.sh: cannot rediscover every worktree gate under the registry lock" >&2
+      all_unit_unlock "$n"
+      exit 7
+    fi
+    if ! gate_rails_lock; then all_unit_unlock "$n"; echo "  SKIP (gate rails busy): thread $n"; continue; fi
     [ -n "${CC_CLEANUP_TEST_POST_LOCK_HOOK:-}" ] && . "$CC_CLEANUP_TEST_POST_LOCK_HOOK"
     rail_check "$n"; rc=$?
     if [ "$rc" -ne 0 ]; then all_unit_unlock "$n"; apply_rail_note "$n" "$rc"; continue; fi
