@@ -52,6 +52,13 @@ fi
 grep -q -- '--required' "$PLUGIN/commands/review.md" && ok "required mode is documented" || bad "required mode missing"
 grep -q 'In `--required` mode, stop here on every `REQUEST_CHANGES`' "$PLUGIN/commands/review.md" \
   && ok "required fixes return to the owning lifecycle" || bad "required review can mutate during review"
+grep -qF 'refuted with concrete evidence or explicitly deferred' "$PLUGIN/commands/review.md" \
+  && grep -qF 'same immutable candidate' "$PLUGIN/commands/review.md" \
+  && ok "required review documents same-candidate disposition without a fake commit" \
+  || bad "required review again mandates a code change after every REQUEST_CHANGES"
+grep -qF 'first round pins `base`, `spec`, and `cap`' "$PLUGIN/commands/review.md" \
+  && ok "required review documents its pinned paid-round contract" \
+  || bad "required review no longer documents base/spec/cap pinning"
 grep -q 'background_never_satisfies_gate' "$STATE" && ok "background is explicitly non-gating" || bad "background gate rule missing"
 grep -qF -- '--base "$BASE" --spec "$SPEC_PATH" --cap "$CAP"' "$PLUGIN/commands/review.md" \
   && grep -qF 'check "$THREAD"' "$PLUGIN/commands/review.md" \
