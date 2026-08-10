@@ -73,10 +73,12 @@ Forwards a review request to a Codex review thread. Advisory mode **iterates to 
 
      Everything else — follow-up header, scope, intent, lens prompt — comes after this block. Tell Codex to review the complete `<base>...<candidate>` change and read the spec as the acceptance contract.
 
-     On **every** required round, including a resume, also re-send this single line. A resume does not re-paste the lens contract, and the required verdict parser accepts the bare token and nothing else — a `## APPROVE` or `**APPROVE**` reply records as `NO_DECISION` and costs an attempt:
+     Each of those four lines must appear **exactly once in the whole prompt**: `record` counts them, and a second occurrence — quoting `SPEC_PATH:` further down, or restating the candidate SHA in your focus text — is as fatal as a wrong position. Refer to those values in prose without reproducing the line prefixes.
+
+     On **every** required round, including a resume, also re-send this single line. A resume does not re-paste the lens contract, and the required verdict parser accepts the bare token and nothing else — a `## APPROVE` or `**APPROVE**` reply records as `NO_DECISION` and costs an attempt. `COMMENT` remains a valid lens verdict but is not a decision in required mode, so name only the two that are:
 
      ```text
-     End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES, with no heading marks, bold, backticks, list marker, or trailing punctuation.
+     End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES, with no heading marks, bold, backticks, list marker, or trailing punctuation. Do not return COMMENT for a required review.
      ```
    - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, and assemble the INSTRUCTION from the chosen lens's `<task>` block PLUS every block named on its `Include blocks:` line (each defined once in the file's `## Reusable prompt blocks` library) — `<output_contract>` is what carries the required `file:line` citation and `APPROVE | REQUEST_CHANGES | COMMENT` verdict, so it must not be dropped. **On a resume the thread already holds the lens contract — do NOT re-paste it;** send only the follow-up header, any scope change, and what changed since the last round. If `--json`: assemble the prompt with `<json_output_contract>` in place of `<output_contract>` (never both).
    - State the SCOPE if implied ("this branch", "uncommitted", "last commit"); else default to uncommitted + current branch vs its merge base. When scope is uncommitted, **explicitly include untracked new files** — they are NOT in `git diff HEAD`; tell Codex to also read `git status --porcelain -uall` and `cat` the new files.

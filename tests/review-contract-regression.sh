@@ -69,6 +69,17 @@ grep -qF 'On **every** required round, including a resume, also re-send this sin
   "$PLUGIN/commands/review.md" \
   && ok "required rounds restate the exact-verdict line" \
   || bad "a required resume can lose the only output rule its parser enforces"
+# prompt_scope_exact requires count[j] == 1: position is not the only rule, and a doc that pins only
+# position still lets a quoted SPEC_PATH later in the prompt land STALE.
+grep -qF 'exactly once in the whole prompt' "$PLUGIN/commands/review.md" \
+  && ok "required prompt documents single-occurrence, not just position" \
+  || bad "the exactly-once rule prompt_scope_exact enforces is undocumented"
+# The lens contract admits COMMENT; required mode does not. Naming two tokens without saying why
+# would be a third, quietly narrower copy of that contract.
+grep -qF 'Do not return COMMENT for a required review' "$PLUGIN/commands/review.md" \
+  && grep -qF 'not a decision in required mode' "$PLUGIN/commands/review.md" \
+  && ok "the restated verdict line explains its narrower token set" \
+  || bad "the restated verdict line silently contradicts the lens contract"
 grep -qF 'It counts **`begin` attempts, including the first**' "$PLUGIN/commands/review.md" \
   && grep -qF 'cleared only by `/thread-new <thread>`' "$PLUGIN/commands/review.md" \
   && ok "cap counting and its recovery path are stated where cap is parsed" \
@@ -780,8 +791,37 @@ status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
   && ok "a decorated APPROVE is reported as unaccepted, not as approval" \
   || bad "decorated APPROVE reads as approved in /status (rc=$recorded_rc status=$gate_status)"
 
+# A hard stop is the state a user must act on, and the cap can be burned by the very decoration the
+# warning above describes — so both must appear together, not one instead of the other.
+new_repo "$T/status-hard-stop"
+begin_review review-capped 1 >/dev/null
+append_verdict review-capped '**APPROVE**'
+run_rc record_review review-capped
+status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
+[[ "$(state_field review-capped status)" == CAP_REACHED ]] \
+  && printf '%s\n' "$status_out" | grep -q 'HARD STOP' \
+  && printf '%s\n' "$status_out" | grep -q 'thread-new review-capped' \
+  && printf '%s\n' "$status_out" | grep -q 'required gate did not accept it' \
+  && ok "a hard stop reports its recovery step and the decoration that caused it" \
+  || bad "hard stop or its cause is missing from /status ($(state_field review-capped status))"
+
+# An expired pre-dispatch claim is not a live round; cleanup may reap it, and the user needs to know
+# which of the two they are looking at.
+new_repo "$T/status-expired-claim"
+begin_review review-expired >/dev/null
+sd="$(thread_dir)"
+for f in "$sd/review-expired.candidate" "$sd/review-expired.review-state"; do
+  sed 's/^claim_expires_at=.*/claim_expires_at=1/' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
+printf '%s\n' "$status_out" | grep -q 'claim EXPIRED' \
+  && ok "an expired required claim is distinguished from a live one" \
+  || bad "an expired claim still reads as live in /status"
+
 # Read-only is a contract, not a habit: /status must not take the review mutex
 # or leave any state behind.
+new_repo "$T/status-readonly"
+begin_review review-readonly >/dev/null
 before="$(ls -A "$(thread_dir)" | sort)"
 bash "$PLUGIN/scripts/status.sh" >/dev/null 2>&1
 after="$(ls -A "$(thread_dir)" | sort)"

@@ -224,7 +224,10 @@ for sf in "$STATE_DIR"/*.review-state; do
       echo "      recorded for head=$(field "$sf" head) — authoritative re-check: review-state.sh check $n"
       ;;
   esac
-  # The exact divergence this section exists for.
+  # Deliberately a second test on $st rather than an arm of the case above: this
+  # applies to EVERY status except APPROVED, including the PENDING and
+  # CAP_REACHED arms already handled, and a `*)` arm would silently stop warning
+  # exactly where a decorated verdict burned the cap.
   if [ "$st" != "APPROVED" ] && [ "$(last_verdict "$n")" = "APPROVE" ]; then
     echo "      WARNING the log's last verdict reads APPROVE but the required gate did not accept it (status=${st:-?})."
     echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."

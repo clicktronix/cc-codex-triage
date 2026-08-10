@@ -32,9 +32,12 @@ All notable changes to this project are documented in this file.
   first four prompt lines — a correct-looking round landed `STALE` and burned a
   paid attempt. The block is now pinned as first with nothing before it, and
   every required round, resume included, restates the one output rule the
-  required parser enforces. `--cap` is documented as counting `begin` attempts
-  including the first, and `/thread-new` documents that it clears the
-  required-review state, which is the only exit from a hard stop.
+  required parser enforces, naming the two tokens required mode accepts and why
+  `COMMENT` is not one of them. The exactly-once rule `record` also enforces is
+  stated, so quoting `SPEC_PATH:` later in a prompt no longer lands `STALE`
+  unexplained. `--cap` is documented as counting `begin` attempts including the
+  first, and `/thread-new` documents that it clears the required-review state,
+  which is the only exit from a hard stop.
 - **Required-review state now fails closed across its full lifecycle.** Strict
   decimal parsing covers the driver counter, loop metadata, and candidate
   offsets without Bash octal fallthrough; completed rounds cannot be aborted or
