@@ -230,7 +230,21 @@ for sf in "$STATE_DIR"/*.review-state; do
   # exactly where a decorated verdict burned the cap.
   if [ "$st" != "APPROVED" ] && [ "$(last_verdict "$n")" = "APPROVE" ]; then
     echo "      WARNING the log's last verdict reads APPROVE but the required gate did not accept it (status=${st:-?})."
-    echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."
+    # The recovery differs by status, and a blanket "re-run the round" contradicts the hard stop
+    # printed two lines above — the one case where re-running is exactly what must not happen.
+    case "$st" in
+      CAP_REACHED|DIVERGED)
+        echo "              A decorated verdict is one way the budget went: the gate takes the bare token"
+        echo "              on its own final line. Recovery is the hard stop above, not another round."
+        ;;
+      STALE)
+        echo "              STALE means the candidate moved, so the verdict no longer describes it;"
+        echo "              decoration may also apply. Re-cut the candidate before reviewing again."
+        ;;
+      *)
+        echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."
+        ;;
+    esac
   fi
 done
 [ "$req" = 0 ] && echo "  (none)"
