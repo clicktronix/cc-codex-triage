@@ -238,8 +238,10 @@ for sf in "$STATE_DIR"/*.review-state; do
         echo "              on its own final line. Recovery is the hard stop above, not another round."
         ;;
       STALE)
-        echo "              STALE means the candidate moved, so the verdict no longer describes it;"
-        echo "              decoration may also apply. Re-cut the candidate before reviewing again."
+        echo "              STALE covers every way the round could not be attributed to this"
+        echo "              candidate — moved HEAD or tree, changed fingerprint, wrong prompt scope,"
+        echo "              or a round counter that did not advance. Recorded reason:"
+        echo "              $(field "$sf" reason). Read that before changing the candidate."
         ;;
       *)
         echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."

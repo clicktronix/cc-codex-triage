@@ -811,6 +811,10 @@ status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
   && printf '%s\n' "$status_out" | grep -q 'required gate did not accept it' \
   && ok "a hard stop reports its recovery step and the decoration that caused it" \
   || bad "hard stop or its cause is missing from /status ($(state_field review-capped status))"
+# ...and must not advise the one action it just forbade.
+printf '%s\n' "$status_out" | grep -q 'Re-run the round' \
+  && bad "/status offers a retry under a hard stop" \
+  || ok "a hard stop does not also offer a retry"
 
 # An expired pre-dispatch claim is not a live round; cleanup may reap it, and the user needs to know
 # which of the two they are looking at.
