@@ -237,6 +237,10 @@ for sf in "$STATE_DIR"/*.review-state; do
         echo "              A decorated verdict is one way the budget went: the gate takes the bare token"
         echo "              on its own final line. Recovery is the hard stop above, not another round."
         ;;
+      PENDING)
+        echo "              This APPROVE belongs to an earlier round; the claimed one has not been"
+        echo "              recorded yet. Finish or release that round before judging this verdict."
+        ;;
       STALE)
         echo "              STALE covers every way the round could not be attributed to this"
         echo "              candidate — moved HEAD or tree, changed fingerprint, wrong prompt scope,"

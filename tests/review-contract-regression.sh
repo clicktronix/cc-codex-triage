@@ -816,6 +816,20 @@ printf '%s\n' "$status_out" | grep -q 'Re-run the round' \
   && bad "/status offers a retry under a hard stop" \
   || ok "a hard stop does not also offer a retry"
 
+# A claimed round in flight must not be told to re-run either: the decorated APPROVE it can see
+# belongs to the previous round, and the claim is still open.
+new_repo "$T/status-pending-retry"
+begin_review review-pending >/dev/null
+append_verdict review-pending '## APPROVE'
+run_rc record_review review-pending
+begin_review review-pending >/dev/null
+status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
+[[ "$(state_field review-pending status)" == PENDING ]] \
+  && printf '%s\n' "$status_out" | grep -q 'has not been' \
+  && ! printf '%s\n' "$status_out" | grep -q 'Re-run the round' \
+  && ok "a live claim is not told to re-run the round" \
+  || bad "PENDING advises a retry while its own round is open"
+
 # An expired pre-dispatch claim is not a live round; cleanup may reap it, and the user needs to know
 # which of the two they are looking at.
 new_repo "$T/status-expired-claim"
