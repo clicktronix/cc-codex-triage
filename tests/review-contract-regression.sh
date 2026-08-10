@@ -80,6 +80,13 @@ grep -qF 'Do not return COMMENT for a required review' "$PLUGIN/commands/review.
   && grep -qF 'not a decision in required mode' "$PLUGIN/commands/review.md" \
   && ok "the restated verdict line explains its narrower token set" \
   || bad "the restated verdict line silently contradicts the lens contract"
+# ...and the contract it narrows must still say what it is being narrowed FROM. Pinning only the
+# explanation lets the lens block rename a token while this suite stays green.
+grep -qF 'exactly APPROVE, REQUEST_CHANGES or' \
+  "$PLUGIN/skills/codex-triage/references/review-lenses.md" \
+  && grep -qF 'COMMENT' "$PLUGIN/skills/codex-triage/references/review-lenses.md" \
+  && ok "the lens contract still admits the token required mode excludes" \
+  || bad "the lens verdict tokens moved out from under the required-mode narrowing"
 grep -qF 'It counts **`begin` attempts, including the first**' "$PLUGIN/commands/review.md" \
   && grep -qF 'cleared only by `/thread-new <thread>`' "$PLUGIN/commands/review.md" \
   && ok "cap counting and its recovery path are stated where cap is parsed" \
