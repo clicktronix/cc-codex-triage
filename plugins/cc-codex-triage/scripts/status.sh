@@ -4,8 +4,9 @@
 # READ-ONLY: never writes or mutates any state (safe to run any time). It
 # surfaces exactly the things that used to require hand-reading .armed/.rounds/
 # .log + git: current branch, dirty tree, armed gates (with stale-branch /
-# pre-0.5 / missing-target warnings), last verdict per thread, gitignore status,
-# and the Codex CLI version vs the required minimum.
+# pre-0.5 / missing-target warnings), last verdict per thread, required-review
+# gate state, gitignore status, and the Codex CLI version vs the required
+# minimum.
 
 set -u
 
@@ -180,6 +181,56 @@ for idf in "$STATE_DIR"/*.id; do
     "$n" "$r" "${sz:-0}" "$(_mtime "$idf")" "$v"
 done
 [ "$any" = 0 ] && echo "  (none)"
+
+# ── Required review gates ───────────────────────────────────────────────────
+# The verdict column above comes from the tolerant informational parser, which
+# accepts `## APPROVE` and `**APPROVE**`. The required gate accepts the bare
+# token only. Printing the log verdict alone would report an approval the gate
+# refused — and a PENDING claim or a CAP_REACHED hard stop would be invisible
+# in the one screen that exists to make state readable.
+echo
+echo "Required review gates:"
+req=0
+for sf in "$STATE_DIR"/*.review-state; do
+  [ -f "$sf" ] || continue
+  req=1
+  n="$(basename "$sf" .review-state)"
+  st="$(field "$sf" status)"; ge="$(field "$sf" gate_eligible)"; vd="$(field "$sf" verdict)"
+  printf '  %-30s status=%-22s gate_eligible=%-5s verdict=%s\n' \
+    "$n" "${st:-?}" "${ge:-?}" "${vd:--}"
+  case "$st" in
+    PENDING)
+      exp="$(field "$sf" claim_expires_at)"; now="$(date +%s 2>/dev/null)"
+      case "$exp" in
+        ''|*[!0-9]*|0?*) echo "      claim has no usable expiry — /thread-new $n clears it." ;;
+        *)
+          if [ -z "$now" ] || [ "${#exp}" -gt 12 ]; then
+            echo "      claim expiry cannot be evaluated here — /thread-new $n clears it."
+          elif [ "$exp" -le "$now" ]; then
+            echo "      claim EXPIRED — record the finished dispatch, or /thread-new $n to release it."
+          else
+            echo "      claim live for $(( (exp - now) / 60 ))m — a round is in flight; do not begin another."
+          fi
+          ;;
+      esac
+      ;;
+    CAP_REACHED|DIVERGED)
+      echo "      HARD STOP — never an approval. Decide with the user, then /thread-new $n to start a fresh required lifecycle."
+      ;;
+    APPROVED)
+      # Deliberately not re-deciding coverage here: `check` takes the review
+      # mutex, and this command is read-only. Naming the one authority beats
+      # growing a second staleness test that could disagree with it.
+      echo "      recorded for head=$(field "$sf" head) — authoritative re-check: review-state.sh check $n"
+      ;;
+  esac
+  # The exact divergence this section exists for.
+  if [ "$st" != "APPROVED" ] && [ "$(last_verdict "$n")" = "APPROVE" ]; then
+    echo "      WARNING the log's last verdict reads APPROVE but the required gate did not accept it (status=${st:-?})."
+    echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."
+  fi
+done
+[ "$req" = 0 ] && echo "  (none)"
 # Explicit success — the final test above is false when threads exist, which
 # would otherwise make this read-only command exit non-zero on the normal path.
 exit 0

@@ -20,7 +20,7 @@ Forwards a review request to a Codex review thread. Advisory mode **iterates to 
    - `--once` → a single dispatch, no iterate-loop (you decide after one round).
    - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
    - `--oneshot` → throwaway ephemeral run (no thread kept). Implies `--once`.
-   - `--cap N` → max review rounds in the loop (default 5). In required mode, the first round pins `base`, `spec`, and `cap` for that thread lifecycle; every later round must use the same contract until an explicit `/thread-new` reset or a different thread.
+   - `--cap N` → max review rounds in the loop (default 5). In required mode, the first round pins `base`, `spec`, and `cap` for that thread lifecycle; every later round must use the same contract until an explicit `/thread-new` reset or a different thread. It counts **`begin` attempts, including the first**: `--cap 5` is one initial round plus at most four re-reviews for the whole thread, not five repair rounds. Exhaustion is `CAP_REACHED` — a hard stop, cleared only by `/thread-new <thread>`.
    - `--model <m>` / `--effort <none|minimal|low|medium|high|xhigh>` → forwarded to the driver, which applies them on initial/oneshot dispatch only (a resume keeps the thread's model/effort stable and WARNs if you pass them again — use `--new` to change them).
    - `--continue` → resume from the last APPROVE: rebuild the prompt from the findings ledger (still-open findings) + the diff since the approved baseline, instead of re-authoring it. See **Findings ledger** below.
    - `--background` → launch the driver detached and return this turn without waiting; implies a single pass — no iterate loop (step 9), same as `--once`. Preferred mechanism: the driver's own `--detach` flag plus the bundled `detach-watch.sh` watcher run as a Claude-managed background task for completion delivery (details in step 5). Fallback: `Bash(..., run_in_background: true)` — works, but the harness may reap the process group before Codex finishes.
@@ -62,7 +62,7 @@ Forwards a review request to a Codex review thread. Advisory mode **iterates to 
    Exit 13 is a hard stop: commit the fully tested candidate or clean the scope first. Do not downgrade to an advisory review.
 
 4. Build the Codex prompt:
-   - **Required dispatch:** prepend these exact machine-attributable lines using values from `<THREAD>.candidate`, followed by the ordinary intent/lens prompt. Do not paraphrase or omit them:
+   - **Required dispatch:** these four machine-attributable lines are ALWAYS the first four lines of the prompt body, in this order, using values from `<THREAD>.candidate`. Nothing may precede them — not a resume's follow-up header, not a scope note, not a blank line. `record` reads exactly the first four PROMPT lines and marks the round `STALE` when anything else is there, which burns the paid attempt. Do not paraphrase, reorder, or omit them:
 
      ```text
      REQUIRED_REVIEW
@@ -71,10 +71,16 @@ Forwards a review request to a Codex review thread. Advisory mode **iterates to 
      SPEC_PATH: <repo-relative spec path>
      ```
 
-     Tell Codex to review the complete `<base>...<candidate>` change and read the spec as the acceptance contract.
+     Everything else — follow-up header, scope, intent, lens prompt — comes after this block. Tell Codex to review the complete `<base>...<candidate>` change and read the spec as the acceptance contract.
+
+     On **every** required round, including a resume, also re-send this single line. A resume does not re-paste the lens contract, and the required verdict parser accepts the bare token and nothing else — a `## APPROVE` or `**APPROVE**` reply records as `NO_DECISION` and costs an attempt:
+
+     ```text
+     End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES, with no heading marks, bold, backticks, list marker, or trailing punctuation.
+     ```
    - **Initial dispatch only:** read the lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`, and assemble the INSTRUCTION from the chosen lens's `<task>` block PLUS every block named on its `Include blocks:` line (each defined once in the file's `## Reusable prompt blocks` library) — `<output_contract>` is what carries the required `file:line` citation and `APPROVE | REQUEST_CHANGES | COMMENT` verdict, so it must not be dropped. **On a resume the thread already holds the lens contract — do NOT re-paste it;** send only the follow-up header, any scope change, and what changed since the last round. If `--json`: assemble the prompt with `<json_output_contract>` in place of `<output_contract>` (never both).
    - State the SCOPE if implied ("this branch", "uncommitted", "last commit"); else default to uncommitted + current branch vs its merge base. When scope is uncommitted, **explicitly include untracked new files** — they are NOT in `git diff HEAD`; tell Codex to also read `git status --porcelain -uall` and `cat` the new files.
-   - **Resume only:** prepend the follow-up header (no hand-written round number): `This is a follow-up review round. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
+   - **Resume only:** send the follow-up header (no hand-written round number) — first in advisory mode, immediately after the required block in `--required` mode: `This is a follow-up review round. Re-check your prior findings first (resolved / partial / not addressed), then new issues. State explicitly how close this is to APPROVE — if only minor or single-edge-case items remain, say so.`
 
 5. **If `--json`: PREFLIGHT before dispatch** — run BOTH checks: (a) `command -v jq >/dev/null 2>&1` (step 6 needs `jq` to parse the reply); (b) `codex exec --help 2>/dev/null | grep -q -- '--output-schema'` (the driver needs codex ≥ 0.142 for structured output — an older CLI rejects `--output-schema` and the dispatch fails generically). If **either** check fails, tell the user what `--json` requires — `jq`, and/or Codex ≥ 0.142 (`codex --version`; upgrade via `npm install -g @openai/codex`) — and STOP, do not dispatch (a paid call whose reply can't be parsed, or that a stale Codex rejects, is worse than not sending it).
 
@@ -120,7 +126,12 @@ Forwards a review request to a Codex review thread. Advisory mode **iterates to 
 6. **If `--json`:** a single structured pass (implies `--once`). **On a `--json` resume, DO re-send `<json_output_contract>` in the prompt** — an explicit exception to the normal "resume doesn't re-paste the lens contract" rule, because earlier rounds on this thread were text-mode and never saw the JSON contract. Codex's reply is JSON — do NOT show it raw:
    1. `jq -e . <<<"$REPLY"` to confirm it parsed; on failure, show the raw reply and stop.
    2. Render a human view: verdict line, then findings sorted by severity then descending confidence, each as `[severity, conf] file:line — title` + body.
-   3. For each finding, record it: `ledger.sh create <THREAD> --file <file> --line <line_start> --severity <severity> --title <title> --confidence <confidence>`.
+   3. For each finding, record it through quoted variables, exactly as in **Findings ledger** below — never by substituting text into an angle-bracket token:
+      ```bash
+      bash "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh" create "$THREAD" \
+        --file "$FINDING_FILE" --line "$FINDING_LINE" --severity "$SEVERITY" \
+        --title "$FINDING_TITLE" --confidence "$CONFIDENCE"
+      ```
    4. If `<THREAD>` is the current worktree's armed autoreview thread (`$GATE_DIR/autoreview.armed`, resolved with `gate-dir.sh`, names it), WARN: a `--json` pass is paid but cannot release the text-verdict gate — use text-mode `/review` for the gate.
 
 7. Show Codex's reply verbatim (except `--json` — rendered per step 6 instead). Exit code 4 (resume failed) → ask the user before `--new`, per skill. Exit code 5 / porcelain warning → surface the diff (Codex touched files).
@@ -201,5 +212,6 @@ The ledger lets `--continue` and `/review-dispute|accept|defer` work from state 
 - `--cap` bounds advisory iterations or required pre-dispatch claims across owning-workflow invocations. A required claim consumes budget before launch, conservatively, so failed or UUID-less paid calls cannot bypass the cap. The `/autoreview` gate has a **separate** cap that counts hook-blocks (each block runs `/review --once`, not a loop) — see `autoreview.md`.
 - Lens templates: `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. No `--lens` = `correctness`.
 - Thread state: the common Git directory reported by `state-dir.sh`, shared by all worktrees. Force-reset: `/thread-new <thread>`.
-- Required gate state: `<thread>.candidate`, `<thread>.review-state`, and `<thread>.approved`. Only `review-state.sh check <thread>` is authoritative; prose, a board issue, an old APPROVE, or a single background pass is not.
+- Required gate state: `<thread>.candidate`, `<thread>.review-state`, and `<thread>.approved`. Only `review-state.sh check <thread>` is authoritative; prose, a board issue, an old APPROVE, or a single background pass is not. `/status` prints that machine state per thread, including a `PENDING` claim and a `CAP_REACHED` hard stop — read it before deciding a required review is finished.
+- `CAP_REACHED` and `DIVERGED` are terminal for the thread, never approvals. Recovery is a user decision followed by `/thread-new <thread>`, which drops the session pointer **and** clears `.candidate` / `.review-state` / `.review-loop` / `.approved` so a fresh required lifecycle can start. An owning workflow must surface the hard stop rather than retry `begin`.
 - The `/autoreview` gate always dispatches text-mode `/review --once` — never `--json`. The hook's verdict parser (`scripts/last-verdict.sh`, shared with `/status`) reads a verdict standing alone on its own line in a text-mode reply — heading marks and bold around it are tolerated, a line carrying other words is not. A verdict embedded in JSON is not on such a line, so a `--json` pass can neither release nor false-release the gate; use text-mode `/review` for the gate, and `--json` for a separate structured-output request (step 6).

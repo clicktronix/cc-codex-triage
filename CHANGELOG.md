@@ -16,7 +16,25 @@ All notable changes to this project are documented in this file.
   a round; failed/UUID-less calls still consume the explicit cap, and cleanup
   protects a coherent pre-dispatch claim until its bounded TTL expires.
 
+- **`/status` reports required-gate machine state.** Per thread it prints
+  `status` / `gate_eligible` / `verdict`, whether a pre-dispatch claim is live
+  or expired, and a `CAP_REACHED` / `DIVERGED` hard stop with its recovery
+  step — states that previously existed only on disk. It also warns when the
+  informational verdict column reads `APPROVE` while the required gate refused
+  that round: the two parsers differ on purpose, and only one of them is the
+  gate. The view stays read-only and never re-decides coverage; it names
+  `review-state.sh check` as the authority instead.
+
 ### Fixed
+- **A required round can no longer be lost to prompt order or verdict
+  decoration.** `/review` stated "prepend" for both the machine scope block and
+  a resume's follow-up header, while `record` accepts the scope only as the
+  first four prompt lines — a correct-looking round landed `STALE` and burned a
+  paid attempt. The block is now pinned as first with nothing before it, and
+  every required round, resume included, restates the one output rule the
+  required parser enforces. `--cap` is documented as counting `begin` attempts
+  including the first, and `/thread-new` documents that it clears the
+  required-review state, which is the only exit from a hard stop.
 - **Required-review state now fails closed across its full lifecycle.** Strict
   decimal parsing covers the driver counter, loop metadata, and candidate
   offsets without Bash octal fallthrough; completed rounds cannot be aborted or

@@ -56,6 +56,27 @@ grep -qF 'refuted with concrete evidence or explicitly deferred' "$PLUGIN/comman
   && grep -qF 'same immutable candidate' "$PLUGIN/commands/review.md" \
   && ok "required review documents same-candidate disposition without a fake commit" \
   || bad "required review again mandates a code change after every REQUEST_CHANGES"
+# The scope block is machine-parsed as the FIRST FOUR prompt lines. A doc that
+# says "prepend" twice — once for this block, once for a resume header — lets a
+# correct-looking round land as STALE and burn the paid attempt.
+grep -qF 'are ALWAYS the first four lines of the prompt body' "$PLUGIN/commands/review.md" \
+  && grep -qF 'Nothing may precede them' "$PLUGIN/commands/review.md" \
+  && ok "required prompt order is unambiguous" \
+  || bad "required scope block order is still ambiguous against prompt_scope_exact"
+# A resume does not re-paste the lens contract, and the required parser takes
+# the bare token only, so the one line it depends on has to be restated.
+grep -qF 'On **every** required round, including a resume, also re-send this single line' \
+  "$PLUGIN/commands/review.md" \
+  && ok "required rounds restate the exact-verdict line" \
+  || bad "a required resume can lose the only output rule its parser enforces"
+grep -qF 'It counts **`begin` attempts, including the first**' "$PLUGIN/commands/review.md" \
+  && grep -qF 'cleared only by `/thread-new <thread>`' "$PLUGIN/commands/review.md" \
+  && ok "cap counting and its recovery path are stated where cap is parsed" \
+  || bad "cap is still described as repair rounds with no recovery path"
+grep -qF '**required-review** state' "$PLUGIN/commands/thread-new.md" \
+  && grep -qF 'CAP_REACHED' "$PLUGIN/commands/thread-new.md" \
+  && ok "the only exit from a required hard stop is documented where it lives" \
+  || bad "thread-new does not document the required-state reset it performs"
 grep -qF 'first round pins `base`, `spec`, and `cap`' "$PLUGIN/commands/review.md" \
   && ok "required review documents its pinned paid-round contract" \
   || bad "required review no longer documents base/spec/cap pinning"
@@ -732,5 +753,40 @@ GD_OTHER="$(bash "$GATE_DIR_SH")"
 [[ ! -e "$GD_OTHER/autoreview.armed" ]] \
   && ok "legacy gate is not cloned into a different-branch worktree" \
   || bad "foreign legacy gate was cloned into another worktree"
+
+echo "== /status reports required-gate machine state =="
+new_repo "$T/status-gate"
+begin_review review-status >/dev/null
+# A claim exists before any dispatch, so there is no .id and the thread table
+# cannot show it. This is the state a user must see to know a round is in
+# flight — and, after a cap, the only state that explains the hard stop.
+status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
+printf '%s\n' "$status_out" | grep -q 'Required review gates:' \
+  && printf '%s\n' "$status_out" | grep -q 'review-status .*status=PENDING' \
+  && printf '%s\n' "$status_out" | grep -q 'claim live' \
+  && ok "a pre-dispatch required claim is visible in /status" \
+  || bad "required gate state is invisible until a dispatch exists"
+
+# The divergence that costs a paid round: the informational parser accepts a
+# decorated verdict, the required parser does not. /status must not report the
+# tolerant reading as if the gate had taken it.
+append_verdict review-status '## APPROVE'
+run_rc record_review review-status
+recorded_rc=$RC
+gate_status="$(state_field review-status status)"
+status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
+[[ "$recorded_rc" -eq 10 && "$gate_status" == NO_DECISION ]] \
+  && printf '%s\n' "$status_out" | grep -q 'required gate did not accept it' \
+  && ok "a decorated APPROVE is reported as unaccepted, not as approval" \
+  || bad "decorated APPROVE reads as approved in /status (rc=$recorded_rc status=$gate_status)"
+
+# Read-only is a contract, not a habit: /status must not take the review mutex
+# or leave any state behind.
+before="$(ls -A "$(thread_dir)" | sort)"
+bash "$PLUGIN/scripts/status.sh" >/dev/null 2>&1
+after="$(ls -A "$(thread_dir)" | sort)"
+[[ "$before" == "$after" ]] \
+  && ok "/status stays read-only over required-gate state" \
+  || bad "/status mutated thread state"
 
 summary
