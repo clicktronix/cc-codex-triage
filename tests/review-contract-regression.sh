@@ -107,6 +107,10 @@ grep -qF 'advisory-check "$THREAD"' "$PLUGIN/commands/review.md" \
   && ok "advisory reuse is checked before paid dispatch" || bad "advisory preflight is undocumented"
 grep -qF '"$THREAD" --reset-only' "$PLUGIN/commands/thread-new.md" \
   && ok "reset-only command uses the leased driver path" || bad "thread-new still performs split reset commands"
+grep -qF "under \`PENDING\`, it may instead be the current round's bare reply" \
+  "$PLUGIN/commands/status.md" \
+  && ok "status command does not misattribute an unrecorded PENDING verdict" \
+  || bad "status command still assumes every unaccepted APPROVE is decorated or from an older round"
 
 echo "== clean candidate and exact approval =="
 new_repo "$T/exact"
