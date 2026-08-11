@@ -481,12 +481,27 @@ case "$VERB" in
     valid_decimal "$LOOP_START" 7 && valid_decimal "$C_ATTEMPT" 7 \
       && valid_decimal "$ROUND_BEFORE" 7 && valid_decimal "$CURRENT_ROUND" 7 \
       && START_VALID=true
-    if ! $CAP_VALID || ! $START_VALID || ! clean_candidate || [ -z "$FP" ] || [ -z "$C_BASE" ] || [ -z "$C_SPEC" ] \
-      || [ "$HEAD_SHA" != "$C_HEAD" ] || [ "$TREE_SHA" != "$C_TREE" ] || [ "$FP" != "$C_FP" ] || [ "$REVIEW_FP" != "$C_FP" ] \
-      || [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ] \
-      || ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
-      write_state STALE "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "${REVIEW_FP:-unknown}" "$(round_now)" candidate_moved_or_unattributable || exit 1
-      echo "STALE: verdict does not cover the current clean candidate" >&2
+    # One STALE status, several distinct causes. Recording the same string for all of them left the
+    # operator unable to choose a recovery — "the candidate moved" and "the reply cannot be
+    # attributed to this dispatch" need opposite actions, and guessing wrong destroys a candidate
+    # that was fine. Ordered from the state that invalidates everything downwards.
+    STALE_REASON=""
+    if ! $CAP_VALID; then STALE_REASON=malformed_cap
+    elif ! $START_VALID; then STALE_REASON=malformed_round_state
+    elif [ -z "$C_BASE" ] || [ -z "$C_SPEC" ]; then STALE_REASON=malformed_candidate_scope
+    elif ! clean_candidate; then STALE_REASON=dirty_worktree
+    elif [ -z "$FP" ]; then STALE_REASON=fingerprint_unavailable
+    elif [ "$HEAD_SHA" != "$C_HEAD" ]; then STALE_REASON=head_moved
+    elif [ "$TREE_SHA" != "$C_TREE" ]; then STALE_REASON=tree_moved
+    elif [ "$FP" != "$C_FP" ]; then STALE_REASON=content_fingerprint_changed
+    elif [ "$REVIEW_FP" != "$C_FP" ]; then STALE_REASON=verdict_not_attributable_to_this_candidate
+    elif [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ]; then STALE_REASON=round_counter_mismatch
+    elif ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
+      STALE_REASON=prompt_scope_mismatch
+    fi
+    if [ -n "$STALE_REASON" ]; then
+      write_state STALE "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "${REVIEW_FP:-unknown}" "$(round_now)" "$STALE_REASON" || exit 1
+      echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
       exit 11
     fi
     case "$VERDICT" in

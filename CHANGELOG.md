@@ -26,6 +26,13 @@ All notable changes to this project are documented in this file.
   `review-state.sh check` as the authority instead.
 
 ### Fixed
+- **`STALE` now records which failure it was.** One status covered a dirty
+  worktree, a moved head or tree, a changed fingerprint, a reply that could not
+  be attributed to this dispatch, a round counter that did not advance, and a
+  prompt whose scope block did not match — all under one string. Those need
+  opposite recoveries: re-cutting the candidate is right when it moved and
+  destructive when the reply simply was not attributable. The cause is recorded
+  and `/status` prints it.
 - **A required round can no longer be lost to prompt order or verdict
   decoration.** `/review` stated "prepend" for both the machine scope block and
   a resume's follow-up header, while `record` accepts the scope only as the

@@ -187,6 +187,28 @@ printf 'moved\n' >> code.txt
 run_rc record_review review-moving
 [[ "$RC" -eq 11 && "$(state_field review-moving status)" == STALE ]] && ok "moving tree cannot earn approval" || bad "moving tree was not stale (rc=$RC)"
 
+# STALE is one status over several causes that need OPPOSITE recoveries: re-cutting the candidate is
+# right when it moved and destructive when the reply simply could not be attributed to it. The
+# recorded reason has to distinguish them.
+[[ "$(state_field review-moving reason)" == dirty_worktree ]] \
+  && ok "a moved tree records why it is stale" \
+  || bad "stale cause is generic: $(state_field review-moving reason)"
+
+new_repo "$T/stale-causes"
+begin_review review-scope-cause >/dev/null
+td="$(thread_dir)"; fp="$(candidate_field review-scope-cause fingerprint)"
+head="$(candidate_field review-scope-cause head)"; base="$(candidate_field review-scope-cause base_sha)"
+# Same clean candidate, but the prompt names a different spec — nothing moved, so "re-cut the
+# candidate" would be exactly the wrong advice.
+printf '[test] mode=resume thread=%s round=1 fp=%s\nPROMPT:\n  REQUIRED_REVIEW\n  BASE_SHA: %s\n  CANDIDATE_SHA: %s\n  SPEC_PATH: other.md\nREPLY:\n  APPROVE\n---\n' \
+  review-scope-cause "$fp" "$base" "$head" >> "$td/review-scope-cause.log"
+round="$(cat "$td/review-scope-cause.rounds" 2>/dev/null | tr -cd '0-9')"; round="${round:-0}"
+printf '%s\n' "$((round + 1))" > "$td/review-scope-cause.rounds"
+run_rc record_review review-scope-cause
+[[ "$RC" -eq 11 && "$(state_field review-scope-cause reason)" == prompt_scope_mismatch ]] \
+  && ok "an unattributable reply is distinguished from a moved candidate" \
+  || bad "prompt-scope failure recorded as $(state_field review-scope-cause reason) (rc=$RC)"
+
 new_repo "$T/tracked-state"
 mkdir -p .claude/codex-threads
 printf 'tracked\n' > .claude/codex-threads/tracked.txt
