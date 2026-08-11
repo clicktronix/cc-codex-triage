@@ -29,7 +29,8 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
    # Anchor to the repo root — the hook and driver read state there, and a
    # drifted cwd would arm a gate the hook never sees.
    cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; HARD-FAIL outside a repo (a fail-soft cd would mutate state in the wrong directory)
-   STATE_DIR=".claude/codex-threads"; mkdir -p "$STATE_DIR"
+   STATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh") || exit $?
+   GATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-dir.sh") || exit $?
    BRANCH=$(git rev-parse --abbrev-ref HEAD)
    # Slug rule shared with the hook: every char outside the driver's
    # [a-zA-Z0-9_.-] alphabet becomes '-' (git allows +, #, @ ... in branches).
@@ -60,7 +61,7 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
    case "$LOG_GEN" in ''|0*[0-9]*) LOG_GEN=0 ;; esac; LOG_GEN=${LOG_GEN:-0}
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$LOG_GEN" "$(date +%s)" "$FP" \
-     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoreview.armed" || exit 1
+     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$GATE_DIR/autoreview.armed" || exit 1
    echo "autoreview armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Is there already work to review on this branch?
    git status --porcelain -uall | grep -vF '.claude/codex-threads/' | grep -q . \
@@ -68,13 +69,14 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
      || echo "CLEAN: nothing to review yet; gate will engage when you make changes"
    ```
 
-3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Read `${CLAUDE_PLUGIN_ROOT}/commands/review.md` and follow its steps right now with `--once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost) — the file path matters: `/review` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. This is the part that removes the manual `/review` step. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
+3. **`on` + DIRTY → review the existing work immediately.** Do not wait for a turn-end. Invoke model-callable `/cc-codex-triage:review --once --thread <THREAD> --lens <LENS>` on the current changes (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks; a default loop here would multiply gate cost). Show Codex's findings, validate them against the code, and address blocking ones per the skill's fix-the-neighborhood rule. If CLEAN, skip — there is nothing to review; just confirm the gate is armed for future changes.
 
-4. `off` — from the repo root, `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoreview.armed || { echo "could not disarm — the armed file is still in place"; exit 1; }`, then confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
+4. `off` — resolve `GATE_DIR`, then remove `$GATE_DIR/autoreview.armed` through `gate-state.sh`; confirm only on success. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
 
    ```bash
    cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoreview.armed \
+   GATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-dir.sh") || exit $?
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove "$GATE_DIR/autoreview.armed" \
      || { echo "could not disarm — the armed file is still in place"; exit 1; }
    echo "autoreview disarmed."
    ```
@@ -85,7 +87,7 @@ Runaway-safe: the cap terminates each cycle (counters numeric-validated, malform
 
 ## Notes
 
-- Armed state: `.claude/codex-threads/autoreview.armed`. Branch-scoped — switching branches disengages it until you re-arm (or switch back).
+- Armed state: `$GATE_DIR/autoreview.armed` in the current worktree Git directory. Branch-scoped and isolated from other worktrees.
 - Fields: `branch`, `thread`, `lens`, `cap`, `blocks`, `log_bytes_at_arming`, `armed_at`, plus `fp_at_arming` (written here) and `released_fp` (written by the hook on each release). With neither fingerprint field the file is a pre-0.9 arming: dirty-tree behaviour until its first release, cycle model after it.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Each blocked round is a full Codex dispatch. cap defaults to 3 and bounds ONE cycle; reaching APPROVE grants a fresh budget.

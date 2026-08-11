@@ -31,9 +31,8 @@
 # instead (at most `cap` blocks per cycle).
 #
 # Armed state (written by /autoreview, /autoplan commands; released_fp and the
-# advanced log offset are written by THIS hook):
-#   .claude/codex-threads/autoreview.armed
-#   .claude/codex-threads/autoplan.armed
+# advanced log offset are written by THIS hook) lives in the worktree-owned
+# directory resolved by scripts/gate-dir.sh; thread logs remain shared.
 #   KEY=VALUE lines: branch, thread, lens, cap, blocks, log_bytes_at_arming,
 #   armed_at (0.8+, drives the TTL), fp_at_arming (0.9+), released_fp (0.9+,
 #   hook-written).
@@ -52,22 +51,20 @@ INPUT="$(cat 2>/dev/null || true)"
 
 allow() { exit 0; }
 
-# Anchor to the repo root: state paths are repo-relative and the session's
-# Bash cwd can drift into subdirectories — without this the hook could read a
-# different state dir than the driver wrote. Failure to anchor is fail-open
-# (relative paths then simply find nothing).
+# Anchor to the repo before resolving its common Git state. Failure is fail-open.
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -n "$ROOT" ]]; then cd "$ROOT" 2>/dev/null || true; fi
 
-# The block reason points Claude at the command file to follow — the commands
-# are disable-model-invocation, so the model cannot invoke them itself and
-# needs the file path to read the steps. Derived from this script's location.
+# The block reason points Claude at the exact command file to follow. /review is
+# model-invocable; /plan remains user-only and can still be followed from disk.
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)"
 CMD_DIR="${PLUGIN_ROOT:+$PLUGIN_ROOT/commands}"
 CMD_DIR="${CMD_DIR:-the cc-codex-triage plugin commands dir}"
 
-STATE_DIR=".claude/codex-threads"
-[[ -d "$STATE_DIR" ]] || allow
+STATE_DIR="$(bash "$PLUGIN_ROOT/scripts/state-dir.sh" --read-only 2>/dev/null || true)"
+GATE_DIR="$(bash "$PLUGIN_ROOT/scripts/gate-dir.sh" --read-only 2>/dev/null || true)"
+[[ -n "$STATE_DIR" && -n "$GATE_DIR" ]] || allow
+[[ -d "$STATE_DIR" || -d "$GATE_DIR" ]] || allow
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 [[ -z "$BRANCH" ]] && allow
 # Detached HEAD: rev-parse yields the literal "HEAD" — arming-branch matching
@@ -161,11 +158,18 @@ armed_lock() { # $1=armed file → 0 if held
   local d="$1.lock" i=0 now m1 m2 owner opid
   while [ "$i" -lt 25 ]; do
     if mkdir "$d" 2>/dev/null; then
+      # Test seam for the exact pre-token race: the directory can be reclaimed
+      # and replaced while this process is paused between mkdir and publication.
+      [ -n "${CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK:-}" ] \
+        && . "$CC_ARMED_LOCK_TEST_PRE_TOKEN_HOOK"
       # The token MUST land: without it we cannot prove ownership later, and
       # treating that as a successful acquisition meant writing under a lock we
-      # could neither verify nor release.
-      if ! printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner" 2>/dev/null; then
-        rm -rf "$d" 2>/dev/null
+      # could neither verify nor release. Noclobber is load-bearing: if a
+      # reclaimer already published the replacement generation's owner, a
+      # resumed pre-token acquirer must lose without overwriting or removing
+      # that foreign generation.
+      if ! (set -C; printf '%s' "$ARMED_LOCK_TOKEN" > "$d/owner") 2>/dev/null \
+          || [ "$(cat "$d/owner" 2>/dev/null)" != "$ARMED_LOCK_TOKEN" ]; then
         return 1
       fi
       # Test seam: stolen-and-replaced-while-held cannot be produced by timing.
@@ -449,7 +453,7 @@ AR_TTL_DEAD=0; AP_TTL_DEAD=0
 NOW="$(date +%s 2>/dev/null || true)"
 if is_num "${NOW:-}"; then
   for kind in autoreview autoplan; do
-    f="$STATE_DIR/$kind.armed"
+    f="$GATE_DIR/$kind.armed"
     [[ -f "$f" ]] || continue
     armed_at="$(raw_field "$f" armed_at)"
     is_num "$armed_at" || continue            # missing/malformed → TTL skipped
@@ -486,8 +490,8 @@ fi
 # during a blocked turn banked and released the next plan cycle for free.
 # The fingerprint runs only after the branch check — it walks the worktree, and
 # an armed gate on another branch should cost nothing.
-AR="$STATE_DIR/autoreview.armed"
-AP="$STATE_DIR/autoplan.armed"
+AR="$GATE_DIR/autoreview.armed"
+AP="$GATE_DIR/autoplan.armed"
 AR_LIVE=0; AP_LIVE=0; ar_fp=""; ap_fp=""; ar_thread=""; ap_thread=""
 
 if [[ -f "$AR" && "$AR_TTL_DEAD" -eq 0 && "$VERDICT_SH_OK" -eq 1 \

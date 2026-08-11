@@ -88,6 +88,6 @@ Round 1 also shows your committed opening position (step 2) as the first **Claud
 
 ## Notes
 
-- Thread: `.claude/codex-threads/debate-<slug>.{id,log,rounds}` — the full exchange is auditable in the `.log`.
+- Thread: `debate-<slug>.{id,log,rounds}` in shared repository state — the full exchange is auditable in the `.log`.
 - The debate costs up to ~(N+1) Codex dispatches (fewer if it ends early). At the higher round counts this adds up — for `--rounds 10`+ confirm the cost with the user before starting, and for a small topic suggest a plain `/ask` instead.
 - For "critique my code/plan" use `/review` / `/plan` — a debate is for genuine decision disagreements with defensible positions on both sides.

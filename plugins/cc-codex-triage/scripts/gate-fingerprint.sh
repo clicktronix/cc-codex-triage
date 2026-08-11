@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cc-codex-triage — canonical code fingerprint for the /autoreview + /autoplan gates.
 #
-# usage: gate-fingerprint.sh [--plan | --plan-paths | pathspec ...]
+# usage: gate-fingerprint.sh [--read-only] [--plan | --plan-paths | pathspec ...]
 #
 # --plan       hash the PLAN scope (the pathspecs below).
 # --plan-paths print those pathspecs and exit — so the dirt predicates and the
@@ -9,6 +9,8 @@
 #              what it is. The default lived in four files, and a change that
 #              missed one produced a gate comparing two different scopes, i.e.
 #              one that can never release.
+# --read-only  resolve existing state without creating/migrating directories or
+#              refreshing the persistent fingerprint cache.
 #
 # Prints a hash of the working-tree CONTENT in scope, or nothing when it cannot
 # be computed. Callers treat empty as "unknown" and fail OPEN, never as
@@ -33,11 +35,19 @@
 #
 # Cost: each run rehashes the worktree from an empty index with no stat cache.
 set -u
-STATE_DIR=".claude/codex-threads"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+LEGACY_STATE_DIR=".claude/codex-threads"
+READ_ONLY=false
+if [ "${1:-}" = "--read-only" ]; then READ_ONLY=true; shift; fi
 
 # Plan-doc locations, configurable via CC_CODEX_PLAN_PATHS (space-separated).
 PLAN_PATHS="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
 if [ "${1:-}" = "--plan-paths" ]; then printf '%s\n' "$PLAN_PATHS"; exit 0; fi
+if $READ_ONLY; then
+  GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh" --read-only)" || exit 0
+else
+  GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit 0
+fi
 # shellcheck disable=SC2086 — splitting into separate pathspecs is intended
 if [ "${1:-}" = "--plan" ]; then set -f; set -- $PLAN_PATHS; set +f; fi
 
@@ -171,7 +181,7 @@ trap 'rm -f "$IDX" "$IDX.lock"' EXIT
 # the worst a race costs is a colder cache. Scoped runs keep the cold index —
 # they cover two directories, and a cache keyed on one scope would carry entries
 # from another.
-CACHE="$STATE_DIR/gate-index"
+CACHE="$GATE_DIR/gate-index"
 SEEDED=0
 if [ "$#" -eq 0 ] && [ -f "$CACHE" ]; then
   if cp "$CACHE" "$IDX" 2>/dev/null; then SEEDED=1; else rm -f "$IDX"; fi
@@ -202,7 +212,7 @@ else
   if ! git add -A -- . >/dev/null 2>&1; then
     # Seeded run failed: assume the cache and retry once from a cold index.
     [ "$SEEDED" = "1" ] || exit 0
-    rm -f "$CACHE" 2>/dev/null
+    $READ_ONLY || rm -f "$CACHE" 2>/dev/null
     rm -f "$IDX" 2>/dev/null
     SEEDED=0
     git add -A -- . >/dev/null 2>&1 || exit 0
@@ -220,14 +230,14 @@ else
   # Status-checked like the rest: if this fails for a reason --ignore-unmatch
   # does not cover, the tree would include the state dir and the gate would
   # re-arm on the driver's own writes until the cap.
-  git rm -r --cached --ignore-unmatch -q -- "$STATE_DIR" >/dev/null 2>&1 || exit 0
+  git rm -r --cached --ignore-unmatch -q -- "$LEGACY_STATE_DIR" >/dev/null 2>&1 || exit 0
 fi
 
 TREE="$(git write-tree 2>/dev/null)" || exit 0
 [ -n "$TREE" ] || exit 0
 
 # Refresh the cache with the index we just built, atomically.
-if [ "$#" -eq 0 ] && [ -d "$STATE_DIR" ]; then
+if ! $READ_ONLY && [ "$#" -eq 0 ] && [ -d "$GATE_DIR" ]; then
   cp "$IDX" "$CACHE.$$" 2>/dev/null && mv -f "$CACHE.$$" "$CACHE" 2>/dev/null || rm -f "$CACHE.$$" 2>/dev/null
 fi
 
@@ -255,7 +265,13 @@ if [ -n "${DIRTY_SUBS:-}" ]; then
     # path, so the child probed an empty index, saw no gitlinks, and a dirty
     # NESTED submodule was folded in as unchanged.
     # shellcheck disable=SC2086 — splitting $subspecs into pathspecs is intended
-    child="$( cd "$sub" 2>/dev/null && set -f && env -u GIT_INDEX_FILE bash "$SELF" $subspecs 2>/dev/null )" || exit 0
+    if $READ_ONLY; then
+      child="$( cd "$sub" 2>/dev/null && set -f \
+        && env -u GIT_INDEX_FILE bash "$SELF" --read-only $subspecs 2>/dev/null )" || exit 0
+    else
+      child="$( cd "$sub" 2>/dev/null && set -f \
+        && env -u GIT_INDEX_FILE bash "$SELF" $subspecs 2>/dev/null )" || exit 0
+    fi
     [ -n "$child" ] || exit 0          # a submodule we cannot hash means an unknown state
     SUB_FP="$SUB_FP$sub $child
 "

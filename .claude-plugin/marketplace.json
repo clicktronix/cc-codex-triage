@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. For cross-agent code review, plan triage, asking questions, and validating findings from other agents.",
-    "version": "0.9.0"
+    "version": "0.10.0"
   },
   "plugins": [
     {
       "name": "cc-codex-triage",
       "source": "./plugins/cc-codex-triage",
-      "description": "Talk to OpenAI Codex CLI from Claude Code with persistent conversation memory across turns. Adds /ask, /review (iterates to APPROVE, findings ledger, --continue), /plan, /reply, /debate, /status, /cleanup, /review-dispute, /review-accept, /review-defer, /autoreview, /autoplan, /thread, /thread-list, /thread-new, plus the model-invocable codex-second-opinion skill for a single bounded second opinion. Self-verification gates run in cycles, so committing the fixes keeps the gate engaged and one APPROVE releases one state rather than the whole arming. State hygiene built in: armed gates auto-expire (14-day TTL), state anchors to the repo root, and --detach keeps background dispatches alive through harness process-reaping.",
-      "version": "0.9.0"
+      "description": "Persistent Codex CLI triage for Claude Code. Includes model-invocable /review --required with exact-candidate approval, bounded review loops, shared cross-worktree state, findings ledger, self-verification gates, and detached delivery.",
+      "version": "0.10.0"
     }
   ]
 }

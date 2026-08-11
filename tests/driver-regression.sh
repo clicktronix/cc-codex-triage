@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export CC_CODEX_STATE_DIR=.claude/codex-threads
+export CC_CODEX_GATE_DIR=.claude/codex-threads
 # Regression suite for scripts/codex-thread.sh. No real Codex — a stub `codex`
 # on PATH emits a canned JSONL stream and writes the -o file.
 # Usage: bash tests/driver-regression.sh   (exit 0 = all pass)
@@ -112,6 +114,19 @@ echo "== --new + --require-existing refused BEFORE destroying the thread =="
 run t1 --new --require-existing
 [[ "$RC" -eq 1 ]] && ok "combo refused with exit 1" || bad "combo rc=$RC"
 [[ "$(cat "$SD/t1.id" 2>/dev/null)" == "$UUID" ]] && ok "existing .id survived the refused combo" || bad ".id was destroyed"
+
+echo "== --reset-only clears one incarnation atomically without dispatch =="
+printf 'state\n' > "$SD/t1.findings.jsonl"
+printf 'scope\n' > "$SD/t1.scope"
+printf 'approved\n' > "$SD/t1.approved"
+FAKE_CODEX_CALLS="$T/reset-only.calls" run t1 --reset-only
+[[ "$RC" -eq 0 && "$OUT" == "RESET thread t1" \
+    && ! -e "$SD/t1.id" && ! -e "$SD/t1.rounds" && ! -e "$SD/t1.findings.jsonl" \
+    && ! -e "$SD/t1.scope" && ! -e "$SD/t1.approved" \
+    && ! -e "$T/reset-only.calls" ]] \
+  && ok "reset-only clears sidecars under the lease without a Codex call" \
+  || bad "reset-only was incomplete or dispatched (rc=$RC out=$OUT)"
+run t1 >/dev/null 2>&1
 
 echo "== corrupted .rounds does not kill the script after a paid dispatch =="
 printf 'garbage\r\n' > "$SD/t1.rounds"
@@ -784,7 +799,7 @@ rm -rf "$SD"
 mkdir -p "$T/nosetsid"
 # Full PATH farm for a complete dispatch, minus setsid (exercises the python
 # isolator even on Linux CI where setsid exists).
-for tool in bash git cat mktemp sed awk date wc tr mv rm mkdir rmdir stat touch tail grep diff sleep ls env dirname xcrun; do
+for tool in bash git cat mktemp sed awk date wc tr mv rm mkdir rmdir stat touch tail grep diff sleep ls env dirname xcrun head ln; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/nosetsid/$tool"
 done
 # python3 is linked from its RESOLVED interpreter, not from `command -v`. Under
@@ -916,6 +931,14 @@ for f in n1.id n1.rounds n1.findings.jsonl n1.scope n1.approved; do
   cmp -s "$SD/$f" "$T/n1snap/$f" || { same=false; bad "sidecar changed by the refused --new: $f"; }
 done
 $same && ok "every sidecar byte-for-byte unchanged"
+run n1 --reset-only
+[[ "$RC" -eq 10 ]] && ok "busy reset-only loses before deleting state" \
+  || bad "busy reset-only rc=$RC err=$(cat "$T/err")"
+same=true
+for f in n1.id n1.rounds n1.findings.jsonl n1.scope n1.approved; do
+  cmp -s "$SD/$f" "$T/n1snap/$f" || { same=false; bad "sidecar changed by refused reset-only: $f"; }
+done
+$same && ok "reset-only race leaves every sidecar byte-for-byte intact"
 
 echo "== busy + invalid saved ID: refused BEFORE the invalid-ID discard =="
 printf 'not-a-uuid' > "$SD/n2.id"
@@ -970,6 +993,40 @@ FAKE_CODEX_CALLS="$T/o2.calls" run o2
 [[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "dead-owner lock stolen, dispatch went through" || bad "dead-owner steal rc=$RC err=$(cat "$T/err")"
 [[ "$(wc -l < "$T/o2.calls" 2>/dev/null | tr -d ' ')" == "1" ]] && ok "exactly one dispatch over the dead-owner lock" || bad "dispatch count: $(wc -l < "$T/o2.calls" 2>/dev/null | tr -d ' ')"
 [[ ! -e "$SD/o2.active.lock" ]] && ok "reclaimed lock released after the dispatch" || bad "lock left behind"
+
+echo "== crashed active-lock reclaimer is recovered too =="
+rm -rf "$SD"; mkdir -p "$SD/o2r.active.lock" "$SD/o2r.active.lock-reclaim"
+printf '%s' "$DOP" > "$SD/o2r.active.lock/owner"
+printf '%s' "$DOP" > "$SD/o2r.active.lock-reclaim/owner"
+run o2r
+[[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] \
+  && ok "dead active-lock reclaimer recovered without manual cleanup" \
+  || bad "dead active-lock reclaimer blocked dispatch (rc=$RC err=$(cat "$T/err"))"
+[[ ! -e "$SD/o2r.active.lock" && ! -e "$SD/o2r.active.lock-reclaim" ]] \
+  && ok "both active acquisition locks released" || bad "active lock state leaked"
+
+echo "== stale active-lock contention still permits exactly one dispatch =="
+rm -rf "$SD"; mkdir -p "$SD/o2c.active.lock"
+printf '%s' "$DOP" > "$SD/o2c.active.lock/owner"
+rm -f "$T/o2c.calls"
+declare -a O2C_PIDS=()
+for i in {1..8}; do
+  FAKE_CODEX_SLEEP=2 FAKE_CODEX_CALLS="$T/o2c.calls" \
+    bash "$DRIVER" o2c <<< "ping" > "$T/o2c.$i.out" 2> "$T/o2c.$i.err" &
+  O2C_PIDS+=("$!")
+done
+successes=0; refusals=0
+for i in {1..8}; do
+  wait "${O2C_PIDS[$((i-1))]}"; o2c_rc=$?
+  [ "$o2c_rc" -eq 0 ] && successes=$((successes+1))
+  [ "$o2c_rc" -eq 10 ] && refusals=$((refusals+1))
+done
+calls="$(wc -l < "$T/o2c.calls" 2>/dev/null | tr -d ' ')"
+[[ "$successes" -eq 1 && "$refusals" -eq 7 && "$calls" == 1 ]] \
+  && ok "eight stale-lock contenders serialize to one paid dispatch" \
+  || bad "stale contention bypassed serialization (success=$successes refusal=$refusals calls=${calls:-0})"
+[[ ! -e "$SD/o2c.active.lock" && ! -e "$SD/o2c.active.lock-reclaim" ]] \
+  && ok "stale-contention locks released" || bad "stale-contention lock leaked"
 
 echo "== robbed acquirer aborts before the lease write (no .active, robber's lock intact) =="
 rm -rf "$SD"

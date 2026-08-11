@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cc-codex-triage — findings ledger for /review.
 #
-# Event-sourced JSONL at .claude/codex-threads/<thread>.findings.jsonl: one JSON
+# Event-sourced JSONL at <shared-state>/<thread>.findings.jsonl: one JSON
 # object per line, either a "create" event (a new finding, status=open) or a
 # "status" event (a status change for an existing id). Current state of a
 # finding = its create event folded with its LAST status event.
@@ -33,7 +33,7 @@ if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/d
   exit 7
 fi
 cd "$ROOT" || exit 7
-STATE_DIR=".claude/codex-threads"
+STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh")" || exit $?
 
 command -v jq >/dev/null 2>&1 || { echo "ledger: jq is required (brew install jq / apt-get install jq)" >&2; exit 2; }
 

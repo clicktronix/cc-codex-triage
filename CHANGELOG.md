@@ -4,7 +4,65 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-12
+
+### Added
+- **Required review is an exact-candidate delivery gate.** Model-invocable
+  `/review --required` claims one foreground round at a time and binds its
+  result to the clean candidate HEAD, tree, content fingerprint, canonical
+  base, and tracked spec. Only the self-verified machine marker is approval;
+  timeout, background work, `REQUEST_CHANGES`, cap, divergence, stale scope,
+  or candidate movement fails closed. Shared thread/review state survives
+  disposable worktree removal, while gate state remains worktree-owned.
+  Per-attempt claim tokens prevent another worktree from accidentally consuming
+  a round; failed/UUID-less calls still consume the explicit cap, and cleanup
+  protects a coherent pre-dispatch claim until its bounded TTL expires.
+
+- **`/status` reports required-gate machine state.** Per thread it prints
+  `status` / `gate_eligible` / `verdict`, whether a pre-dispatch claim is live
+  or expired, and a `CAP_REACHED` / `DIVERGED` hard stop with its recovery
+  step — states that previously existed only on disk. It also warns when the
+  informational verdict column reads `APPROVE` while the required gate refused
+  that round: the two parsers differ on purpose, and only one of them is the
+  gate. The view stays read-only and never re-decides coverage; it names
+  `review-state.sh check` as the authority instead.
+
 ### Fixed
+- **`STALE` now records which failure it was.** One status covered a dirty
+  worktree, a moved head or tree, a changed fingerprint, a reply that could not
+  be attributed to this dispatch, a round counter that did not advance, and a
+  prompt whose scope block did not match — all under one string. Those need
+  opposite recoveries: re-cutting the candidate is right when it moved and
+  destructive when the reply simply was not attributable. The cause is recorded
+  and `/status` prints it.
+- **A required round can no longer be lost to prompt order or verdict
+  decoration.** `/review` stated "prepend" for both the machine scope block and
+  a resume's follow-up header, while `record` accepts the scope only as the
+  first four prompt lines — a correct-looking round landed `STALE` and burned a
+  paid attempt. The block is now pinned as first with nothing before it, and
+  every required round, resume included, restates the one output rule the
+  required parser enforces, naming the two tokens required mode accepts and why
+  `COMMENT` is not one of them. The exactly-once rule `record` also enforces is
+  stated, so quoting `SPEC_PATH:` later in a prompt no longer lands `STALE`
+  unexplained. `--cap` is documented as counting `begin` attempts including the
+  first, and `/thread-new` documents that it clears the required-review state,
+  which is the only exit from a hard stop.
+- **Required-review state now fails closed across its full lifecycle.** Strict
+  decimal parsing covers the driver counter, loop metadata, and candidate
+  offsets without Bash octal fallthrough; completed rounds cannot be aborted or
+  overwritten by a stale hard-stop claim, and base/spec/cap stay pinned until an
+  explicit reset so changing arguments cannot restart the paid-round budget.
+  Thread reset is one leased driver operation, cleanup serializes with candidate
+  publication, read-only status paths no longer create caches, and legacy
+  migration is recorded per source worktree so retained compatibility files may
+  safely diverge afterwards.
+- **Approval publication and cleanup rails are generation-safe.** A partial
+  approval rename cannot combine a new status with an older candidate, cleanup
+  aborts if any worktree gate cannot be discovered, and a repository-common
+  registry serializes gate migration/publication with discovery, final rail
+  checks, and archive moves. Armed-lock owner tokens use atomic noclobber
+  publication, so a resumed pre-token loser cannot overwrite or remove the
+  replacement generation.
 - **The plan scope is followed at the third call site too.** `/autoplan on`
   asked `gate-fingerprint.sh --plan-paths` for the scope but, unlike the hook
   and `/status`, kept no fallback for an empty answer — which leaves
@@ -33,6 +91,13 @@ All notable changes to this project are documented in this file.
   last-abort marker were both lost.
 
 ### Tests
+- Required-review regressions cover exact scope/verdict parsing, fenced and
+  non-final verdict rejection, malformed persisted decimals, claim/cap
+  ownership and contract pinning, same-candidate re-review after a documented
+  disposition, stale-lock contention, partial approval publication,
+  cleanup/gate publication races (including late worktrees), fail-closed
+  worktree discovery, read-only state resolution, and serialized legacy gate
+  migration across worktrees.
 - Four assertions could not fail and now can, each verified by mutation: the
   TERM/KILL escalation (the fixture announced itself only after installing its
   trap), `--plan` scope drift (both scopes were empty, so both sides were the

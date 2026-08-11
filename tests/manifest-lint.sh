@@ -10,12 +10,8 @@
 # the user asking. Four suites and 487 tests were green throughout, because
 # every one of them tests behaviour and nothing read the manifests.
 #
-# The checks are deliberately structural — a delimiter and a fence either
-# balance or they do not — with ONE value assertion:
-# `disable-model-invocation: true`. Presence alone is not the invariant there,
-# since `false` would re-enable model-triggered paid dispatches while the lint
-# stayed green. Everything else is left to the Claude Code loader, so this file
-# cannot drift from it.
+# The checks are deliberately structural. Paid commands remain user-only except
+# `/review`, whose model-invocable contract is intentional and tested here.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -100,14 +96,33 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
 
 echo "== commands =="
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
-  # disable-model-invocation is the load-bearing one: every command here spends
-  # real money, so all of them are user-invoked only.
-  check_manifest "$f" description allowed-tools disable-model-invocation=true
+  if [[ "$(basename "$f")" == review.md ]]; then
+    check_manifest "$f" description allowed-tools
+    if awk 'NR>1 && /^---$/{exit} /^disable-model-invocation:/{found=1} END{exit found?0:1}' "$f"; then
+      bad "commands/review.md: must remain model-invocable (remove disable-model-invocation)"
+    else
+      ok
+    fi
+  else
+    # Every other command stays user-invoked; do not blanket-enable paid tools.
+    check_manifest "$f" description allowed-tools disable-model-invocation=true
+  fi
 done
 
 echo "== skills =="
 for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
+done
+
+echo "== required runtime helpers =="
+for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh; do
+  path="$ROOT/plugins/cc-codex-triage/$helper"
+  if [[ -f "$path" && -x "$path" ]] \
+      && git -C "$ROOT" ls-files --error-unmatch -- "plugins/cc-codex-triage/$helper" >/dev/null 2>&1; then
+    ok
+  else
+    bad "plugins/cc-codex-triage/$helper must be tracked and executable"
+  fi
 done
 
 summary

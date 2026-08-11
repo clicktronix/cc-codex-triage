@@ -4,8 +4,9 @@
 # READ-ONLY: never writes or mutates any state (safe to run any time). It
 # surfaces exactly the things that used to require hand-reading .armed/.rounds/
 # .log + git: current branch, dirty tree, armed gates (with stale-branch /
-# pre-0.5 / missing-target warnings), last verdict per thread, gitignore status,
-# and the Codex CLI version vs the required minimum.
+# pre-0.5 / missing-target warnings), last verdict per thread, required-review
+# gate state, gitignore status, and the Codex CLI version vs the required
+# minimum.
 
 set -u
 
@@ -14,18 +15,15 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 . "$SELF_DIR/lib.sh"
 
-# Anchor to the RESOLVED repo root (mirrors the driver's rule): a
-# CLAUDE_PROJECT_DIR naming a repo SUBDIR resolves UP — state always lives at
-# the repo ROOT. Read-only script → outside a repo it NO-OPS with a clear
-# message (exit 0) instead of reporting whatever local .claude/codex-threads
-# the caller's cwd happens to contain — that state cannot be the driver's
-# (it refuses to run outside a repo).
+# Anchor to the resolved repo before resolving its common Git state. Read-only
+# outside a repo: no arbitrary cwd-local directory can be mistaken for state.
 if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
   echo "Not inside a git repository — no thread state to report."
   exit 0
 fi
 cd "$ROOT" || { echo "Not inside a git repository — no thread state to report."; exit 0; }
-STATE_DIR=".claude/codex-threads"
+STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
+GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh" --read-only)" || exit $?
 REQUIRED_CODEX="0.137.0"   # keep in sync with the minimum stated in README.md (Prerequisites)
 
 # Last verdict from a thread log — whole log, no offset, informational. Same
@@ -60,7 +58,7 @@ echo "  repo branch : $BRANCH"
 plan_paths="$(bash "$FP_SH" --plan-paths 2>/dev/null)"
 [ -n "$plan_paths" ] || plan_paths="${CC_CODEX_PLAN_PATHS:-docs/plans docs/PLANS}"
 if $IN_GIT; then
-  code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF "$STATE_DIR/" | grep -c . | tr -d ' ')
+  code_changes=$(git status --porcelain -uall 2>/dev/null | grep -vF '.claude/codex-threads/' | grep -c . | tr -d ' ')
   # Word-split the pathspecs (intentional) but disable shell globbing so they
   # reach git unexpanded — git does its own pathspec matching. shellcheck disable=SC2086
   plan_changes=$( set -f; git status --porcelain -uall -- $plan_paths 2>/dev/null | grep -c . | tr -d ' ' )
@@ -89,15 +87,10 @@ else
   echo "  codex CLI   : NOT FOUND on PATH — install: npm install -g @openai/codex"
 fi
 
-if $IN_GIT; then
-  if git check-ignore -q "$STATE_DIR/x" 2>/dev/null; then
-    echo "  state dir   : gitignored OK"
-  else
-    echo "  state dir   : WARNING not gitignored — add '.claude/codex-threads/' to .gitignore"
-  fi
-fi
+echo "  state dir   : $STATE_DIR (shared across worktrees)"
+echo "  gate dir    : $GATE_DIR (current worktree only)"
 
-if [ ! -d "$STATE_DIR" ]; then
+if [ ! -d "$STATE_DIR" ] && [ ! -d "$GATE_DIR" ]; then
   echo
   echo "No threads or gates in this repo yet."
   exit 0
@@ -108,7 +101,7 @@ echo
 echo "Armed gates:"
 shown=0
 for kind in autoreview autoplan; do
-  f="$STATE_DIR/$kind.armed"
+  f="$GATE_DIR/$kind.armed"
   [ -f "$f" ] || continue
   shown=1
   base="${kind#auto}"   # autoreview->review, autoplan->plan
@@ -152,8 +145,8 @@ for kind in autoreview autoplan; do
   # Cycle state: a clean tree is not what the gate compares against.
   if [ -n "$(gate_baseline "$f")" ]; then
     case "$kind" in
-      autoplan) fp_now="$(bash "$FP_SH" --plan 2>/dev/null)" ;;
-      *)        fp_now="$(bash "$FP_SH" 2>/dev/null)" ;;
+      autoplan) fp_now="$(bash "$FP_SH" --read-only --plan 2>/dev/null)" ;;
+      *)        fp_now="$(bash "$FP_SH" --read-only 2>/dev/null)" ;;
     esac
     fp_base="$(gate_baseline "$f")"
     if [ -z "$fp_now" ]; then
@@ -188,6 +181,80 @@ for idf in "$STATE_DIR"/*.id; do
     "$n" "$r" "${sz:-0}" "$(_mtime "$idf")" "$v"
 done
 [ "$any" = 0 ] && echo "  (none)"
+
+# ── Required review gates ───────────────────────────────────────────────────
+# The verdict column above comes from the tolerant informational parser, which
+# accepts `## APPROVE` and `**APPROVE**`. The required gate accepts the bare
+# token only. Printing the log verdict alone would report an approval the gate
+# refused — and a PENDING claim or a CAP_REACHED hard stop would be invisible
+# in the one screen that exists to make state readable.
+echo
+echo "Required review gates:"
+req=0
+for sf in "$STATE_DIR"/*.review-state; do
+  [ -f "$sf" ] || continue
+  req=1
+  n="$(basename "$sf" .review-state)"
+  st="$(field "$sf" status)"; ge="$(field "$sf" gate_eligible)"; vd="$(field "$sf" verdict)"
+  printf '  %-30s status=%-22s gate_eligible=%-5s verdict=%s\n' \
+    "$n" "${st:-?}" "${ge:-?}" "${vd:--}"
+  case "$st" in
+    PENDING)
+      exp="$(field "$sf" claim_expires_at)"; now="$(date +%s 2>/dev/null)"
+      case "$exp" in
+        ''|*[!0-9]*|0?*) echo "      claim has no usable expiry — /thread-new $n clears it." ;;
+        *)
+          if [ -z "$now" ] || [ "${#exp}" -gt 12 ]; then
+            echo "      claim expiry cannot be evaluated here — /thread-new $n clears it."
+          elif [ "$exp" -le "$now" ]; then
+            echo "      claim EXPIRED — record the finished dispatch, or /thread-new $n to release it."
+          else
+            echo "      claim live for $(( (exp - now) / 60 ))m — a round is in flight; do not begin another."
+          fi
+          ;;
+      esac
+      ;;
+    CAP_REACHED|DIVERGED)
+      echo "      HARD STOP — never an approval. Decide with the user, then /thread-new $n to start a fresh required lifecycle."
+      ;;
+    APPROVED)
+      # Deliberately not re-deciding coverage here: `check` takes the review
+      # mutex, and this command is read-only. Naming the one authority beats
+      # growing a second staleness test that could disagree with it.
+      echo "      recorded for head=$(field "$sf" head) — authoritative re-check: review-state.sh check $n"
+      ;;
+  esac
+  # Deliberately a second test on $st rather than an arm of the case above: this
+  # applies to EVERY status except APPROVED, including the PENDING and
+  # CAP_REACHED arms already handled, and a `*)` arm would silently stop warning
+  # exactly where a decorated verdict burned the cap.
+  if [ "$st" != "APPROVED" ] && [ "$(last_verdict "$n")" = "APPROVE" ]; then
+    echo "      WARNING the log's last verdict reads APPROVE but the required gate did not accept it (status=${st:-?})."
+    # The recovery differs by status, and a blanket "re-run the round" contradicts the hard stop
+    # printed two lines above — the one case where re-running is exactly what must not happen.
+    case "$st" in
+      CAP_REACHED|DIVERGED)
+        echo "              A decorated verdict is one way the budget went: the gate takes the bare token"
+        echo "              on its own final line. Recovery is the hard stop above, not another round."
+        ;;
+      PENDING)
+        echo "              A round is claimed and not yet recorded, so this verdict is not"
+        echo "              authoritative — it may be the open round's own reply, already in the log"
+        echo "              but unjudged. Record or release that claim before reading it as a result."
+        ;;
+      STALE)
+        echo "              STALE covers every way the round could not be attributed to this"
+        echo "              candidate — moved HEAD or tree, changed fingerprint, wrong prompt scope,"
+        echo "              or a round counter that did not advance. Recorded reason:"
+        echo "              $(field "$sf" reason). Read that before changing the candidate."
+        ;;
+      *)
+        echo "              The gate needs the verdict alone on its own final line, undecorated. Re-run the round."
+        ;;
+    esac
+  fi
+done
+[ "$req" = 0 ] && echo "  (none)"
 # Explicit success — the final test above is false when threads exist, which
 # would otherwise make this read-only command exit non-zero on the normal path.
 exit 0

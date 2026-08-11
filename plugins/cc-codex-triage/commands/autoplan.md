@@ -23,7 +23,8 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    # Anchor to the repo root — the hook and driver read state there, and a
    # drifted cwd would arm a gate the hook never sees.
    cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7   # resolves a subdir candidate UP to the repo root — state lives at the ROOT; HARD-FAIL outside a repo (a fail-soft cd would mutate state in the wrong directory)
-   STATE_DIR=".claude/codex-threads"; mkdir -p "$STATE_DIR"
+   STATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh") || exit $?
+   GATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-dir.sh") || exit $?
    BRANCH=$(git rev-parse --abbrev-ref HEAD)
    # Slug rule shared with the hook: every char outside the driver's
    # [a-zA-Z0-9_.-] alphabet becomes '-' (git allows +, #, @ ... in branches).
@@ -53,7 +54,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
    case "$LOG_GEN" in ''|0*[0-9]*) LOG_GEN=0 ;; esac; LOG_GEN=${LOG_GEN:-0}
    printf 'branch=%s\nthread=%s\nlens=%s\ncap=%s\nblocks=0\nlog_bytes_at_arming=%s\nlog_gen_at_arming=%s\narmed_at=%s\nfp_at_arming=%s\n' \
      "$BRANCH" "$THREAD" "<LENS>" "<CAP>" "$LOG_BYTES" "$LOG_GEN" "$(date +%s)" "$FP" \
-     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$STATE_DIR/autoplan.armed" || exit 1
+     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" write "$GATE_DIR/autoplan.armed" || exit 1
    echo "autoplan armed for branch $BRANCH -> thread $THREAD (lens <LENS>, cap <CAP>)."
    # Already-changed plan docs to stress-test now? Ask the canonical script for
    # the scope, and keep the SAME empty-answer fallback the hook (plan_paths())
@@ -69,11 +70,12 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 
 3. **`on` + changed plan docs → stress-test immediately.** Read `${CLAUDE_PLUGIN_ROOT}/commands/plan.md` and follow its steps now with `--once --thread <THREAD> --lens <LENS>` on the updated plan (`--once` keeps this a SINGLE dispatch — the gate iterates across later turns via its capped blocks) — the file path matters: `/plan` is `disable-model-invocation`, so you cannot invoke it as a command and must follow its steps from the file. Show Codex's verdict, address blocking objections. If no plan docs changed, skip — just confirm the gate is armed.
 
-4. `off` — from the repo root, `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed || { echo "could not disarm — the armed file is still in place"; exit 1; }`, then confirm. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
+4. `off` — resolve `GATE_DIR`, then remove `$GATE_DIR/autoplan.armed` through `gate-state.sh`; confirm only on success. Not a bare `rm`: the Stop hook rewrites this same file under a mutex, and an unserialized delete races a turn-end write that would put the gate back. The status check is not optional — `remove` exits 2 having deleted NOTHING when the mutex is held, and reporting a disarm that did not happen leaves the gate blocking every turn until the TTL fires.
 
    ```bash
    cd "$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel)" || exit 7
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove .claude/codex-threads/autoplan.armed \
+   GATE_DIR=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-dir.sh") || exit $?
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate-state.sh" remove "$GATE_DIR/autoplan.armed" \
      || { echo "could not disarm — the armed file is still in place"; exit 1; }
    echo "autoplan disarmed."
    ```
@@ -84,7 +86,7 @@ Unlike `/autoreview`, the gate does NOT parse the plan verdict (sound/not-sound 
 
 ## Notes
 
-- Armed state: `.claude/codex-threads/autoplan.armed`. Branch-scoped.
+- Armed state: `$GATE_DIR/autoplan.armed` in the current worktree Git directory. Branch-scoped and isolated from other worktrees.
 - Fields mirror `/autoreview`, including `fp_at_arming` (0.9+, written here) and `released_fp` (0.9+, written by the hook). An armed file with neither is a pre-0.9 arming: dirty-tree behaviour until its first release, cycle model after it.
 - Gates auto-expire 14 days after arming: the hook removes the stale armed file on the next gated turn (re-arm to continue).
 - Plan-doc detection covers `docs/plans/` and `docs/PLANS/` by default. For other layouts, set `CC_CODEX_PLAN_PATHS` (space-separated pathspecs, e.g. `CC_CODEX_PLAN_PATHS="docs/rfcs planning"`) in your environment — the hook and the arming check both honor it. Or use `/plan` manually.
