@@ -238,8 +238,9 @@ for sf in "$STATE_DIR"/*.review-state; do
         echo "              on its own final line. Recovery is the hard stop above, not another round."
         ;;
       PENDING)
-        echo "              This APPROVE belongs to an earlier round; the claimed one has not been"
-        echo "              recorded yet. Finish or release that round before judging this verdict."
+        echo "              A round is claimed and not yet recorded, so this verdict is not"
+        echo "              authoritative — it may be the open round's own reply, already in the log"
+        echo "              but unjudged. Record or release that claim before reading it as a result."
         ;;
       STALE)
         echo "              STALE covers every way the round could not be attributed to this"

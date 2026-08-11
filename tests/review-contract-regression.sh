@@ -825,7 +825,7 @@ run_rc record_review review-pending
 begin_review review-pending >/dev/null
 status_out="$(bash "$PLUGIN/scripts/status.sh" 2>&1)"
 [[ "$(state_field review-pending status)" == PENDING ]] \
-  && printf '%s\n' "$status_out" | grep -q 'has not been' \
+  && printf '%s\n' "$status_out" | grep -q 'not yet recorded' \
   && ! printf '%s\n' "$status_out" | grep -q 'Re-run the round' \
   && ok "a live claim is not told to re-run the round" \
   || bad "PENDING advises a retry while its own round is open"
