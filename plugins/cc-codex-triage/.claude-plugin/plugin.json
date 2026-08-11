@@ -2,7 +2,7 @@
   "name": "cc-codex-triage",
   "displayName": "Codex Triage",
   "description": "Persistent Codex CLI triage for Claude Code. Includes model-invocable /review --required with exact-candidate approval, bounded review loops, shared cross-worktree state, findings ledger, self-verification gates, and detached delivery.",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "author": {
     "name": "Clicktronix",
     "url": "https://github.com/clicktronix"

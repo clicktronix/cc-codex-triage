@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-12
+
 ### Added
 - **Required review is an exact-candidate delivery gate.** Model-invocable
   `/review --required` claims one foreground round at a time and binds its
