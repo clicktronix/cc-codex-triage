@@ -23,6 +23,9 @@ cat > "$T/bin/codex" <<'STUB'
 # FAKE_CODEX_SLEEP=<s>  sleep before replying (lease-lifecycle tests).
 # FAKE_CODEX_BIGERR=1   emit >64KB of stderr noise (diag-cap test).
 # FAKE_CODEX_NOUUID=1   exit 0 but emit no recognizable session UUID.
+# FAKE_CODEX_NOEOL=1    write the reply WITHOUT a trailing newline, which is what the
+#                       real CLI does. `echo` below adds one, so the stub was politer
+#                       than the thing it stands for and no test could see the defect.
 out=""
 prev=""
 for a in "$@"; do
@@ -53,7 +56,13 @@ elif [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
 else
   echo '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}'
 fi
-[[ -n "$out" ]] && echo "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
+if [[ -n "$out" ]]; then
+  if [[ "${FAKE_CODEX_NOEOL:-0}" == "1" ]]; then
+    printf '%s' "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
+  else
+    echo "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
+  fi
+fi
 exit "${FAKE_CODEX_EXIT:-0}"
 STUB
 chmod +x "$T/bin/codex"
@@ -146,6 +155,35 @@ echo "prior" > "$SD/t1.log"
 CC_CODEX_TRIAGE_LOG_CAP_BYTES=08 run t1
 [[ "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" ]] && ok "reply survives LOG_CAP=08" || bad "LOG_CAP=08 (rc=$RC out=$OUT)"
 unset CC_CODEX_TRIAGE_LOG_CAP_BYTES
+
+echo "== a reply with no trailing newline does not swallow the --- separator =="
+# The real Codex CLI writes its reply without a trailing newline. The driver logged it with
+# `sed 's/^/  /'`, and BSD sed leaves an unterminated last line unterminated, so `echo "---"` landed
+# ON it. When that line was the verdict the log ended `  APPROVE---`, and the required-review gate --
+# which compares the line to `APPROVE` exactly -- read no verdict at all. Codex had approved; no
+# machine could attribute it. Observed on a real pull request, not constructed here.
+rm -f "$SD/noeol.log" "$SD/noeol.id" "$SD/noeol.rounds"
+FAKE_CODEX_NOEOL=1 FAKE_CODEX_REPLY="the body
+APPROVE" run noeol
+[[ "$RC" -eq 0 ]] && ok "the dispatch itself succeeds" || bad "noeol dispatch rc=$RC"
+LAST="$(tail -1 "$SD/noeol.log")"
+[[ "$LAST" == "---" ]] && ok "the separator stands on its own line" || bad "last log line is '$LAST', not '---'"
+grep -qx '  APPROVE' "$SD/noeol.log" \
+  && ok "the verdict line is intact" || bad "no bare '  APPROVE' line: $(tail -3 "$SD/noeol.log" | tr '\n' '|')"
+
+# And the gate must actually read it. Asserting the log's shape alone would pass a format nobody
+# parses, so this applies the strict rule the required-review recorder applies -- exactly one verdict,
+# standing as the last content line. review-state.sh keeps it as a shell function with no CLI entry
+# point, so it is restated here; that duplication is itself the finding in the PR body.
+if awk '/^REPLY:/{r=1;next} /^(PROMPT:|---$)/{r=0;next} !r{next}
+        { if (substr($0,1,2) != "  ") { last="OTHER"; next }
+          line=substr($0,3); if (line=="") next; last=line
+          if (line=="APPROVE" || line=="REQUEST_CHANGES") { v=line; c++ } }
+        END { exit !(c==1 && last==v) }' "$SD/noeol.log"; then
+  ok "the strict required-review rule finds exactly one verdict, standing last"
+else
+  bad "the strict required-review rule still finds no attributable verdict"
+fi
 
 echo "== rotation moves the log aside and counts itself =="
 # The gates cut their verdict window at a byte offset into the log. Rotation

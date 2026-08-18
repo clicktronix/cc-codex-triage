@@ -1216,7 +1216,13 @@ if ! $ONESHOT; then
   {
     echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND${PRE_FP:+ fp=$PRE_FP}${PRE_FP_PLAN:+ fp-plan=$PRE_FP_PLAN}"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
-    echo "REPLY:"; sed 's/^/  /' "$OUT_FILE"
+    # awk, not `sed 's/^/  /'`: a reply that does not end in a newline leaves BSD sed's last line
+    # unterminated, so the `---` below lands ON the reply's final line. When that line is the verdict,
+    # the log ends `  APPROVE---` and the required-review gate reads no verdict at all — an APPROVE
+    # that cannot be attributed to a machine. Codex replies without a trailing newline, so this is the
+    # common case, not an edge one. awk's `print` always emits ORS, and adds nothing when the input was
+    # already terminated.
+    echo "REPLY:"; awk '{ print "  " $0 }' "$OUT_FILE"
     echo "---"
   } >> "$LOG_FILE"
 fi

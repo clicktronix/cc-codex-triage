@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **A reply without a trailing newline no longer swallows the log separator.**
+  The driver logged replies with `sed 's/^/  /'`, and BSD sed leaves an
+  unterminated final line unterminated, so `---` landed on it. When that line
+  was the verdict the log ended `  APPROVE---`, which the required-review
+  recorder — comparing the line to `APPROVE` exactly — read as no verdict at
+  all. Observed on a real pull request: Codex approved and no machine could
+  attribute the approval, so the gate reported `CAP_REACHED` on a candidate its
+  reviewer had passed. The driver now indents with `awk`, whose `print` always
+  terminates the line and adds nothing when the input already did.
+
 ## [0.10.0] - 2026-08-12
 
 ### Added
