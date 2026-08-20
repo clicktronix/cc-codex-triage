@@ -1219,9 +1219,10 @@ if ! $ONESHOT; then
     # awk, not `sed 's/^/  /'`: a reply that does not end in a newline leaves BSD sed's last line
     # unterminated, so the `---` below lands ON the reply's final line. When that line is the verdict,
     # the log ends `  APPROVE---` and the required-review gate reads no verdict at all — an APPROVE
-    # that cannot be attributed to a machine. Codex replies without a trailing newline, so this is the
-    # common case, not an edge one. awk's `print` always emits ORS, and adds nothing when the input was
-    # already terminated.
+    # that cannot be attributed to a machine. Whether Codex terminates its reply VARIES between rounds:
+    # one thread log carries `  APPROVE---` at line 306 and a clean `  APPROVE` at line 388. So the
+    # gate was not broken, it was intermittent, which is worse to diagnose from a failure report.
+    # awk's `print` always emits ORS, and adds nothing when the input was already terminated.
     echo "REPLY:"; awk '{ print "  " $0 }' "$OUT_FILE"
     echo "---"
   } >> "$LOG_FILE"
