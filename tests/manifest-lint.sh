@@ -12,6 +12,7 @@
 #
 # The checks are deliberately structural. Paid commands remain user-only except
 # `/review`, whose model-invocable contract is intentional and tested here.
+# Every Bash grant is also limited to bundled plugin scripts.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -95,6 +96,11 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
 }
 
 echo "== commands =="
+EXPECTED_COMMANDS="ask debate plan reply review status thread thread-list thread-new"
+ACTUAL_COMMANDS="$(for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do basename "$f" .md; done | sort | tr '\n' ' ' | sed 's/ $//')"
+[[ "$ACTUAL_COMMANDS" == "$EXPECTED_COMMANDS" ]] \
+  && ok \
+  || bad "command surface is '$ACTUAL_COMMANDS', expected '$EXPECTED_COMMANDS'"
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   if [[ "$(basename "$f")" == review.md ]]; then
     check_manifest "$f" description allowed-tools
@@ -107,15 +113,27 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
     # Every other command stays user-invoked; do not blanket-enable paid tools.
     check_manifest "$f" description allowed-tools disable-model-invocation=true
   fi
+  allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
+  if [[ "$allowed" == *Bash* && "$allowed" != *'${CLAUDE_PLUGIN_ROOT}/scripts/'* ]]; then
+    bad "${f#$ROOT/}: Bash permission is not scoped to bundled scripts"
+  else
+    ok
+  fi
 done
 
 echo "== skills =="
+SKILL_COUNT="$(find "$ROOT/plugins/cc-codex-triage/skills" -name SKILL.md -type f | wc -l | tr -d ' ')"
+[[ "$SKILL_COUNT" == 1 ]] && ok || bad "expected one routing skill, found $SKILL_COUNT"
 for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
 done
 
+[[ ! -e "$ROOT/plugins/cc-codex-triage/hooks/hooks.json" ]] \
+  && ok || bad "optional Stop-hook subsystem was re-registered"
+
 echo "== required runtime helpers =="
-for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh; do
+for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh \
+              scripts/state-dir.sh scripts/status.sh scripts/thread-name.sh scripts/verdict.sh; do
   path="$ROOT/plugins/cc-codex-triage/$helper"
   if [[ -f "$path" && -x "$path" ]] \
       && git -C "$ROOT" ls-files --error-unmatch -- "plugins/cc-codex-triage/$helper" >/dev/null 2>&1; then

@@ -1,13 +1,13 @@
 ---
 description: Run a structured multi-round debate between Claude Code and Codex on a design decision or question, with every exchange visible to the user. Ends in an honest synthesis, not forced consensus.
 argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] <question or decision to debate>"
-allowed-tools: Bash
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
 disable-model-invocation: true
 ---
 
 # /debate
 
-Claude Code and Codex argue a question over N rounds in a persistent thread. The user sees every exchange: your position, Codex's reply (verbatim), your rebuttal. **Follow the "Debating Codex" rules in skill `codex-triage` throughout** — they are the load-bearing part of this command.
+Claude Code and Codex argue a question over N rounds in a persistent thread. The user sees every exchange: your position, Codex's reply (verbatim), your rebuttal. Follow the Debate section of skill `codex-triage` throughout.
 
 ## Steps
 
@@ -22,7 +22,7 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
 3. Open the debate (round 1). Send via Bash (timeout 600000 — the caller's ceiling, not the dispatch's):
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
    ```
 
    `dispatch.sh` detaches the worker and then waits for it here, bounded below
@@ -88,6 +88,6 @@ Round 1 also shows your committed opening position (step 2) as the first **Claud
 
 ## Notes
 
-- Thread: `debate-<slug>.{id,log,rounds}` in shared repository state — the full exchange is auditable in the `.log`.
+- Thread: `debate-<slug>.{id,log,rounds}` in worktree-local state — the full exchange is auditable in the `.log`.
 - The debate costs up to ~(N+1) Codex dispatches (fewer if it ends early). At the higher round counts this adds up — for `--rounds 10`+ confirm the cost with the user before starting, and for a small topic suggest a plain `/ask` instead.
 - For "critique my code/plan" use `/review` / `/plan` — a debate is for genuine decision disagreements with defensible positions on both sides.

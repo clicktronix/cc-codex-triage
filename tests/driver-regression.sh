@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 export CC_CODEX_STATE_DIR=.claude/codex-threads
-export CC_CODEX_GATE_DIR=.claude/codex-threads
 # Regression suite for scripts/codex-thread.sh. No real Codex — a stub `codex`
 # on PATH emits a canned JSONL stream and writes the -o file.
 # Usage: bash tests/driver-regression.sh   (exit 0 = all pass)
@@ -8,7 +7,9 @@ set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 DRIVER="$(cd "$(dirname "$0")/.." && pwd)/plugins/cc-codex-triage/scripts/codex-thread.sh"
+VERDICT="${DRIVER%codex-thread.sh}verdict.sh"
 [[ -f "$DRIVER" ]] || { echo "driver not found: $DRIVER"; exit 1; }
+[[ -x "$VERDICT" ]] || { echo "verdict parser not found: $VERDICT"; exit 1; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
@@ -23,9 +24,8 @@ cat > "$T/bin/codex" <<'STUB'
 # FAKE_CODEX_SLEEP=<s>  sleep before replying (lease-lifecycle tests).
 # FAKE_CODEX_BIGERR=1   emit >64KB of stderr noise (diag-cap test).
 # FAKE_CODEX_NOUUID=1   exit 0 but emit no recognizable session UUID.
-# FAKE_CODEX_NOEOL=1    write the reply WITHOUT a trailing newline, which is what the
-#                       real CLI does. `echo` below adds one, so the stub was politer
-#                       than the thing it stands for and no test could see the defect.
+# FAKE_CODEX_NOEOL=1    write the reply WITHOUT a trailing newline. The real CLI can
+#                       do this, so the producer must not join it to the separator.
 out=""
 prev=""
 for a in "$@"; do
@@ -125,13 +125,13 @@ run t1 --new --require-existing
 [[ "$(cat "$SD/t1.id" 2>/dev/null)" == "$UUID" ]] && ok "existing .id survived the refused combo" || bad ".id was destroyed"
 
 echo "== --reset-only clears one incarnation atomically without dispatch =="
-printf 'state\n' > "$SD/t1.findings.jsonl"
-printf 'scope\n' > "$SD/t1.scope"
+printf 'candidate\n' > "$SD/t1.candidate"
+printf 'state\n' > "$SD/t1.review-state"
 printf 'approved\n' > "$SD/t1.approved"
 FAKE_CODEX_CALLS="$T/reset-only.calls" run t1 --reset-only
 [[ "$RC" -eq 0 && "$OUT" == "RESET thread t1" \
-    && ! -e "$SD/t1.id" && ! -e "$SD/t1.rounds" && ! -e "$SD/t1.findings.jsonl" \
-    && ! -e "$SD/t1.scope" && ! -e "$SD/t1.approved" \
+    && ! -e "$SD/t1.id" && ! -e "$SD/t1.rounds" && ! -e "$SD/t1.candidate" \
+    && ! -e "$SD/t1.review-state" && ! -e "$SD/t1.approved" \
     && ! -e "$T/reset-only.calls" ]] \
   && ok "reset-only clears sidecars under the lease without a Codex call" \
   || bad "reset-only was incomplete or dispatched (rc=$RC out=$OUT)"
@@ -157,7 +157,7 @@ CC_CODEX_TRIAGE_LOG_CAP_BYTES=08 run t1
 unset CC_CODEX_TRIAGE_LOG_CAP_BYTES
 
 echo "== a reply with no trailing newline does not swallow the --- separator =="
-# The real Codex CLI writes its reply without a trailing newline. The driver logged it with
+# The Codex CLI can write a reply without a trailing newline. The driver logged it with
 # `sed 's/^/  /'`, and BSD sed leaves an unterminated last line unterminated, so `echo "---"` landed
 # ON it. When that line was the verdict the log ended `  APPROVE---`, and the required-review gate --
 # which compares the line to `APPROVE` exactly -- read no verdict at all. Codex had approved; no
@@ -171,25 +171,18 @@ LAST="$(tail -1 "$SD/noeol.log")"
 grep -qx '  APPROVE' "$SD/noeol.log" \
   && ok "the verdict line is intact" || bad "no bare '  APPROVE' line: $(tail -3 "$SD/noeol.log" | tr '\n' '|')"
 
-# And the gate must actually read it. Asserting the log's shape alone would pass a format nobody
-# parses, so this applies the strict rule the required-review recorder applies -- exactly one verdict,
-# standing as the last content line. review-state.sh keeps it as a shell function with no CLI entry
-# point, so it is restated here; that duplication is itself the finding in the PR body.
-if awk '/^REPLY:/{r=1;next} /^(PROMPT:|---$)/{r=0;next} !r{next}
-        { if (substr($0,1,2) != "  ") { last="OTHER"; next }
-          line=substr($0,3); if (line=="") next; last=line
-          if (line=="APPROVE" || line=="REQUEST_CHANGES") { v=line; c++ } }
-        END { exit !(c==1 && last==v) }' "$SD/noeol.log"; then
+# And the delivery gate must actually read it. This calls the product parser;
+# the regression cannot stay green by restating a second, drifting grammar.
+if "$VERDICT" strict "$SD/noeol.log" >/dev/null; then
   ok "the strict required-review rule finds exactly one verdict, standing last"
 else
   bad "the strict required-review rule still finds no attributable verdict"
 fi
 
 echo "== rotation moves the log aside and counts itself =="
-# The gates cut their verdict window at a byte offset into the log. Rotation
-# makes that offset point into unrelated content, and comparing sizes only
-# catches it when the replacement is smaller — so the driver counts rotations
-# and the hook parses from 0 whenever the count has moved.
+# Review records cut their verdict window at a byte offset into the log.
+# Rotation makes that offset point into unrelated content, so generations let
+# the recorder reject a stale cut instead of attributing unrelated content.
 rm -rf "$SD"
 run rot >/dev/null 2>&1                       # create the thread
 head -c 4000 /dev/zero | tr '\0' 'x' > "$SD/rot.log"
@@ -524,7 +517,7 @@ rm -rf "$SD"
 # stdout is compared EXACTLY, and stderr is captured separately. Grepping the
 # two streams merged accepted any amount of surrounding chatter — which is what
 # it was doing while the watcher printed a `DONE:` banner ahead of the reply,
-# enough to break the `jq` that /review --json pipes this into.
+# enough to corrupt a caller that consumes the reply as structured output.
 OUT="$(cd "$REPO" && printf 'hi' | bash "$DISPATCH" d-short 2>"$T/derr")"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "a short dispatch returns in-turn with the driver's own status" || bad "short dispatch rc=$rc"
 [[ "$OUT" == "FAKE_REPLY" ]] && ok "and stdout is byte-identical to the reply" || bad "stdout polluted: [$OUT]"
@@ -599,9 +592,8 @@ i=0; while [ ! -f "$SD/abrt.active" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1))
 # signalling that leaves the driver untouched — the probe would then measure
 # nothing. The lease names the driver, which is exactly what we need to signal.
 DRVPID="$(cat "$SD/abrt.active" 2>/dev/null | tr -cd '0-9')"
-# Wait for the CHILD, not just the lease: the pre-dispatch fingerprint runs
-# between acquiring the lease and starting codex, so the lease appears about a
-# second before there is anything to interrupt.
+# Wait for the CHILD, not just the lease: the lease can appear just before
+# Codex starts, so there may not yet be anything to interrupt.
 i=0; CODEXPID=""
 while [ -z "$CODEXPID" ] && [ $i -lt 100 ]; do
   CODEXPID="$(pgrep -f "$SLOWBIN/codex" | head -1)"
@@ -616,36 +608,16 @@ sleep 0.5
   && ok "the codex child was killed, not left finishing a paid run" || bad "codex child survived the driver"
 [[ ! -e "$SD/abrt.active" ]] && ok "lease released" || bad "lease left behind: $(cat "$SD/abrt.active" 2>/dev/null)"
 grep -q '^signal=TERM' "$SD/abrt.last-abort" 2>/dev/null && ok "the abort left a trace" || bad "no trace of the killed dispatch"
-# The trace must NOT be in the log: autoplan releases on log growth, so an abort
-# recorded there would satisfy a plan gate with nothing behind it.
-[[ ! -e "$SD/abrt.log" ]] && ok "and nothing was appended to the thread log" || bad "abort grew the log — autoplan would release on it"
+# An abort trace is metadata, not a model reply; it must not enter the log.
+[[ ! -e "$SD/abrt.log" ]] && ok "and nothing was appended to the thread log" || bad "abort grew the model-reply log"
 pkill -f "$SLOWBIN/codex" 2>/dev/null
 rm -rf "$SLOWBIN" "$SD"
-
-echo "== a dispatch whose fingerprint fails clears the sidecar, not keeps it =="
-# Left in place, the previous dispatch's snapshot describes a state THIS reply
-# never judged: the gate releases against it and then immediately re-blocks
-# with "the code changed after it" on work that was in fact reviewed.
-rm -rf "$SD"
-run sfp >/dev/null 2>&1
-[[ -s "$SD/sfp.dispatch-fp" ]] && ok "a normal dispatch records its snapshot" || bad "no snapshot from a normal dispatch"
-FPGIT="$T/fpfail-git"; mkdir -p "$FPGIT"
-{ echo '#!/usr/bin/env bash'
-  echo 'for a in "$@"; do [ "$a" = "write-tree" ] && exit 128; done'
-  echo "exec \"$(command -v git)\" \"\$@\""
-} > "$FPGIT/git"
-chmod +x "$FPGIT/git"
-PATH="$FPGIT:$PATH" run sfp >/dev/null 2>&1
-[[ ! -e "$SD/sfp.dispatch-fp" ]] && ok "a dispatch with no computable snapshot leaves none behind" || bad "stale snapshot survived: $(cat "$SD/sfp.dispatch-fp")"
-rm -rf "$FPGIT" "$SD"
 
 echo "== every function a trap calls is defined before the trap is installed =="
 # A trap installed above its handler is a live grenade: a signal arriving in
 # between runs `abort_dispatch: command not found`, errexit fires on the 127 and
 # the rest of the handler — cleanup, the lease release, exit 143 — never runs.
-# The window covered lease acquisition and the pre-dispatch fingerprint, which
-# is exactly where a caller timeout lands. Structural, because the window
-# cannot be hit deterministically from outside.
+# Structural, because the install window cannot be hit deterministically.
 TRAP_LINE="$(grep -n "^trap '" "$DRIVER" | head -1 | cut -d: -f1)"
 for fn in abort_dispatch cleanup; do
   DEF_LINE="$(grep -n "^$fn() {" "$DRIVER" | head -1 | cut -d: -f1)"
@@ -680,8 +652,8 @@ i=0; while [ ! -f "$SD/stub1.active" ] && [ $i -lt 60 ]; do sleep 0.1; i=$((i+1)
 # The DRIVER's pid from the lease, not $!: `( … ) &` makes $! the subshell, and
 # signalling that leaves the driver untouched.
 DRVPID="$(cat "$SD/stub1.active" 2>/dev/null | tr -cd '0-9')"
-# The child starts a moment after the lease, once the pre-dispatch fingerprint
-# is done. Wait for its own announcement, not for the process table.
+# The child starts a moment after the lease. Wait for its own announcement,
+# not for the process table.
 i=0; CPID=""
 while [ -z "$CPID" ] && [ $i -lt 100 ]; do
   CPID="$(cat "$STUBBORN/ready" 2>/dev/null | tr -cd '0-9')"
@@ -717,23 +689,6 @@ WOUT="$(cd "$REPO" && CC_DETACH_WATCH_TIMEOUT=4 bash "$(dirname "$DRIVER")/detac
 printf '%s' "$WOUT" | grep -q '^DONE' && bad "watcher printed DONE for a killed dispatch" || ok "and says FAILED instead"
 pkill -f "$SLOWBIN3/codex" 2>/dev/null
 rm -rf "$SLOWBIN3" "$SD"
-
-echo "== dispatch-fp is written on SUCCESS, and scoped for the plan gate =="
-rm -rf "$SD"
-FAKE_CODEX_EXIT=3 run dfp || true
-[[ ! -e "$SD/dfp.dispatch-fp" ]] && ok "a failed dispatch writes no fingerprint" || bad "failed dispatch left a dispatch-fp"
-run dfp
-[[ -s "$SD/dfp.dispatch-fp" ]] && ok "a successful dispatch records one" || bad "no dispatch-fp after success"
-[[ ! -e "$SD/dfp.dispatch-fp-plan" ]] && ok "no plan snapshot for an unrelated thread" || bad "plan snapshot written for a non-plan thread"
-# The plan gate had no dispatch-time state at all, so it re-baselined to
-# whatever the worktree held at turn-end — marking plan edits made after the
-# dispatch as reviewed.
-mkdir -p "$SD"; printf 'branch=main\nthread=plan-x\n' > "$SD/autoplan.armed"
-run plan-x
-[[ -s "$SD/plan-x.dispatch-fp-plan" ]] && ok "the armed plan thread gets a plan-scoped snapshot" || bad "no plan-scoped snapshot for the armed plan thread"
-[[ "$(cat "$SD/plan-x.dispatch-fp-plan")" != "$(cat "$SD/plan-x.dispatch-fp")" ]] \
-  && ok "and it differs from the whole-tree one" || bad "plan snapshot equals the whole-tree snapshot"
-rm -f "$SD/autoplan.armed"
 
 echo "== --topic labels only a thread it CREATES =="
 # Documented as creation-only. Writing it whenever the sidecar was absent also
@@ -867,21 +822,6 @@ grep -qi 'timed out' "$T/err" && bad "false timeout reported for a fast child" |
 i=0; while ! grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
 grep -q FAKE_REPLY "$SD/d5.log" 2>/dev/null && ok "fast child: reply landed" || bad "fast child: no reply"
 
-echo "== detach + concurrent cleanup: live lease shields an old-mtime thread =="
-CLEANUP="$(dirname "$DRIVER")/cleanup.sh"
-rm -rf "$SD"
-FAKE_CODEX_SLEEP=3 run d6 --detach
-[[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "detach parent returned for the race test" || bad "race-test detach rc=$RC out=$OUT err=$(cat "$T/err")"
-# The child sleeps inside the stub having written NOTHING but its lease and the
-# sidecar. Age every member so only lease liveness — not mtime — protects it.
-touch -t 202001010000 "$SD"/d6.* 2>/dev/null
-CLEANOUT="$(bash "$CLEANUP" --older-than 1 --apply 2>&1)"; CRC=$?
-[[ "$CRC" -eq 0 ]] && grep -q 'IN USE  d6' <<<"$CLEANOUT" && ok "concurrent cleanup skipped the in-flight thread" || bad "cleanup race (rc=$CRC out=$CLEANOUT)"
-[[ -f "$SD/d6.active" ]] && ok "lease untouched by concurrent cleanup" || bad "cleanup removed the live lease"
-i=0; while ! grep -q FAKE_REPLY "$SD/d6.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
-grep -q FAKE_REPLY "$SD/d6.log" 2>/dev/null && ok "dispatch completed intact after concurrent cleanup" || bad "dispatch broken by concurrent cleanup ($(cat "$SD/d6.detach-output" 2>/dev/null))"
-[[ "$(cat "$SD/d6.rounds" 2>/dev/null)" == "1" ]] && ok "rounds bumped exactly once despite the race" || bad "rounds after race: $(cat "$SD/d6.rounds" 2>/dev/null)"
-
 echo "== detach: first-ever detach in a fresh repo (no state dir at all) =="
 REPO2="$T/repo2"
 mkdir -p "$REPO2" && cd "$REPO2"
@@ -956,8 +896,8 @@ echo "== busy --new: refused BEFORE any state reset (sidecars byte-for-byte inta
 rm -rf "$SD"; mkdir -p "$SD"
 printf '%s' "$UUID" > "$SD/n1.id"
 echo "3" > "$SD/n1.rounds"
-printf '{"finding":1}\n' > "$SD/n1.findings.jsonl"
-printf 'scope-pin\n' > "$SD/n1.scope"
+printf 'candidate\n' > "$SD/n1.candidate"
+printf 'state\n' > "$SD/n1.review-state"
 printf 'approved-sha\n' > "$SD/n1.approved"
 mkdir -p "$T/n1snap"; cp "$SD"/n1.* "$T/n1snap/"
 sleep 30 & NL=$!
@@ -965,7 +905,7 @@ printf '%s' "$NL" > "$SD/n1.active"
 run n1 --new
 [[ "$RC" -eq 10 ]] && ok "busy --new -> exit 10" || bad "busy --new rc=$RC err=$(cat "$T/err")"
 same=true
-for f in n1.id n1.rounds n1.findings.jsonl n1.scope n1.approved; do
+for f in n1.id n1.rounds n1.candidate n1.review-state n1.approved; do
   cmp -s "$SD/$f" "$T/n1snap/$f" || { same=false; bad "sidecar changed by the refused --new: $f"; }
 done
 $same && ok "every sidecar byte-for-byte unchanged"
@@ -973,7 +913,7 @@ run n1 --reset-only
 [[ "$RC" -eq 10 ]] && ok "busy reset-only loses before deleting state" \
   || bad "busy reset-only rc=$RC err=$(cat "$T/err")"
 same=true
-for f in n1.id n1.rounds n1.findings.jsonl n1.scope n1.approved; do
+for f in n1.id n1.rounds n1.candidate n1.review-state n1.approved; do
   cmp -s "$SD/$f" "$T/n1snap/$f" || { same=false; bad "sidecar changed by refused reset-only: $f"; }
 done
 $same && ok "reset-only race leaves every sidecar byte-for-byte intact"
@@ -1437,15 +1377,6 @@ grep -qi 'ignor\|invalid\|discard' "$SD/p7.detach-stderr" 2>/dev/null \
 WOUT="$(bash "$WATCH" p7 "$DP7" "$OFF7" 2>&1)"; WRC=$?
 { [[ "$WRC" -eq 0 ]] && grep -q 'worker warnings' <<<"$WOUT"; } \
   && ok "watcher DONE output includes the worker warnings" || bad "warnings not delivered rc=$WRC out=$WOUT"
-
-echo "== cleanup: detach-status + detach-stderr move with their orphan unit =="
-CLEANUP2="${DRIVER%codex-thread.sh}cleanup.sh"   # suite cwd is inside the fixture repo — derive from DRIVER, not $0
-rm -rf "$SD"; mkdir -p "$SD"
-echo l > "$SD/oc1.log"; printf 'pid=1\nrc=0\n' > "$SD/oc1.detach-status"; echo w > "$SD/oc1.detach-stderr"
-OUT="$(bash "$CLEANUP2" --apply 2>&1)"; RC=$?
-ARCH="$(ls -td "$SD"/.archive-* 2>/dev/null | head -1)"
-{ [[ ! -e "$SD/oc1.detach-status" && ! -e "$SD/oc1.detach-stderr" && -f "$ARCH/oc1.detach-status" && -f "$ARCH/oc1.detach-stderr" ]]; } \
-  && ok "orphan unit carried both detach sidecar files" || bad "detach files left behind: $(ls "$SD" 2>/dev/null)"
 
 echo "== pre-lease loser: previous launch's canonical stderr labeled UNATTRIBUTED =="
 # The exit-10 loser never owned the canonical sidecars; a leftover warning

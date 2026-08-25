@@ -18,24 +18,24 @@ compatibility layers are removed rather than translated.
 
 ## Work
 
-- [ ] Bind resumable sessions to one worktree and reject cross-worktree reuse.
-- [ ] Route both strict and informational verdict reads through one parser.
-- [ ] Remove the findings ledger, disposition commands and `--continue` state.
-- [ ] Remove `/autoplan`, `/autoreview`, the Stop hook and their gate runtime.
-- [ ] Remove `/cleanup` and permanent pre-0.5/pre-0.9 migration code.
-- [ ] Scope command and model-invoked skill Bash permissions to plugin scripts.
-- [ ] Collapse the overlapping second-opinion trigger into `codex-triage` and
+- [x] Bind resumable sessions to one worktree and reject cross-worktree reuse.
+- [x] Route both strict and informational verdict reads through one parser.
+- [x] Remove the findings ledger, disposition commands and `--continue` state.
+- [x] Remove `/autoplan`, `/autoreview`, the Stop hook and their gate runtime.
+- [x] Remove `/cleanup` and permanent pre-0.5/pre-0.9 migration code.
+- [x] Scope command and model-invoked skill Bash permissions to plugin scripts.
+- [x] Collapse the overlapping second-opinion trigger into `codex-triage` and
       trim the skill and lens reference to behavior the model needs.
-- [ ] Reclassify scenario files as historical evidence and remove stale claims.
-- [ ] Update manifests, READMEs, changelog and tests to the smaller surface.
+- [x] Reclassify scenario files as historical evidence and remove stale claims.
+- [x] Update manifests, READMEs, changelog and tests to the smaller surface.
 
 ## Verification
 
-- Product-route regression for reply framing through the production verdict
+- [x] Product-route regression for reply framing through the production verdict
   parser.
-- Product-route regression that rejects cross-worktree resume.
-- Focused driver, required-review and manifest suites.
-- Full repository suite, `bash -n`, `git diff --check`, and residue searches for
+- [x] Product-route regression that rejects cross-worktree resume.
+- [x] Focused driver, required-review and manifest suites.
+- [x] Full repository suite, `bash -n`, `git diff --check`, and residue searches for
   removed commands, hooks, migrations and state files.
 
 Done when the retained named-thread and required-review flows are green, the

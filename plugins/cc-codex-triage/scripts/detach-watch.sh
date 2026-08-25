@@ -20,7 +20,7 @@
 #
 # CC_WATCH_PORCELAIN=1 switches to the MACHINE contract, for a caller that
 # forwards this output as the driver's own (dispatch.sh): stdout byte-identical
-# to the reply (the DONE: banner breaks `/review --json`), and the WORKER's exit
+# to the reply (callers may consume stdout verbatim), and the WORKER's exit
 # status so 3/4/5 survive instead of collapsing into 1. The watcher's own two
 # outcomes take 20 (timeout/handoff, worker alive) and 21 (unconfirmed).
 #

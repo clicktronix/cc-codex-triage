@@ -27,22 +27,13 @@
 #                           immediately. Needs `setsid` or `python3` on PATH.
 #                           Mutually exclusive with --oneshot.
 #
-# Storage (under the repository common Git directory, resolved by state-dir.sh):
+# Storage (under the current worktree Git directory, resolved by state-dir.sh):
 #   <thread>.id               UUID of the active session.
 #   <thread>.log              append-only audit log (rotated at ~1 MB to .log.1).
 #   <thread>.rounds           successful-dispatch counter (reset by --new).
-#   <thread>.dispatch-fp      code state this thread was last dispatched
-#   <thread>.dispatch-fp-plan against, whole-tree and (for the armed plan
-#                             thread) plan-scoped. Captured BEFORE codex runs.
-#                             Also stamped into that dispatch's log header as
-#                             fp= / fp-plan=, which is what lets a verdict be
-#                             matched to the state it judged; the sidecars are
-#                             the fallback for records written before that.
 #   <thread>.last-abort       written when a signal kills a dispatch before it
 #                             replies (usually a caller timeout). Cleared by the
-#                             next successful dispatch. NOT in .log: autoplan
-#                             releases on log growth, so an abort recorded there
-#                             would release a plan gate with nothing behind it.
+#                             next successful dispatch.
 #   <thread>.topic            one-line label of what the thread is about, set
 #                             by --topic on the dispatch that creates it and
 #                             never overwritten after (cleared by --new). Read
@@ -51,8 +42,6 @@
 #   <thread>.last-error.jsonl raw Codex JSONL from the most recent failure
 #                             (removed on the next successful dispatch; every
 #                             write is capped to the LAST 64 KB of the stream).
-#   <thread>.findings.jsonl   /review's findings ledger (per-task; reset by --new).
-#   <thread>.scope            /review's pinned scope (per-task; reset by --new).
 #   <thread>.candidate        exact clean candidate captured by required /review.
 #   <thread>.review-state     latest machine-readable review/gate result.
 #   <thread>.approved         last gate-eligible exact-candidate APPROVE.
@@ -265,7 +254,7 @@ if ! $ONESHOT; then
   # before any check could produce the diagnostic below.
   if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
     echo "not inside a git repository (candidate: ${CLAUDE_PROJECT_DIR:-$PWD})." >&2
-    echo "Persistent threads anchor their state to the repository common Git directory. Fix one of:" >&2
+    echo "Persistent threads anchor their state to the current worktree Git directory. Fix one of:" >&2
     echo "  - cd into the target repository," >&2
     echo "  - point CLAUDE_PROJECT_DIR at (or inside) a git repository," >&2
     echo "  - or use --oneshot for a state-less dispatch." >&2
@@ -298,7 +287,6 @@ if $ONESHOT; then
   STATE_DIR="${TMPDIR:-/tmp}/cc-codex-triage-oneshot-state"
 else
   STATE_DIR="$(bash "$SELF_DIR/state-dir.sh")" || exit $?
-  if $RESET_ONLY; then GATE_DIR=""; else GATE_DIR="$(bash "$SELF_DIR/gate-dir.sh")" || exit $?; fi
 fi
 # Create the state dir only for persistent modes. --oneshot leaves no trace in
 # the repo, so it must not even create an empty directory; its failure diag goes
@@ -306,10 +294,6 @@ fi
 ID_FILE="$STATE_DIR/${THREAD}.id"
 LOG_FILE="$STATE_DIR/${THREAD}.log"
 ROUNDS_FILE="$STATE_DIR/${THREAD}.rounds"
-# Per-task sidecars written by /review (the model), not by this driver. Listed
-# here so --new can reset them with the rest of the thread's state.
-FINDINGS_FILE="$STATE_DIR/${THREAD}.findings.jsonl"
-SCOPE_FILE="$STATE_DIR/${THREAD}.scope"
 LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
@@ -482,7 +466,7 @@ lease_busy_pid() {
 #   poll READY.
 # The launcher acquires NO lease — only the re-exec'd child (the invocation
 # that actually dispatches) does, and the child reports its PID into READY
-# only AFTER its lease is held, so a DETACHED report can never race /cleanup.
+# only AFTER its lease is held, so a DETACHED report always names an owner.
 # The parent OWNS the READY file (the child never deletes it — a child
 # finishing faster than one poll interval must not cause a false timeout);
 # the child's cleanup owns the prompt tmpfile.
@@ -717,8 +701,7 @@ JSONL_FILE="${OUT_FILE}.jsonl"
 # reaching this line, so the two can never collide.)
 DETACH_CHILD=false
 # A signal-killed dispatch otherwise leaves no trace at all: the driver logs
-# only on success. SIDECAR, never <thread>.log — autoplan releases on log growth,
-# so an abort recorded there would satisfy a plan gate with nothing behind it.
+# only on success, so record the abort in a sidecar.
 abort_dispatch() { # $1=signal name
   # REAP the child before returning: cleanup releases the lease straight after,
   # and a codex that delays or ignores TERM would then keep running — paid, and
@@ -751,12 +734,6 @@ abort_dispatch() { # $1=signal name
       "dispatch killed before a reply; the thread is intact - resume it, and use --detach for anything that may outlive the caller timeout" \
       > "$STATE_DIR/${THREAD}.last-abort" 2>/dev/null || true
   fi
-}
-
-# Which thread the plan gate watches, if any — the plan sidecar belongs to that
-# thread alone, so an unrelated dispatch must not clear it.
-raw_plan_thread() {
-  sed -n 's/^thread=//p' "$GATE_DIR/autoplan.armed" 2>/dev/null | head -1
 }
 
 cleanup() {
@@ -832,9 +809,8 @@ else
 fi
 
 # ── active lease ──────────────────────────────────────────────────────────
-# In-flight marker for /cleanup: while this file names a live PID, the thread
-# is mid-dispatch and must not be archived (a resume waiting inside
-# `codex exec` writes nothing else until it returns). Acquired BEFORE any
+# In-flight marker: while this file names a live PID, the thread is
+# mid-dispatch. Acquired BEFORE any
 # existing-thread mutation below (--new's sidecar reset, the invalid-ID
 # discard): a busy thread must be refused with its state byte-for-byte
 # intact. cleanup() removes the lease on exit only while this PID owns it.
@@ -886,8 +862,8 @@ if ! $ONESHOT; then
   # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
   # faster of two overlapping dispatches remove the lease on exit (ownership
   # check passes for the overwriter) while the slower one still runs —
-  # /cleanup would then see an idle thread mid-dispatch. It would also resume
-  # the same codex session from two processes at once. Refuse instead; a
+  # another caller could then see an idle thread mid-dispatch and resume the
+  # same Codex session from two processes at once. Refuse instead; a
   # dead/malformed lease is stale state and is overwritten as before.
   if BUSY_PID="$(lease_busy_pid)"; then
     echo "thread $THREAD is busy (active dispatch pid=$BUSY_PID) — wait for it or use a different --thread" >&2
@@ -939,14 +915,11 @@ fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW || $RESET_ONLY; then
-  # Reset the per-task sidecars too, so a reused thread name does not inherit
-  # the previous task's findings ledger / scope / approval baseline. Runs
-  # while HOLDING the lease — a busy thread was refused above with every
-  # sidecar intact.
+  # Reset required-review state while holding the dispatch lease.
   # last-abort belongs to the incarnation being discarded.
   CC_CODEX_REVIEW_RESET_LEASE_PID="$$" \
     bash "$SELF_DIR/review-state.sh" reset "$THREAD" >/dev/null || exit $?
-  rm -f "$ID_FILE" "$ROUNDS_FILE" "$FINDINGS_FILE" "$SCOPE_FILE" \
+  rm -f "$ID_FILE" "$ROUNDS_FILE" \
         "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
   if $RESET_ONLY; then
     echo "RESET thread $THREAD"
@@ -954,12 +927,12 @@ if $FORCE_NEW || $RESET_ONLY; then
   fi
 fi
 
-# Porcelain status with our own state dir filtered out — its .id/.log churn is
-# not a "tracked-file mutation" and would otherwise false-positive the guard.
+# Porcelain status for the candidate worktree. Runtime state lives below the
+# worktree's Git directory, so it cannot dirty this result.
 porcelain() {
   [[ -n "$REPO_ROOT" ]] || return 0
   # -uall lists untracked files individually; without it git collapses a new
-  # untracked dir to "?? .claude/" and our own state writes leak past the filter.
+  # untracked dir to one aggregate line and hide a candidate mutation.
   local out
   if ! out="$(git -C "$REPO_ROOT" status --porcelain -uall 2>/dev/null)"; then
     # A transient git failure (e.g. another process holding index.lock) must
@@ -969,7 +942,7 @@ porcelain() {
     echo "__PORCELAIN_UNAVAILABLE__"
     return 0
   fi
-  printf '%s\n' "$out" | grep -vF '.claude/codex-threads/' || true
+  printf '%s\n' "$out"
 }
 
 # ── tracked-file mutation guard (pre) ─────────────────────────────────────
@@ -998,30 +971,12 @@ fi
 # A --detach launcher handed us --detach-child and is polling that file for our
 # PID. Written only AFTER the lease is held (acquired above, before any
 # thread-state mutation) and every preflight passed, so a DETACHED report
-# proves /cleanup already sees this thread as in-use. The parent owns the
+# proves this dispatch already owns the thread. The parent owns the
 # READY file and removes it — NEVER delete it here.
 if ! $ONESHOT && [[ -n "$DETACH_READY_FILE" ]]; then
   # (The canonical sidecar boundary + status slate were established right
   # after lease acquisition, above — here we only publish the PID.)
   printf '%s' "$$" > "$DETACH_READY_FILE"
-fi
-
-# ── code state at dispatch time ───────────────────────────────────────────
-# Captured BEFORE codex runs and held in memory, because that is the state Codex
-# is about to look at; a snapshot taken afterwards also admits whatever changed
-# while it ran. Written out only on success — into the log record of THIS
-# dispatch, so a verdict can be matched to the state that earned it, and into
-# the sidecars, which /status and older readers still use.
-PRE_FP=""; PRE_FP_PLAN=""
-if ! $ONESHOT && [[ -n "$REPO_ROOT" ]]; then
-  _fpsh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/gate-fingerprint.sh"
-  [[ -f "$_fpsh" ]] || _fpsh="${CLAUDE_PLUGIN_ROOT:-}/scripts/gate-fingerprint.sh"
-  if [[ -f "$_fpsh" ]]; then
-    PRE_FP="$( cd "$REPO_ROOT" && bash "$_fpsh" 2>/dev/null || true )"
-    if [[ "$(sed -n 's/^thread=//p' "$GATE_DIR/autoplan.armed" 2>/dev/null | head -1)" == "$THREAD" ]]; then
-      PRE_FP_PLAN="$( cd "$REPO_ROOT" && bash "$_fpsh" --plan 2>/dev/null || true )"
-    fi
-  fi
 fi
 
 # ── interruptible dispatch ────────────────────────────────────────────────
@@ -1160,22 +1115,6 @@ if ! $ONESHOT; then
       _tl="$(printf '%s' "$TOPIC" | tr -d '\n\r\t')"
       printf '%s\n' "${_tl:0:120}" > "$STATE_DIR/${THREAD}.topic" 2>/dev/null || true
     fi
-    # Sidecars keep the pre-dispatch snapshots for /status and for readers of
-    # logs written before the header carried them.
-    # A fingerprint that could not be computed must REMOVE the sidecar, not skip
-    # the write: left in place it describes an older dispatch, and the gate then
-    # attributes this reply to a state it never judged — releasing, then
-    # immediately re-blocking, on work that was in fact reviewed.
-    if [[ -n "$PRE_FP" ]]; then
-      printf '%s\n' "$PRE_FP" > "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
-    else
-      rm -f "$STATE_DIR/${THREAD}.dispatch-fp" 2>/dev/null || true
-    fi
-    if [[ -n "$PRE_FP_PLAN" ]]; then
-      printf '%s\n' "$PRE_FP_PLAN" > "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
-    elif [[ "$(raw_plan_thread)" == "$THREAD" ]]; then
-      rm -f "$STATE_DIR/${THREAD}.dispatch-fp-plan" 2>/dev/null || true
-    fi
   fi
 
   # Rotate BEFORE appending so the newest entry always lands in the current
@@ -1189,9 +1128,10 @@ if ! $ONESHOT; then
     LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
     if [[ -n "$LOG_SIZE" && "$LOG_SIZE" -gt "$LOG_CAP_BYTES" ]]; then
       mv -f "$LOG_FILE" "${LOG_FILE}.1"
-      # Bump the generation so a gate can tell rotation from "the log shrank".
+      # Bump the generation so a review record can tell rotation from
+      # "the log shrank".
       # Its cut is a byte offset into the PREVIOUS log; after rotation every
-      # byte here is newer than that cut, so the gate parses from 0 instead of
+      # byte here is newer than that cut, so the recorder parses from 0 instead of
       # from an offset that now points into unrelated content.
       # No pipeline: `cat` on a missing file fails, and under `pipefail` that
       # took the whole driver down with it AFTER a paid dispatch. The grammar is
@@ -1208,20 +1148,18 @@ if ! $ONESHOT; then
       fi
     fi
   fi
-  # Log format contract: the column-0 markers ([timestamp], PROMPT:, REPLY:,
-  # ---) are load-bearing — the Stop hook's verdict parser uses them to read
-  # verdicts from REPLY sections ONLY (a verdict literal inside a logged
-  # PROMPT must never release the autoreview gate). Body lines are always
-  # indented two spaces, so prompt/reply content cannot fake a marker.
+  # Log format contract: column-0 markers ([timestamp], PROMPT:, REPLY:, ---)
+  # let the verdict parser read REPLY sections only. Body lines are indented so
+  # prompt/reply content cannot fake a marker.
   {
-    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND${PRE_FP:+ fp=$PRE_FP}${PRE_FP_PLAN:+ fp-plan=$PRE_FP_PLAN}"
+    echo "[$(date -u +%FT%TZ)] mode=$MODE thread=$THREAD round=$ROUND"
     echo "PROMPT:"; sed 's/^/  /' <<< "$PROMPT"
     # awk, not `sed 's/^/  /'`: a reply that does not end in a newline leaves BSD sed's last line
     # unterminated, so the `---` below lands ON the reply's final line. When that line is the verdict,
-    # the log ends `  APPROVE---` and the required-review gate reads no verdict at all — an APPROVE
+    # the log ends `  APPROVE---` and required review reads no verdict at all — an APPROVE
     # that cannot be attributed to a machine. Whether Codex terminates its reply VARIES between rounds:
     # one thread log carries `  APPROVE---` at line 306 and a clean `  APPROVE` at line 388. So the
-    # gate was not broken, it was intermittent, which is worse to diagnose from a failure report.
+    # parser failure was intermittent, which is worse to diagnose from a failure report.
     # awk's `print` always emits ORS, and adds nothing when the input was already terminated.
     echo "REPLY:"; awk '{ print "  " $0 }' "$OUT_FILE"
     echo "---"

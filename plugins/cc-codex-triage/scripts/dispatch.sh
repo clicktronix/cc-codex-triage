@@ -3,8 +3,8 @@
 #
 # usage: dispatch.sh <thread> [driver flags...]   (prompt on stdin)
 #
-# Same contract as codex-thread.sh: prompt in, reply on stdout and nothing else
-# (`/review --json` pipes it into `jq`), status on stderr, driver exit codes.
+# Same contract as codex-thread.sh: prompt in, reply on stdout and nothing else,
+# status on stderr, driver exit codes.
 # The two outcomes that are this wrapper's own take codes outside the driver's
 # range — 20 handoff (worker STILL RUNNING), 21 outcome unconfirmed — since
 # reusing 3 ("codex exec failed") would make a live dispatch look like a dead one.

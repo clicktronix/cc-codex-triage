@@ -2,26 +2,23 @@
 # Machine-readable required-review state bound to an exact clean Git candidate.
 #
 # begin <thread> --base <ref> --spec <repo-relative-path> --cap N
-#                                capture clean HEAD/tree/content fingerprint
+#                                capture a clean HEAD/tree candidate
 # record <thread> <foreground|background> [claim-token]
 #                                record the latest post-begin verdict; only an
 #                                unchanged foreground APPROVE is gate-eligible
 # abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token>
 #                                release a pending round after no dispatch result
-# stop <thread> <cap|divergence> [claim-token]
-#                                record a hard stop (never an approval)
 # check <thread>                 verify APPROVE still covers current HEAD/tree
 # reset <thread>                 clear terminal/review state when no dispatch is live
 set -u
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_HELPER="$SELF_DIR/state-dir.sh"
-FP_HELPER="$SELF_DIR/gate-fingerprint.sh"
-VERDICT_HELPER="$SELF_DIR/last-verdict.sh"
+VERDICT_HELPER="$SELF_DIR/verdict.sh"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
 
 usage() {
-  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> --cap N | advisory-check <thread> | record <thread> <foreground|background> [claim-token] | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | stop <thread> <cap|divergence> [claim-token] | check <thread> | reset <thread>" >&2
+  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> --cap N | advisory-check <thread> | record <thread> <foreground|background> [claim-token] | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | reset <thread>" >&2
   exit 1
 }
 die() { _code="$1"; shift; echo "$*" >&2; exit "$_code"; }
@@ -214,64 +211,13 @@ assert_no_live_dispatch() {
 timestamp() { date -u +%FT%TZ; }
 head_sha() { git rev-parse --verify HEAD 2>/dev/null; }
 tree_sha() { git rev-parse --verify 'HEAD^{tree}' 2>/dev/null; }
-fingerprint() { bash "$FP_HELPER"; }
 round_now() {
   bash "$ROUND_HELPER" "$STATE_DIR/$THREAD.rounds" \
     || die 7 "cannot read required-review round counter"
 }
 clean_candidate() {
-  # Legacy state is metadata, not candidate code. Shared state already lives
-  # under the common Git directory and is therefore absent from git status.
-  _tracked="$(git ls-files -- '.claude/codex-threads' 2>/dev/null || printf '__inspection_failed__\n')"
-  [ -z "$_tracked" ] || return 1
-  _status="$(git status --porcelain -uall --ignore-submodules=none 2>/dev/null)" \
-    || return 1
-  _dirty="$(printf '%s\n' "$_status" \
-    | grep -vE '^.. \.claude/codex-threads(/|$)' || true)"
-  [ -z "$_dirty" ]
-}
-strict_required_verdict() {
-  awk '
-    /^REPLY:/ { reply=1; next }
-    /^(PROMPT:|---$)/ { reply=0; next }
-    !reply { next }
-    {
-      # Driver framing adds exactly two spaces. Remove only those; any further
-      # indentation or Markdown decoration is part of Codex output and cannot
-      # become a machine verdict.
-      if (substr($0, 1, 2) != "  ") { last="OTHER"; next }
-      line=substr($0, 3)
-      if (line == "") next
-
-      probe=line; spaces=0
-      while (substr(probe, 1, 1) == " " && spaces < 4) {
-        probe=substr(probe, 2); spaces++
-      }
-      marker=substr(probe, 1, 1); marker_len=0
-      if (spaces <= 3 && (marker == "`" || marker == "~")) {
-        while (substr(probe, marker_len + 1, 1) == marker) marker_len++
-      }
-      if (marker_len >= 3) {
-        last="OTHER"
-        rest=substr(probe, marker_len + 1)
-        if (fence_char == "") {
-          if (!(marker == "`" && index(rest, "`") > 0)) {
-            fence_char=marker; fence_len=marker_len
-          }
-        } else if (marker == fence_char && marker_len >= fence_len && rest ~ /^[ ]*$/) {
-          fence_char=""; fence_len=0
-        }
-        next
-      }
-      if (fence_char != "") { last="OTHER"; next }
-      last=line
-      if (line == "APPROVE" || line == "REQUEST_CHANGES") { verdict=line; count++ }
-    }
-    END {
-      if (fence_char == "" && count == 1 && last == verdict) print verdict
-      else exit 1
-    }
-  ' "$1"
+  _status="$(git status --porcelain -uall --ignore-submodules=none 2>/dev/null)" || return 1
+  [ -z "$_status" ]
 }
 prompt_scope_exact() {
   awk -v base="$2" -v head="$3" -v spec="$4" '
@@ -295,12 +241,12 @@ prompt_scope_exact() {
     }
   ' "$1"
 }
-write_state() { # status verdict eligible mode head tree fp round reason
+write_state() { # status verdict eligible mode head tree round reason
   _base="$(field "$CANDIDATE" base_sha)"; _spec="$(field "$CANDIDATE" spec_path)"
   _cap="$(field "$CANDIDATE" cap)"; _start="$(field "$CANDIDATE" loop_start_round)"
-  _claim="$(field "$CANDIDATE" claim_token)"; _expires="$(field "$CANDIDATE" claim_expires_at)"
-  printf 'version=1\nstatus=%s\nverdict=%s\ngate_eligible=%s\nmode=%s\nhead=%s\ntree=%s\nfingerprint=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nclaim_token=%s\nclaim_expires_at=%s\nround=%s\nreason=%s\ntimestamp=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$_base" "$_spec" "$_cap" "$_start" "$_claim" "$_expires" "$8" "$9" "$(timestamp)" \
+  _claim="$(field "$CANDIDATE" claim_token)"
+  printf 'version=2\nstatus=%s\nverdict=%s\ngate_eligible=%s\nmode=%s\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nclaim_token=%s\nround=%s\nreason=%s\ntimestamp=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$_base" "$_spec" "$_cap" "$_start" "$_claim" "$7" "$8" "$(timestamp)" \
     | atomic_write "$REVIEW_STATE"
 }
 write_loop_state() { # base spec cap start attempts
@@ -356,12 +302,11 @@ case "$VERB" in
     git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
       || { echo "review base is not an ancestor of candidate HEAD: $BASE_SHA" >&2; exit 1; }
     TREE_SHA="$(tree_sha)" || exit 13
-    FP="$(fingerprint)"; [ -n "$FP" ] || { echo "cannot fingerprint candidate" >&2; exit 13; }
     CURRENT_ROUND="$(round_now)"
     LAST_STATUS="$(field "$REVIEW_STATE" status)"
     case "$LAST_STATUS" in
       PENDING) die 10 "PENDING: finish or abort the claimed review round before begin" ;;
-      CAP_REACHED|DIVERGED)
+      CAP_REACHED)
         [ -f "$CANDIDATE" ] \
           && die 10 "$LAST_STATUS: reset the thread before starting another required review"
         ;;
@@ -396,29 +341,28 @@ case "$VERB" in
       || { echo "invalid required review attempt state" >&2; exit 1; }
     if [ "$ATTEMPTS" -ge "$CAP" ]; then
       [ -f "$CANDIDATE" ] \
-        && write_state CAP_REACHED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$FP" "$CURRENT_ROUND" cap >/dev/null
+        && write_state CAP_REACHED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
       die 10 "CAP_REACHED: required review already claimed $CAP attempt(s)"
     fi
     ATTEMPT=$((ATTEMPTS + 1))
     write_loop_state "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" || exit 1
-    # Deterministic race seam for the cleanup regression: begin still owns the
+    # Deterministic race seam for concurrency tests: begin still owns the
     # review mutex here, before candidate/PENDING publication becomes coherent.
     [ -n "${CC_REVIEW_STATE_TEST_AFTER_LOOP_HOOK:-}" ] \
       && . "$CC_REVIEW_STATE_TEST_AFTER_LOOP_HOOK"
     CLAIMED_AT="$(date +%s 2>/dev/null)"
     case "$CLAIMED_AT" in ''|*[!0-9]*) die 7 "cannot timestamp required-review claim" ;; esac
-    CLAIM_EXPIRES_AT=$((CLAIMED_AT + 3600))
-    CLAIM_TOKEN="$(printf '%s\n' "$ROOT" "$THREAD" "$HEAD_SHA" "$FP" "$ATTEMPT" "$$" "$CLAIMED_AT" \
+    CLAIM_TOKEN="$(printf '%s\n' "$ROOT" "$THREAD" "$HEAD_SHA" "$TREE_SHA" "$ATTEMPT" "$$" "$CLAIMED_AT" \
       | git hash-object --stdin 2>/dev/null)"
     [ -n "$CLAIM_TOKEN" ] || die 7 "cannot create required-review claim token"
     LOG_BYTES="$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' ')"; LOG_BYTES="${LOG_BYTES:-0}"
     LOG_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || LOG_GEN=""
     valid_decimal "$LOG_GEN" 9 || LOG_GEN=0
-    printf 'version=1\nhead=%s\ntree=%s\nfingerprint=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nclaim_expires_at=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\ntimestamp=%s\n' \
-      "$HEAD_SHA" "$TREE_SHA" "$FP" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CLAIM_EXPIRES_AT" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$(timestamp)" \
+    printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\ntimestamp=%s\n' \
+      "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$(timestamp)" \
       | atomic_write "$CANDIDATE" || exit 1
-    write_state PENDING NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$FP" "$(round_now)" awaiting_verdict || exit 1
-    echo "PENDING head=$HEAD_SHA tree=$TREE_SHA fingerprint=$FP claim=$CLAIM_TOKEN attempt=$ATTEMPT/$CAP"
+    write_state PENDING NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" awaiting_verdict || exit 1
+    echo "PENDING head=$HEAD_SHA tree=$TREE_SHA claim=$CLAIM_TOKEN attempt=$ATTEMPT/$CAP"
     ;;
 
   record)
@@ -453,25 +397,22 @@ case "$VERB" in
       seen { record=record $0 ORS }
       END { printf "%s", record }
     ' > "$RECORD_TMP"
-    VERDICT="$(strict_required_verdict "$RECORD_TMP" 2>/dev/null)"; VRC=$?
+    VERDICT="$(bash "$VERDICT_HELPER" strict "$RECORD_TMP" 2>/dev/null)"; VRC=$?
     [ "$VRC" -eq 0 ] || VERDICT=NONE
-    REVIEW_FP="$(bash "$VERDICT_HELPER" "$RECORD_TMP" 0 --fp 2>/dev/null)"; FRC=$?
-    [ "$FRC" -eq 0 ] || REVIEW_FP=""
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
-    FP="$(fingerprint)"
 
     if [ "$MODE" = background ]; then
-      write_state BACKGROUND_SINGLE_PASS "$VERDICT" false background "$HEAD_SHA" "$TREE_SHA" "$REVIEW_FP" "$(round_now)" background_never_satisfies_gate || exit 1
+      write_state BACKGROUND_SINGLE_PASS "$VERDICT" false background "$HEAD_SHA" "$TREE_SHA" "$(round_now)" background_never_satisfies_gate || exit 1
       echo "BACKGROUND_SINGLE_PASS verdict=$VERDICT gate_eligible=false"
       exit 0
     fi
 
     [ -f "$CANDIDATE" ] || {
-      write_state OBSERVED "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "$REVIEW_FP" "$(round_now)" no_required_candidate || exit 1
+      write_state OBSERVED "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" no_required_candidate || exit 1
       echo "OBSERVED verdict=$VERDICT gate_eligible=false"
       exit 0
     }
-    C_HEAD="$(field "$CANDIDATE" head)"; C_TREE="$(field "$CANDIDATE" tree)"; C_FP="$(field "$CANDIDATE" fingerprint)"
+    C_HEAD="$(field "$CANDIDATE" head)"; C_TREE="$(field "$CANDIDATE" tree)"
     C_BASE="$(field "$CANDIDATE" base_sha)"; C_SPEC="$(field "$CANDIDATE" spec_path)"
     C_CAP="$(field "$CANDIDATE" cap)"; C_ATTEMPT="$(field "$CANDIDATE" attempt)"
     LOOP_START="$(field "$CANDIDATE" loop_start_round)"; CURRENT_ROUND="$(round_now)"
@@ -490,43 +431,40 @@ case "$VERB" in
     elif ! $START_VALID; then STALE_REASON=malformed_round_state
     elif [ -z "$C_BASE" ] || [ -z "$C_SPEC" ]; then STALE_REASON=malformed_candidate_scope
     elif ! clean_candidate; then STALE_REASON=dirty_worktree
-    elif [ -z "$FP" ]; then STALE_REASON=fingerprint_unavailable
     elif [ "$HEAD_SHA" != "$C_HEAD" ]; then STALE_REASON=head_moved
     elif [ "$TREE_SHA" != "$C_TREE" ]; then STALE_REASON=tree_moved
-    elif [ "$FP" != "$C_FP" ]; then STALE_REASON=content_fingerprint_changed
-    elif [ "$REVIEW_FP" != "$C_FP" ]; then STALE_REASON=verdict_not_attributable_to_this_candidate
     elif [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ]; then STALE_REASON=round_counter_mismatch
     elif ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
       STALE_REASON=prompt_scope_mismatch
     fi
     if [ -n "$STALE_REASON" ]; then
-      write_state STALE "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "${REVIEW_FP:-unknown}" "$(round_now)" "$STALE_REASON" || exit 1
+      write_state STALE "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
       echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
       exit 11
     fi
     case "$VERDICT" in
       APPROVE)
-        write_state APPROVED APPROVE true foreground "$C_HEAD" "$C_TREE" "$C_FP" "$(round_now)" exact_candidate_approved || exit 1
+        write_state APPROVED APPROVE true foreground "$C_HEAD" "$C_TREE" "$(round_now)" exact_candidate_approved || exit 1
         atomic_write "$APPROVED" < "$REVIEW_STATE" || exit 1
-        echo "APPROVE head=$C_HEAD tree=$C_TREE fingerprint=$C_FP"
+        echo "APPROVE head=$C_HEAD tree=$C_TREE"
         ;;
       REQUEST_CHANGES)
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
-          write_state CAP_REACHED REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$C_FP" "$CURRENT_ROUND" cap || exit 1
+          write_state CAP_REACHED REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
           echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
           exit 10
         fi
-        write_state REQUEST_CHANGES REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$C_FP" "$(round_now)" blocking_findings_open || exit 1
-        echo "REQUEST_CHANGES: commit valid fixes as a new candidate, or keep the same candidate for refuted/deferred findings; then begin and review again" >&2
+        write_state REQUEST_CHANGES REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$(round_now)" blocking_findings_open || exit 1
+        echo "REQUEST_CHANGES: resolve the findings, commit a new clean candidate when code changes, then begin and review again" >&2
         exit 10
         ;;
       *)
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
-          write_state CAP_REACHED "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$C_FP" "$CURRENT_ROUND" cap || exit 1
+          write_state CAP_REACHED "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
           echo "CAP_REACHED: no approval after $C_CAP round(s)" >&2
           exit 10
         fi
-        write_state NO_DECISION "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$C_FP" "$(round_now)" no_approve_verdict || exit 1
+        write_state NO_DECISION "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$(round_now)" no_approve_verdict || exit 1
         echo "NO_DECISION: required review did not return APPROVE" >&2
         exit 10
         ;;
@@ -553,29 +491,8 @@ case "$VERB" in
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
-    FP="$(fingerprint)"
-    write_state ABORTED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$FP" "$(round_now)" "$3" || exit 1
+    write_state ABORTED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$3" || exit 1
     die 10 "ABORTED: required-review round released after $3"
-    ;;
-
-  stop)
-    { [ $# -eq 3 ] || [ $# -eq 4 ]; } || usage
-    assert_no_live_dispatch
-    REASON="$3"; case "$REASON" in cap) STATUS=CAP_REACHED ;; divergence) STATUS=DIVERGED ;; *) usage ;; esac
-    if [ -f "$CANDIDATE" ]; then
-      [ "$(field "$REVIEW_STATE" status)" = PENDING ] \
-        || die 10 "NO_PENDING_REVIEW: a hard stop cannot overwrite a completed round"
-      [ $# -eq 4 ] || die 10 "CLAIM_REQUIRED: pass the token returned by begin"
-      assert_claim "$4"
-    else
-      [ $# -eq 3 ] || usage
-      echo "ADVISORY_${STATUS}: hard stop; no required-review state was written" >&2
-      exit 10
-    fi
-    HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"; FP="$(fingerprint)"
-    write_state "$STATUS" NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$FP" "$(round_now)" "$REASON" || exit 1
-    echo "$STATUS: hard stop; no gate approval was produced" >&2
-    exit 10
     ;;
 
   check)
@@ -599,17 +516,15 @@ case "$VERB" in
       && [ "$(field "$APPROVED" claim_token)" = "$(field "$CANDIDATE" claim_token)" ] \
       && [ "$(field "$APPROVED" head)" = "$(field "$CANDIDATE" head)" ] \
       && [ "$(field "$APPROVED" tree)" = "$(field "$CANDIDATE" tree)" ] \
-      && [ "$(field "$APPROVED" fingerprint)" = "$(field "$CANDIDATE" fingerprint)" ] \
       && [ "$(field "$APPROVED" base_sha)" = "$(field "$CANDIDATE" base_sha)" ] \
       && [ "$(field "$APPROVED" spec_path)" = "$(field "$CANDIDATE" spec_path)" ] \
       || { echo "NO_APPROVAL" >&2; exit 10; }
     clean_candidate || { echo "STALE: candidate is dirty" >&2; exit 11; }
-    HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"; FP="$(fingerprint)"
+    HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
     [ "$HEAD_SHA" = "$(field "$APPROVED" head)" ] \
       && [ "$TREE_SHA" = "$(field "$APPROVED" tree)" ] \
-      && [ "$FP" = "$(field "$APPROVED" fingerprint)" ] \
       || { echo "STALE: approval belongs to another candidate" >&2; exit 11; }
-    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$HEAD_SHA tree=$TREE_SHA fingerprint=$FP base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
+    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$HEAD_SHA tree=$TREE_SHA base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
     ;;
 
   reset)

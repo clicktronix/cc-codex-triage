@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Breaking
+- Thread state is now worktree-local. Legacy `.claude/codex-threads` and
+  common-Git state are not migrated; start new threads after upgrading. This
+  prevents a resumed Codex session from reviewing the checkout where it was
+  created while its result is attributed to another worktree.
+- Removed `/autoplan`, `/autoreview`, the Stop hook, `/cleanup`, the findings
+  ledger, `--continue`, the three finding-disposition commands, and the
+  overlapping `codex-second-opinion` skill. Required review remains the only
+  delivery gate.
+- Removed the unused review-output schema, dead `DIVERGED` machine state, and
+  manually duplicated translated READMEs.
+
+### Changed
+- One `verdict.sh` owns both strict delivery parsing and tolerant informational
+  display parsing as explicit modes.
+- Required approval is bound to clean HEAD and tree. The former content
+  fingerprint duplicated the same identity for a clean candidate and was
+  removed with the optional gate subsystem.
+- Command Bash permissions are scoped to bundled plugin executables instead of
+  pre-approving arbitrary shell commands.
+- The primary skill and lens reference now contain only routing and behavioral
+  rules needed by the current request.
+
 ### Fixed
 - **A reply without a trailing newline no longer swallows the log separator.**
   The driver logged replies with `sed 's/^/  /'`, and BSD sed leaves an

@@ -1,13 +1,13 @@
 ---
 description: Ask OpenAI Codex CLI an informational question in a persistent thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique. Pass --thread to keep a feature's questions with the rest of that feature's context.
 argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] <question>'
-allowed-tools: Bash
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
 disable-model-invocation: true
 ---
 
 # /ask
 
-Sends an informational question to a persistent Codex thread — the shared `ask` thread by default, or a named one via `--thread`. Follow-up questions continue the same thread, so Codex retains prior Q&A. Use `--oneshot` for a throwaway question that leaves no thread state.
+Sends an informational question to a persistent Codex thread — the worktree-local `ask` thread by default, or a named one via `--thread`. Follow-up questions continue the same thread, so Codex retains prior Q&A. Use `--oneshot` for a throwaway question that leaves no thread state.
 
 This is the **informational** command — collaborative, not adversarial. For critique of your code use `/review`; for stress-testing a plan use `/plan`.
 
@@ -34,10 +34,10 @@ This is the **informational** command — collaborative, not adversarial. For cr
    ```bash
    # initial dispatch (no .id yet):
    CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
-     bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
+     "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
 
    # resume — the thread keeps the sandbox it was created with:
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> <<< "$QUESTION"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> <<< "$QUESTION"
    ```
 
    `dispatch.sh` detaches the worker and then waits for it here, bounded below
@@ -53,11 +53,11 @@ This is the **informational** command — collaborative, not adversarial. For cr
 
 ## Thread choice
 
-The default `ask` thread is repo-wide — right for "is there already a helper for X", wrong for anything belonging to a feature you are working through. Point those at that feature's thread with `--thread <feature>`, so Codex answers with the context it already has. Full convention and its limits: skill `codex-triage`, "One feature = one thread".
+The default `ask` thread is repo-wide — right for "is there already a helper for X", wrong for anything belonging to a feature you are working through. Point those at that feature's thread with `--thread <feature>`, following the skill's Threads section.
 
 ## Notes
 
-- Thread state is in the repository common Git directory reported by `state-dir.sh`; default thread: `ask`.
+- Thread state is local to the current worktree; default thread: `ask`.
 - A thread created with the read-only default never trips the tracked-file mutation guard.
 - Need write access (e.g. "try this fix")? That is a different intent — use `/thread <name>` without the read-only default, or `/review`.
 - Force-reset: `/thread-new <thread>`.
