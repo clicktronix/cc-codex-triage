@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-export CC_CODEX_STATE_DIR=.claude/codex-threads
 # Regression suite for scripts/codex-thread.sh. No real Codex — a stub `codex`
 # on PATH emits a canned JSONL stream and writes the -o file.
 # Usage: bash tests/driver-regression.sh   (exit 0 = all pass)
@@ -73,10 +72,9 @@ unset CLAUDE_PROJECT_DIR CC_CODEX_FLAGS CC_CODEX_TRIAGE_STRICT 2>/dev/null || tr
 REPO="$T/repo"
 mkdir -p "$REPO" && cd "$REPO"
 git init -q -b main . && git config user.email t@t.t && git config user.name t
-echo '.claude/codex-threads/' > .gitignore
-echo x > f.txt && git add -A && git commit -qm init
+echo x > f.txt && git add f.txt && git commit -qm init
 
-SD=.claude/codex-threads
+SD=.git/cc-codex-triage/threads
 UUID='0a1b2c3d-1111-4222-8333-444455556666'
 
 run() { OUT="$(bash "$DRIVER" "$@" 2>"$T/err" <<< "ping")"; RC=$?; }
@@ -778,7 +776,7 @@ rm -rf "$SD"
 mkdir -p "$T/isolbin" "$T/dtmp3"
 # Minimal PATH farm: everything the driver touches BEFORE the isolator
 # preflight, but neither setsid nor python3.
-for tool in bash git cat rm ls mkdir sed grep sleep env xcrun; do
+for tool in bash git cat rm ls mkdir sed grep sleep env xcrun dirname; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/isolbin/$tool"
 done
 TMPDIR="$T/dtmp3" PATH="$T/bin:$T/isolbin" run d3 --detach
@@ -826,8 +824,7 @@ echo "== detach: first-ever detach in a fresh repo (no state dir at all) =="
 REPO2="$T/repo2"
 mkdir -p "$REPO2" && cd "$REPO2"
 git init -q -b main . && git config user.email t@t.t && git config user.name t
-echo '.claude/codex-threads/' > .gitignore
-echo y > g.txt && git add -A && git commit -qm init
+echo y > g.txt && git add g.txt && git commit -qm init
 run d7 --detach
 [[ "$RC" -eq 0 ]] && grep -q '^DETACHED pid=' <<<"$OUT" && ok "first detach succeeds with no pre-existing state dir" || bad "fresh-repo detach rc=$RC out=$OUT err=$(cat "$T/err")"
 i=0; while ! grep -q FAKE_REPLY "$SD/d7.log" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
@@ -1017,7 +1014,7 @@ cat > "$T/robbin/cat" <<STUB
 #!/usr/bin/env bash
 for a in "\$@"; do
   case "\$a" in *.active.lock/owner)
-    if [ ! -e "$T/robbed" ]; then
+    if [ -f "\$a" ] && [ ! -e "$T/robbed" ]; then
       printf '%s' 424242 > "\$a"
       : > "$T/robbed"
     fi

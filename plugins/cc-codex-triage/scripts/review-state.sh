@@ -3,9 +3,7 @@
 #
 # begin <thread> --base <ref> --spec <repo-relative-path> --cap N
 #                                capture a clean HEAD/tree candidate
-# record <thread> <foreground|background> [claim-token]
-#                                record the latest post-begin verdict; only an
-#                                unchanged foreground APPROVE is gate-eligible
+# record <thread> <claim-token>   record the latest post-begin verdict
 # abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token>
 #                                release a pending round after no dispatch result
 # check <thread>                 verify APPROVE still covers current HEAD/tree
@@ -16,9 +14,10 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_HELPER="$SELF_DIR/state-dir.sh"
 VERDICT_HELPER="$SELF_DIR/verdict.sh"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
+. "$SELF_DIR/dir-lock.sh"
 
 usage() {
-  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> --cap N | advisory-check <thread> | record <thread> <foreground|background> [claim-token] | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | reset <thread>" >&2
+  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> --cap N | advisory-check <thread> | record <thread> <claim-token> | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | reset <thread>" >&2
   exit 1
 }
 die() { _code="$1"; shift; echo "$*" >&2; exit "$_code"; }
@@ -41,6 +40,7 @@ ACTIVE_LEASE="$STATE_DIR/$THREAD.active"
 REVIEW_LOCK="$STATE_DIR/$THREAD.review-lock"
 RECLAIM_LOCK="$STATE_DIR/$THREAD.review-lock-reclaim"
 RECORD_TMP=""
+dir_lock_init "$REVIEW_LOCK" "$RECLAIM_LOCK"
 
 field() { sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1; }
 valid_decimal() { # $1=value $2=max length
@@ -63,115 +63,9 @@ assert_state_files_safe() {
       || { echo "required-review state is not a regular file: $_path" >&2; exit 7; }
   done
 }
-assert_lock_safe() {
-  _lock="$1"
-  [ ! -L "$_lock" ] || die 7 "refusing symlinked required-review lock: $_lock"
-  [ ! -e "$_lock" ] || [ -d "$_lock" ] \
-    || die 7 "required-review lock is not a directory: $_lock"
-  [ ! -e "$_lock/owner" ] \
-    || { [ ! -L "$_lock/owner" ] && [ -f "$_lock/owner" ]; } \
-    || die 7 "required-review lock owner is unsafe: $_lock/owner"
-}
-lock_mtime_epoch() {
-  _value="$(stat -c '%Y' "$1" 2>/dev/null)" && [ -n "$_value" ] \
-    && { printf '%s' "$_value"; return 0; }
-  stat -f '%m' "$1" 2>/dev/null
-}
-remove_owned_lock() {
-  _lock="$1"
-  [ ! -L "$_lock" ] || return 0
-  [ -d "$_lock" ] || return 0
-  [ ! -L "$_lock/owner" ] || return 0
-  [ "$(cat "$_lock/owner" 2>/dev/null)" = "$$" ] || return 0
-  rm -f "$_lock/owner" 2>/dev/null
-  rmdir "$_lock" 2>/dev/null || true
-}
 cleanup_review_locks() {
   [ -z "$RECORD_TMP" ] || rm -f "$RECORD_TMP" 2>/dev/null
-  remove_owned_lock "$RECLAIM_LOCK"
-  remove_owned_lock "$REVIEW_LOCK"
-}
-lock_is_stale() { # $1=lock directory
-  _candidate_lock="$1"; _owner="$(cat "$_candidate_lock/owner" 2>/dev/null)"
-  case "$_owner" in
-    '')
-      _now="$(date +%s 2>/dev/null)"; _modified="$(lock_mtime_epoch "$_candidate_lock")"
-      case "$_now:$_modified" in :*|*:|*[!0-9:]*) return 1 ;; esac
-      [ $((_now - _modified)) -gt 60 ]
-      ;;
-    0|0[0-9]*|*[!0-9]*) return 0 ;;
-    *)
-      [ "${#_owner}" -le 12 ] || return 0
-      kill -0 "$_owner" 2>/dev/null && return 1
-      return 0
-      ;;
-  esac
-}
-acquire_reclaim_lock() {
-  _tries=0
-  while [ "$_tries" -lt 100 ]; do
-    assert_lock_safe "$RECLAIM_LOCK"
-    if mkdir "$RECLAIM_LOCK" 2>/dev/null; then
-      if (set -C; printf '%s\n' "$$" > "$RECLAIM_LOCK/owner") 2>/dev/null \
-          && [ "$(cat "$RECLAIM_LOCK/owner" 2>/dev/null)" = "$$" ]; then
-        return 0
-      fi
-      return 1
-    fi
-    if lock_is_stale "$RECLAIM_LOCK"; then
-      _sampled="$(cat "$RECLAIM_LOCK/owner" 2>/dev/null)"
-      _stale_reclaim="$RECLAIM_LOCK.stale.$$.$_tries"
-      [ ! -e "$_stale_reclaim" ] && [ ! -L "$_stale_reclaim" ] || return 1
-      if mv "$RECLAIM_LOCK" "$_stale_reclaim" 2>/dev/null; then
-        _moved_owner="$(cat "$_stale_reclaim/owner" 2>/dev/null)"
-        if [ "$_moved_owner" != "$_sampled" ]; then
-          # Another contender replaced the sampled generation. Restore it when
-          # possible; otherwise leave the current generation untouched and
-          # discard only the displaced directory after its owner loses proof.
-          if [ ! -e "$RECLAIM_LOCK" ] && [ ! -L "$RECLAIM_LOCK" ]; then
-            mv "$_stale_reclaim" "$RECLAIM_LOCK" 2>/dev/null || true
-          else
-            rm -f "$_stale_reclaim/owner" 2>/dev/null
-            rmdir "$_stale_reclaim" 2>/dev/null || true
-          fi
-          return 1
-        fi
-        rm -f "$_stale_reclaim/owner" 2>/dev/null
-        rmdir "$_stale_reclaim" 2>/dev/null || true
-        _tries=$((_tries + 1))
-        continue
-      fi
-    fi
-    return 1
-  done
-  return 1
-}
-try_reclaim_review_lock() {
-  acquire_reclaim_lock || return 1
-  assert_lock_safe "$REVIEW_LOCK"
-  if [ ! -d "$REVIEW_LOCK" ]; then
-    remove_owned_lock "$RECLAIM_LOCK"
-    return 0
-  fi
-  _owner="$(cat "$REVIEW_LOCK/owner" 2>/dev/null)"
-  _reclaim=false
-  lock_is_stale "$REVIEW_LOCK" && _reclaim=true
-  if $_reclaim; then
-    [ "$(cat "$RECLAIM_LOCK/owner" 2>/dev/null)" = "$$" ] || return 1
-    _stale="$REVIEW_LOCK.stale.$$"
-    [ ! -e "$_stale" ] && [ ! -L "$_stale" ] \
-      || die 7 "stale review lock path already exists"
-    if mv "$REVIEW_LOCK" "$_stale" 2>/dev/null; then
-      [ ! -L "$_stale" ] || { rm -f "$_stale"; die 7 "refused symlinked stale review lock"; }
-      [ ! -L "$_stale/owner" ] || die 7 "refused unsafe stale review lock owner"
-      [ "$(cat "$_stale/owner" 2>/dev/null)" = "$_owner" ] \
-        || die 7 "review lock generation changed during reclaim"
-      rm -f "$_stale/owner" 2>/dev/null
-      rmdir "$_stale" 2>/dev/null || true
-    fi
-  fi
-  remove_owned_lock "$RECLAIM_LOCK"
-  $_reclaim
+  dir_lock_release_all
 }
 acquire_review_lock() {
   trap cleanup_review_locks EXIT
@@ -179,17 +73,9 @@ acquire_review_lock() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   _waits=0
-  while :; do
-    assert_lock_safe "$REVIEW_LOCK"
-    assert_lock_safe "$RECLAIM_LOCK"
-    if mkdir "$REVIEW_LOCK" 2>/dev/null; then
-      if ! (set -C; printf '%s\n' "$$" > "$REVIEW_LOCK/owner") 2>/dev/null \
-          || [ "$(cat "$REVIEW_LOCK/owner" 2>/dev/null)" != "$$" ]; then
-        die 7 "cannot own review lock"
-      fi
-      return 0
-    fi
-    try_reclaim_review_lock && continue
+  while ! dir_lock_acquire; do
+    dir_lock_safe "$REVIEW_LOCK" && dir_lock_safe "$RECLAIM_LOCK" \
+      || die 7 "required-review lock is unsafe"
     _waits=$((_waits + 1))
     [ "$_waits" -lt 100 ] || die 7 "required-review state is busy"
     sleep 0.05 2>/dev/null || sleep 1
@@ -241,12 +127,12 @@ prompt_scope_exact() {
     }
   ' "$1"
 }
-write_state() { # status verdict eligible mode head tree round reason
+write_state() { # status verdict eligible head tree round reason
   _base="$(field "$CANDIDATE" base_sha)"; _spec="$(field "$CANDIDATE" spec_path)"
   _cap="$(field "$CANDIDATE" cap)"; _start="$(field "$CANDIDATE" loop_start_round)"
   _claim="$(field "$CANDIDATE" claim_token)"
-  printf 'version=2\nstatus=%s\nverdict=%s\ngate_eligible=%s\nmode=%s\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nclaim_token=%s\nround=%s\nreason=%s\ntimestamp=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$_base" "$_spec" "$_cap" "$_start" "$_claim" "$7" "$8" "$(timestamp)" \
+  printf 'version=2\nstatus=%s\nverdict=%s\ngate_eligible=%s\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nclaim_token=%s\nround=%s\nreason=%s\ntimestamp=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$_base" "$_spec" "$_cap" "$_start" "$_claim" "$6" "$7" "$(timestamp)" \
     | atomic_write "$REVIEW_STATE"
 }
 write_loop_state() { # base spec cap start attempts
@@ -341,7 +227,7 @@ case "$VERB" in
       || { echo "invalid required review attempt state" >&2; exit 1; }
     if [ "$ATTEMPTS" -ge "$CAP" ]; then
       [ -f "$CANDIDATE" ] \
-        && write_state CAP_REACHED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
+        && write_state CAP_REACHED NONE false "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
       die 10 "CAP_REACHED: required review already claimed $CAP attempt(s)"
     fi
     ATTEMPT=$((ATTEMPTS + 1))
@@ -361,22 +247,17 @@ case "$VERB" in
     printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\ntimestamp=%s\n' \
       "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$(timestamp)" \
       | atomic_write "$CANDIDATE" || exit 1
-    write_state PENDING NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" awaiting_verdict || exit 1
+    write_state PENDING NONE false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" awaiting_verdict || exit 1
     echo "PENDING head=$HEAD_SHA tree=$TREE_SHA claim=$CLAIM_TOKEN attempt=$ATTEMPT/$CAP"
     ;;
 
   record)
-    { [ $# -eq 3 ] || [ $# -eq 4 ]; } || usage
+    [ $# -eq 3 ] || usage
     assert_no_live_dispatch
-    MODE="$3"; case "$MODE" in foreground|background) ;; *) usage ;; esac
-    if [ -f "$CANDIDATE" ]; then
-      [ "$(field "$REVIEW_STATE" status)" = PENDING ] \
-        || die 10 "NO_PENDING_REVIEW: begin a required-review round first"
-      [ $# -eq 4 ] || die 10 "CLAIM_REQUIRED: pass the token returned by begin"
-      assert_claim "$4"
-    else
-      [ $# -eq 3 ] || usage
-    fi
+    [ -f "$CANDIDATE" ] || die 10 "NO_REQUIRED_CANDIDATE: begin a required-review round first"
+    [ "$(field "$REVIEW_STATE" status)" = PENDING ] \
+      || die 10 "NO_PENDING_REVIEW: begin a required-review round first"
+    assert_claim "$3"
     LOG="$STATE_DIR/$THREAD.log"
     OFF=0
     if [ -f "$CANDIDATE" ]; then
@@ -401,17 +282,6 @@ case "$VERB" in
     [ "$VRC" -eq 0 ] || VERDICT=NONE
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
 
-    if [ "$MODE" = background ]; then
-      write_state BACKGROUND_SINGLE_PASS "$VERDICT" false background "$HEAD_SHA" "$TREE_SHA" "$(round_now)" background_never_satisfies_gate || exit 1
-      echo "BACKGROUND_SINGLE_PASS verdict=$VERDICT gate_eligible=false"
-      exit 0
-    fi
-
-    [ -f "$CANDIDATE" ] || {
-      write_state OBSERVED "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" no_required_candidate || exit 1
-      echo "OBSERVED verdict=$VERDICT gate_eligible=false"
-      exit 0
-    }
     C_HEAD="$(field "$CANDIDATE" head)"; C_TREE="$(field "$CANDIDATE" tree)"
     C_BASE="$(field "$CANDIDATE" base_sha)"; C_SPEC="$(field "$CANDIDATE" spec_path)"
     C_CAP="$(field "$CANDIDATE" cap)"; C_ATTEMPT="$(field "$CANDIDATE" attempt)"
@@ -438,33 +308,33 @@ case "$VERB" in
       STALE_REASON=prompt_scope_mismatch
     fi
     if [ -n "$STALE_REASON" ]; then
-      write_state STALE "$VERDICT" false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
+      write_state STALE "$VERDICT" false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
       echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
       exit 11
     fi
     case "$VERDICT" in
       APPROVE)
-        write_state APPROVED APPROVE true foreground "$C_HEAD" "$C_TREE" "$(round_now)" exact_candidate_approved || exit 1
+        write_state APPROVED APPROVE true "$C_HEAD" "$C_TREE" "$(round_now)" exact_candidate_approved || exit 1
         atomic_write "$APPROVED" < "$REVIEW_STATE" || exit 1
         echo "APPROVE head=$C_HEAD tree=$C_TREE"
         ;;
       REQUEST_CHANGES)
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
-          write_state CAP_REACHED REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
+          write_state CAP_REACHED REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
           echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
           exit 10
         fi
-        write_state REQUEST_CHANGES REQUEST_CHANGES false foreground "$C_HEAD" "$C_TREE" "$(round_now)" blocking_findings_open || exit 1
+        write_state REQUEST_CHANGES REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$(round_now)" blocking_findings_open || exit 1
         echo "REQUEST_CHANGES: resolve the findings, commit a new clean candidate when code changes, then begin and review again" >&2
         exit 10
         ;;
       *)
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
-          write_state CAP_REACHED "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
+          write_state CAP_REACHED "$VERDICT" false "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
           echo "CAP_REACHED: no approval after $C_CAP round(s)" >&2
           exit 10
         fi
-        write_state NO_DECISION "$VERDICT" false foreground "$C_HEAD" "$C_TREE" "$(round_now)" no_approve_verdict || exit 1
+        write_state NO_DECISION "$VERDICT" false "$C_HEAD" "$C_TREE" "$(round_now)" no_approve_verdict || exit 1
         echo "NO_DECISION: required review did not return APPROVE" >&2
         exit 10
         ;;
@@ -491,7 +361,7 @@ case "$VERB" in
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
-    write_state ABORTED NONE false foreground "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$3" || exit 1
+    write_state ABORTED NONE false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$3" || exit 1
     die 10 "ABORTED: required-review round released after $3"
     ;;
 
@@ -509,7 +379,6 @@ case "$VERB" in
     [ "$(field "$REVIEW_STATE" status)" = APPROVED ] \
       && [ "$(field "$REVIEW_STATE" gate_eligible)" = true ] \
       && [ "$(field "$APPROVED" verdict)" = APPROVE ] \
-      && [ "$(field "$APPROVED" mode)" = foreground ] \
       && [ -n "$(field "$APPROVED" base_sha)" ] \
       && [ -n "$(field "$APPROVED" spec_path)" ] \
       && [ -n "$(field "$APPROVED" claim_token)" ] \

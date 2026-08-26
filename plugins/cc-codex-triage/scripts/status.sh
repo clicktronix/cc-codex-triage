@@ -54,7 +54,7 @@ for ID_FILE in "$STATE_DIR"/*.id; do
   NAME="$(basename "$ID_FILE" .id)"
   ROUNDS="$(cat "$STATE_DIR/$NAME.rounds" 2>/dev/null || echo 0)"
   SIZE="$(wc -c < "$STATE_DIR/$NAME.log" 2>/dev/null | tr -d ' ')"
-  case "$NAME" in review*|plan*) VERDICT="$(last_verdict "$NAME")" ;; *) VERDICT="n/a" ;; esac
+  VERDICT="$(last_verdict "$NAME")"
   printf '  %-30s rounds=%-3s size=%-8s last=%-16s verdict=%s\n' \
     "$NAME" "$ROUNDS" "${SIZE:-0}" "$(_mtime "$ID_FILE")" "$VERDICT"
 done

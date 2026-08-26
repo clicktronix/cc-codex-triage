@@ -10,9 +10,25 @@ STATE="$PLUGIN/scripts/review-state.sh"
 STATE_DIR_HELPER="$PLUGIN/scripts/state-dir.sh"
 STATUS="$PLUGIN/scripts/status.sh"
 VERDICT="$PLUGIN/scripts/verdict.sh"
+DISPATCH="$PLUGIN/scripts/dispatch.sh"
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-review-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/bin"
+cat > "$T/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'codex-cli 0.149.1'; exit 0; fi
+out=""; prev=""
+for arg in "$@"; do
+  [ "$prev" = -o ] && out="$arg"
+  prev="$arg"
+done
+cat >/dev/null
+printf '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}\n'
+printf 'reviewed the exact candidate\nAPPROVE' > "$out"
+STUB
+chmod +x "$T/bin/codex"
+export PATH="$T/bin:$PATH"
 REPO="$T/repo"
 mkdir -p "$REPO/docs"
 cd "$REPO"
@@ -23,8 +39,7 @@ printf 'spec\n' > docs/spec.md
 printf 'candidate\n' > app.txt
 git add docs/spec.md app.txt
 git commit -qm baseline
-export CC_CODEX_STATE_DIR=.git/cc-codex-test
-SD="$REPO/.git/cc-codex-test"
+SD="$REPO/.git/cc-codex-triage/threads"
 
 field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
@@ -48,7 +63,7 @@ append_reply() { # thread verdict [spec] [head]
 approve() { # thread
   begin "$1" 3
   append_reply "$1" APPROVE
-  AOUT="$("$STATE" record "$1" foreground "$CLAIM" 2>"$T/err")"
+  AOUT="$("$STATE" record "$1" "$CLAIM" 2>"$T/err")"
   ARC=$?
 }
 
@@ -81,13 +96,43 @@ awk '/^---$/{print "REPLY:\n  REQUEST_CHANGES\n---"} {print}' "$T/strict.log" > 
   && bad "strict accepted two verdicts" \
   || ok "strict rejects ambiguous duplicate verdicts"
 
+echo "== complete required-review product route =="
+begin product-route 3
+ROUTE_BASE="$(field "$SD/product-route.candidate" base_sha)"
+ROUTE_HEAD="$(field "$SD/product-route.candidate" head)"
+ROUTE_PROMPT="REQUIRED_REVIEW
+BASE_SHA: $ROUTE_BASE
+CANDIDATE_SHA: $ROUTE_HEAD
+SPEC_PATH: docs/spec.md
+Review the candidate. End with one bare verdict."
+ROUTE_OUT="$(CC_DISPATCH_WAIT=10 "$DISPATCH" product-route <<< "$ROUTE_PROMPT" 2>"$T/err")"; ROUTE_RC=$?
+[[ "$ROUTE_RC" -eq 0 && "$ROUTE_OUT" == *APPROVE ]] \
+  && ok "dispatch writes the claimed round through the production driver" \
+  || bad "product dispatch rc=$ROUTE_RC out=$ROUTE_OUT err=$(cat "$T/err")"
+ROUTE_RECORD="$("$STATE" record product-route "$CLAIM" 2>"$T/err")"; ROUTE_RECORD_RC=$?
+[[ "$ROUTE_RECORD_RC" -eq 0 && "$ROUTE_RECORD" == APPROVE\ head=* ]] \
+  && ok "record attributes the production log to the claim" \
+  || bad "product record rc=$ROUTE_RECORD_RC out=$ROUTE_RECORD err=$(cat "$T/err")"
+ROUTE_CHECK="$("$STATE" check product-route 2>"$T/err")"; ROUTE_CHECK_RC=$?
+[[ "$ROUTE_CHECK_RC" -eq 0 && "$ROUTE_CHECK" == CC_CODEX_REQUIRED_REVIEW\ APPROVE\ thread=product-route* ]] \
+  && ok "check authorizes the exact candidate end to end" \
+  || bad "product check rc=$ROUTE_CHECK_RC out=$ROUTE_CHECK err=$(cat "$T/err")"
+
+begin one-record-route 3
+append_reply one-record-route APPROVE
+"$STATE" record one-record-route background "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+[[ "$RC" -ne 0 ]] \
+  && ok "record has no parallel background/observed mode" \
+  || bad "legacy record mode still accepted a verdict"
+"$STATE" reset one-record-route >/dev/null 2>&1
+
 echo "== exact clean candidate approval =="
 approve exact
 [[ "$BRC" -eq 0 && -n "$CLAIM" ]] \
   && ok "begin publishes a claim for a clean candidate" \
   || bad "begin rc=$BRC out=$BOUT err=$(cat "$T/err")"
 [[ "$ARC" -eq 0 && "$AOUT" == APPROVE\ head=* ]] \
-  && ok "foreground APPROVE is recorded" \
+  && ok "the claimed APPROVE is recorded" \
   || bad "record rc=$ARC out=$AOUT err=$(cat "$T/err")"
 COUT="$("$STATE" check exact 2>"$T/err")"; CRC=$?
 [[ "$CRC" -eq 0 && "$COUT" == CC_CODEX_REQUIRED_REVIEW\ APPROVE\ thread=exact* ]] \
@@ -102,7 +147,7 @@ echo "== fail closed on candidate and prompt drift =="
 begin dirty 3
 append_reply dirty APPROVE
 printf 'dirty\n' >> app.txt
-"$STATE" record dirty foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record dirty "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 11 && "$(field "$SD/dirty.review-state" reason)" == dirty_worktree ]] \
   && ok "a dirty worktree cannot inherit approval" \
   || bad "dirty candidate rc=$RC reason=$(field "$SD/dirty.review-state" reason)"
@@ -113,14 +158,14 @@ OLD_HEAD="$(git rev-parse HEAD)"
 append_reply moved APPROVE docs/spec.md "$OLD_HEAD"
 printf 'next\n' >> app.txt
 git add app.txt && git commit -qm next
-"$STATE" record moved foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record moved "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 11 && "$(field "$SD/moved.review-state" reason)" == head_moved ]] \
   && ok "a moved HEAD makes the verdict stale" \
   || bad "moved candidate rc=$RC reason=$(field "$SD/moved.review-state" reason)"
 
 begin scope 3
 append_reply scope APPROVE docs/other.md
-"$STATE" record scope foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record scope "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 11 && "$(field "$SD/scope.review-state" reason)" == prompt_scope_mismatch ]] \
   && ok "mismatched scope markers cannot authorize delivery" \
   || bad "scope mismatch rc=$RC reason=$(field "$SD/scope.review-state" reason)"
@@ -128,20 +173,20 @@ append_reply scope APPROVE docs/other.md
 echo "== review loop outcomes =="
 begin refute 3
 append_reply refute REQUEST_CHANGES
-"$STATE" record refute foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record refute "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 10 && "$(field "$SD/refute.review-state" status)" == REQUEST_CHANGES ]] \
   && ok "REQUEST_CHANGES blocks delivery" \
   || bad "request changes rc=$RC status=$(field "$SD/refute.review-state" status)"
 begin refute 3
 append_reply refute APPROVE
-"$STATE" record refute foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record refute "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 0 ]] \
   && ok "a refuted finding can be reconsidered on the same clean candidate" \
   || bad "same-candidate retry rc=$RC err=$(cat "$T/err")"
 
 begin capped 1
 append_reply capped REQUEST_CHANGES
-"$STATE" record capped foreground "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+"$STATE" record capped "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
 [[ "$RC" -eq 10 && "$(field "$SD/capped.review-state" status)" == CAP_REACHED ]] \
   && ok "the configured cap is a hard stop" \
   || bad "cap rc=$RC status=$(field "$SD/capped.review-state" status)"
@@ -151,24 +196,6 @@ append_reply capped REQUEST_CHANGES
 "$STATE" reset capped >/dev/null 2>"$T/err" \
   && ok "reset clears the hard stop" \
   || bad "reset failed: $(cat "$T/err")"
-
-mkdir -p "$SD"
-cat > "$SD/background.log" <<'EOF'
-[test]
-PROMPT:
-  advisory
-REPLY:
-  APPROVE
----
-EOF
-printf '1\n' > "$SD/background.rounds"
-"$STATE" record background background >/dev/null 2>"$T/err"; RC=$?
-[[ "$RC" -eq 0 && "$(field "$SD/background.review-state" gate_eligible)" == false ]] \
-  && ok "background review is advisory even when it says APPROVE" \
-  || bad "background rc=$RC eligible=$(field "$SD/background.review-state" gate_eligible)"
-"$STATE" check background >/dev/null 2>&1 \
-  && bad "background approval passed check" \
-  || ok "background approval never satisfies the delivery boundary"
 
 echo "== concurrent claim and read-only status =="
 rm -f "$SD/race."*
@@ -193,7 +220,6 @@ SOUT="$("$STATUS" 2>"$T/err")"; SRC=$?
   || bad "status rc=$SRC created state: $(cat "$T/err")"
 
 echo "== linked worktrees never share a saved Codex session =="
-unset CC_CODEX_STATE_DIR
 git branch linked >/dev/null
 WT="$T/linked"
 git worktree add -q "$WT" linked
@@ -202,6 +228,10 @@ LINK_STATE="$(cd "$WT" && "$STATE_DIR_HELPER")"
 [[ "$MAIN_STATE" != "$LINK_STATE" ]] \
   && ok "each worktree resolves a different state directory" \
   || bad "worktrees shared state: $MAIN_STATE"
+OVERRIDDEN_STATE="$(cd "$WT" && CC_CODEX_STATE_DIR="$MAIN_STATE" "$STATE_DIR_HELPER")"
+[[ "$OVERRIDDEN_STATE" == "$LINK_STATE" ]] \
+  && ok "an environment override cannot reconnect two worktrees" \
+  || bad "CC_CODEX_STATE_DIR bypassed worktree isolation: $OVERRIDDEN_STATE"
 printf 'session\n' > "$MAIN_STATE/review-main.id"
 [[ ! -e "$LINK_STATE/review-main.id" ]] \
   && ok "a saved session id is not visible from another worktree" \

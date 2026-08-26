@@ -19,11 +19,22 @@ All notable changes to this project are documented in this file.
 ### Changed
 - One `verdict.sh` owns both strict delivery parsing and tolerant informational
   display parsing as explicit modes.
+- Worktree-local state is unconditional; an environment override can no longer
+  reconnect two checkouts. Required review has one claimed `record` route, and
+  its complete `begin -> dispatch -> record -> check` path is covered end to
+  end.
+- Short `/ask`, `/reply`, and `/thread` calls use the foreground driver;
+  detached handoff is reserved for `/review`, `/plan`, and `/debate`.
+- `/thread-new` is reset-only. It never combines state deletion with an
+  optional paid dispatch.
 - Required approval is bound to clean HEAD and tree. The former content
   fingerprint duplicated the same identity for a clean candidate and was
   removed with the optional gate subsystem.
 - Command Bash permissions are scoped to bundled plugin executables instead of
   pre-approving arbitrary shell commands.
+- Driver and required-review state share one recoverable directory-lock
+  implementation instead of maintaining two copies of the same concurrency
+  protocol.
 - The primary skill and lens reference now contain only routing and behavioral
   rules needed by the current request.
 

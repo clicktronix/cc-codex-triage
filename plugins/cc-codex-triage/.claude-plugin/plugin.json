@@ -15,9 +15,9 @@
     "codex-cli",
     "cross-agent-review",
     "triage",
-    "adversarial-review",
-    "judge-mode",
-    "anti-sycophancy",
+    "required-review",
+    "named-threads",
+    "worktree-isolation",
     "agent-skills",
     "slash-commands"
   ]

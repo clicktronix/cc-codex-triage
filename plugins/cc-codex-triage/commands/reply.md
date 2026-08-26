@@ -1,7 +1,7 @@
 ---
 description: Compose a reply from Claude Code back into an active Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback.
 argument-hint: "[thread-name] <directive or position>"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 disable-model-invocation: true
 ---
 
@@ -24,15 +24,8 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
 4. Compose the reply (≤500 words) and pipe to the driver:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
    ```
-
-   `dispatch.sh` detaches the worker and then waits for it here, bounded below
-   the caller's ceiling. A short dispatch returns the reply in this turn exactly
-   as a direct call would; one that outruns the window **exits 20 and hands off**
-   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
-   as a background task delivers the reply. Never treat exit 20 as a failure: the
-   dispatch is still running and is already paid for.
 
 5. Show Codex's next reply verbatim. Handle exit code 4 (resume failed) per the skill — ask before `--new`. Exit code 6 means no such thread — see step 1.
 

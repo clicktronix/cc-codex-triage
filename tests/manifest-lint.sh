@@ -109,6 +109,11 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
     else
       ok
     fi
+    allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
+    expected='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
+    [[ "$allowed" == "$expected" ]] \
+      && ok \
+      || bad "commands/review.md: model-invoked Bash grant is '$allowed', expected the three product-route scripts"
   else
     # Every other command stays user-invoked; do not blanket-enable paid tools.
     check_manifest "$f" description allowed-tools disable-model-invocation=true
@@ -119,7 +124,38 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   else
     ok
   fi
+  if [[ "$allowed" == *'${CLAUDE_PLUGIN_ROOT}/scripts/*)'* ]]; then
+    bad "${f#$ROOT/}: Bash permission grants every bundled script"
+  else
+    ok
+  fi
 done
+
+echo "== command routing boundaries =="
+for command in ask reply thread; do
+  file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
+  if grep -q 'scripts/codex-thread\.sh' "$file" && ! grep -q 'scripts/dispatch\.sh' "$file"; then
+    ok
+  else
+    bad "commands/$command.md must use the foreground driver directly"
+  fi
+done
+for command in review plan debate; do
+  file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
+  grep -q 'scripts/dispatch\.sh' "$file" \
+    && ok \
+    || bad "commands/$command.md must use the long-dispatch wrapper"
+done
+THREAD_COMMAND="$ROOT/plugins/cc-codex-triage/commands/thread.md"
+grep -q 'Parse leading `--oneshot` and `--topic <text>` flags, in either order' "$THREAD_COMMAND" \
+  && ok \
+  || bad "commands/thread.md must parse both advertised leading flags"
+THREAD_NEW="$ROOT/plugins/cc-codex-triage/commands/thread-new.md"
+if grep -q -- '--reset-only' "$THREAD_NEW" && ! grep -q -- ' --new ' "$THREAD_NEW"; then
+  ok
+else
+  bad "commands/thread-new.md must reset only, without starting a paid dispatch"
+fi
 
 echo "== skills =="
 SKILL_COUNT="$(find "$ROOT/plugins/cc-codex-triage/skills" -name SKILL.md -type f | wc -l | tr -d ' ')"
@@ -132,7 +168,7 @@ done
   && ok || bad "optional Stop-hook subsystem was re-registered"
 
 echo "== required runtime helpers =="
-for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh \
+for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/dir-lock.sh scripts/round-counter.sh \
               scripts/state-dir.sh scripts/status.sh scripts/thread-name.sh scripts/verdict.sh; do
   path="$ROOT/plugins/cc-codex-triage/$helper"
   if [[ -f "$path" && -x "$path" ]] \

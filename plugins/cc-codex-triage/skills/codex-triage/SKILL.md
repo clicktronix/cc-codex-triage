@@ -1,11 +1,13 @@
 ---
 name: codex-triage
-description: Use when the user asks Claude Code to involve OpenAI Codex CLI for a question, second opinion, code review, plan stress-test, debate, or reply in an existing Codex conversation.
+description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion or code review. Provides shared thread, review, and debate behavior; only /review may be started from a natural-language request.
 ---
 
 # Codex Triage
 
-Route the request to one command:
+Follow an explicitly invoked command. For a natural-language request, only a
+second opinion or code review may start `/review`; otherwise name the relevant
+namespaced command and wait for the user to invoke it.
 
 | Intent | Command |
 |---|---|
@@ -29,13 +31,15 @@ Use `--oneshot` when no follow-up is expected.
 
 Thread state is worktree-local. A Codex resume keeps the cwd chosen on the
 initial dispatch, so sharing its session id with another worktree would review
-the wrong checkout. Removing a worktree removes its plugin state. This release
-does not migrate legacy `.claude/codex-threads` or common-Git state; start a
-fresh thread after upgrading.
+the wrong checkout. Removing a worktree removes its plugin state.
 
 If resume exits 4, report the failure and ask before using `--new`. Never
 silently discard a conversation. If a thread is busy (exit 10), wait or choose
 another thread rather than dispatching concurrently to the same session.
+
+Long `/review`, `/plan`, and `/debate` calls use `dispatch.sh`. Exit 20 means
+the paid worker is still running; run the printed `detach-watch.sh` command as
+a background task and do not dispatch the same turn again.
 
 ## Prompt boundary
 

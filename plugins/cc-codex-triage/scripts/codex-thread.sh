@@ -45,36 +45,11 @@
 #   <thread>.candidate        exact clean candidate captured by required /review.
 #   <thread>.review-state     latest machine-readable review/gate result.
 #   <thread>.approved         last gate-eligible exact-candidate APPROVE.
-#   <thread>.active           PID lease held while a dispatch is in flight —
-#                             acquired BEFORE any existing-thread mutation
-#                             (--new's sidecar reset, the invalid-ID discard),
-#                             removed on exit only by the PID that wrote it.
-#                             Acquisition is EXCLUSIVE and ATOMIC: the whole
-#                             claim runs inside the <thread>.active.lock mutex,
-#                             a lease naming a live foreign PID refuses the new
-#                             dispatch (exit 10); a dead or malformed lease is
-#                             stale state and is overwritten.
-#   <thread>.active.lock      mkdir mutex serializing lease acquisition (mkdir
-#                             is atomic on POSIX). The winner publishes its
-#                             PID into <lock>/owner immediately after the
-#                             mkdir via a NOCLOBBER (O_EXCL) write — if a
-#                             token already exists, the directory was
-#                             reclaimed out from under a stalled pre-token
-#                             acquirer, which loses (exit 10) without touching
-#                             the reclaimer's token. Takeover is
-#                             OWNERSHIP-gated, not age-gated: a
-#                             lock whose recorded owner is ALIVE is never
-#                             stolen (regardless of age); a dead/invalid owner
-#                             is reclaimed at once; an ownerless lock older
-#                             than 60s (acquirer crashed between mkdir and the
-#                             token write) is reclaimed too. Ownership is
-#                             re-verified before the lease write, and every
-#                             release removes the lock only while <lock>/owner
-#                             still names this PID. cleanup() releases a
-#                             still-held lock on every exit path.
+#   <thread>.active           PID lease held while a dispatch is in flight.
+#   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
-#                             recoverable mkdir mutex that serializes stale
-#                             active-lock takeover across driver and cleanup.
+#                             mutex around stale-lock takeover. Both lock
+#                             directories use the shared dir-lock.sh contract.
 #   <thread>.detach-output    raw STDOUT of the LATEST --detach child (the
 #                             reply echo). Truncated per launch BY THE CHILD
 #                             after lease arbitration (only the lease owner
@@ -123,6 +98,7 @@
 set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
+. "$SELF_DIR/dir-lock.sh"
 
 # ── the detached-child role ───────────────────────────────────────────────
 # "You are the re-exec'd child of a --detach launcher": redirect the reply into
@@ -298,142 +274,9 @@ LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
 LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
-# mkdir mutex serializing lease acquisition; HAVE_LEASE_LOCK tracks whether
-# THIS process acquired it so the release helper below runs on every path.
 LEASE_LOCK="$STATE_DIR/${THREAD}.active.lock"
 LEASE_RECLAIM_LOCK="$STATE_DIR/${THREAD}.active.lock-reclaim"
-HAVE_LEASE_LOCK=false
-HAVE_LEASE_RECLAIM_LOCK=false
-
-# Ownership-checked mutex release — the ONE rule for every removal of the
-# lock: this process removes it ONLY while <lock>/owner still records $$.
-# After a stale takeover robbed us, the dir (and its owner token) belong to
-# the new owner and must be left intact; an owner token that vanished out
-# from under us is treated the same way (no longer provably ours — the
-# ownerless>60s reclaim below will eventually collect it if it was).
-release_lease_lock() {
-  [[ "$HAVE_LEASE_LOCK" == true ]] || return 0
-  if [[ "$(cat "$LEASE_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
-    rm -f "$LEASE_LOCK/owner"
-    rmdir "$LEASE_LOCK" 2>/dev/null || true
-  fi
-  HAVE_LEASE_LOCK=false
-  return 0
-}
-lease_lock_mtime() {
-  local value
-  value="$(stat -c '%Y' "$1" 2>/dev/null)" && [[ -n "$value" ]] \
-    && { printf '%s' "$value"; return 0; }
-  stat -f '%m' "$1" 2>/dev/null
-}
-lease_lock_safe() {
-  local lock="$1"
-  [[ ! -L "$lock" && ( ! -e "$lock" || -d "$lock" ) ]] || return 1
-  [[ ! -e "$lock/owner" || ( ! -L "$lock/owner" && -f "$lock/owner" ) ]]
-}
-lease_lock_stale() {
-  local lock="$1" owner now modified
-  owner="$(cat "$lock/owner" 2>/dev/null || true)"
-  if [[ "$owner" =~ ^[1-9][0-9]{0,11}$ ]]; then
-    kill -0 "$owner" 2>/dev/null && return 1
-    return 0
-  fi
-  if [[ -z "$owner" && ! -e "$lock/owner" ]]; then
-    now="$(date +%s 2>/dev/null || true)"
-    modified="$(lease_lock_mtime "$lock" || true)"
-    [[ "$now" =~ ^[0-9]+$ && "$modified" =~ ^[0-9]+$ ]] \
-      && (( now - modified > 60 ))
-    return $?
-  fi
-  return 0
-}
-release_lease_reclaim_lock() {
-  [[ "$HAVE_LEASE_RECLAIM_LOCK" == true ]] || return 0
-  if [[ "$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
-    rm -f "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null || true
-    rmdir "$LEASE_RECLAIM_LOCK" 2>/dev/null || true
-  fi
-  HAVE_LEASE_RECLAIM_LOCK=false
-  return 0
-}
-acquire_lease_reclaim_lock() {
-  local tries=0 sampled moved stale
-  while (( tries < 100 )); do
-    lease_lock_safe "$LEASE_RECLAIM_LOCK" || return 1
-    if mkdir "$LEASE_RECLAIM_LOCK" 2>/dev/null; then
-      if (set -C; printf '%s\n' "$$" > "$LEASE_RECLAIM_LOCK/owner") 2>/dev/null \
-          && [[ "$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null)" == "$$" ]]; then
-        HAVE_LEASE_RECLAIM_LOCK=true
-        return 0
-      fi
-      return 1
-    fi
-    if lease_lock_stale "$LEASE_RECLAIM_LOCK"; then
-      sampled="$(cat "$LEASE_RECLAIM_LOCK/owner" 2>/dev/null || true)"
-      stale="$LEASE_RECLAIM_LOCK.stale.$$.$tries"
-      [[ ! -e "$stale" && ! -L "$stale" ]] || return 1
-      if mv "$LEASE_RECLAIM_LOCK" "$stale" 2>/dev/null; then
-        moved="$(cat "$stale/owner" 2>/dev/null || true)"
-        if [[ "$moved" != "$sampled" ]]; then
-          if [[ ! -e "$LEASE_RECLAIM_LOCK" && ! -L "$LEASE_RECLAIM_LOCK" ]]; then
-            mv "$stale" "$LEASE_RECLAIM_LOCK" 2>/dev/null || true
-          else
-            rm -f "$stale/owner" 2>/dev/null || true
-            rmdir "$stale" 2>/dev/null || true
-          fi
-          return 1
-        fi
-        rm -f "$stale/owner" 2>/dev/null || true
-        rmdir "$stale" 2>/dev/null || true
-        tries=$((tries + 1))
-        continue
-      fi
-    fi
-    return 1
-  done
-  return 1
-}
-try_reclaim_lease_lock() {
-  local owner stale moved
-  acquire_lease_reclaim_lock || return 1
-  if ! lease_lock_safe "$LEASE_LOCK"; then
-    release_lease_reclaim_lock
-    return 1
-  fi
-  if [[ ! -d "$LEASE_LOCK" ]]; then
-    release_lease_reclaim_lock
-    return 0
-  fi
-  owner="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
-  if ! lease_lock_stale "$LEASE_LOCK"; then
-    release_lease_reclaim_lock
-    return 1
-  fi
-  stale="$LEASE_LOCK.stale.$$"
-  if [[ -e "$stale" || -L "$stale" ]]; then
-    release_lease_reclaim_lock
-    return 1
-  fi
-  if mv "$LEASE_LOCK" "$stale" 2>/dev/null; then
-    moved="$(cat "$stale/owner" 2>/dev/null || true)"
-    if [[ "$moved" != "$owner" ]]; then
-      if [[ ! -e "$LEASE_LOCK" && ! -L "$LEASE_LOCK" ]]; then
-        mv "$stale" "$LEASE_LOCK" 2>/dev/null || true
-      else
-        rm -f "$stale/owner" 2>/dev/null || true
-        rmdir "$stale" 2>/dev/null || true
-      fi
-      release_lease_reclaim_lock
-      return 1
-    fi
-    rm -f "$stale/owner" 2>/dev/null || true
-    rmdir "$stale" 2>/dev/null || true
-    release_lease_reclaim_lock
-    return 0
-  fi
-  release_lease_reclaim_lock
-  return 1
-}
+dir_lock_init "$LEASE_LOCK" "$LEASE_RECLAIM_LOCK"
 if $ONESHOT; then
   DIAG_FILE="${TMPDIR:-/tmp}/cc-codex-${THREAD}.last-error.jsonl"
 else
@@ -756,8 +599,7 @@ cleanup() {
   # failed verify). A normal acquisition releases it inline first. The
   # helper is ownership-checked: a robbed acquirer leaves the new owner's
   # lock intact.
-  release_lease_reclaim_lock
-  release_lease_lock
+  dir_lock_release_all
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
   # an earlier owner's exit.
@@ -815,50 +657,18 @@ fi
 # discard): a busy thread must be refused with its state byte-for-byte
 # intact. cleanup() removes the lease on exit only while this PID owns it.
 #
-# Acquisition is ATOMIC: an mkdir mutex (<thread>.active.lock — mkdir is
-# atomic on POSIX) serializes the whole claim, so two near-simultaneous
-# dispatches can never both pass the busy check and both write the lease
-# (and a directory can no longer race into place between the check and the
-# mv). Inside the mutex: the live-owner check, the non-regular-file refusal,
-# and the tmp write + mv + verification. The winner publishes its PID into
-# <lock>/owner with a noclobber (O_EXCL) write — an existing token means the
-# directory was reclaimed from a stalled pre-token acquirer, which loses —
-# and takeover is OWNERSHIP-gated under a separate reclaim mutex: a lock with
-# a LIVE recorded owner is never stolen regardless of age; a dead/invalid
-# owner is reclaimed at once; an ownerless lock older than 60s is reclaimed.
-# Serializing and generation-checking the takeover prevents two stale-lock
-# contenders from deleting a newly acquired generation. cleanup() releases
-# every still-held mutex on every exit path.
+# The shared mkdir-lock helper serializes the claim and safely reclaims only
+# dead/invalid owners or an ownerless lock older than 60 seconds.
 if ! $ONESHOT; then
-  if ! mkdir "$LEASE_LOCK" 2>/dev/null; then
-    LOCK_OWNER="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
-    if [[ "$LOCK_OWNER" =~ ^[1-9][0-9]{0,11}$ ]] && kill -0 "$LOCK_OWNER" 2>/dev/null; then
-      # LIVE recorded owner: never steal, no matter how old the lock is.
-      echo "thread $THREAD is busy (lease acquisition mutex $LEASE_LOCK is held by live pid=$LOCK_OWNER) — wait for it or use a different --thread" >&2
-      exit 10
-    fi
-    if ! try_reclaim_lease_lock || ! mkdir "$LEASE_LOCK" 2>/dev/null; then
-      echo "thread $THREAD is busy (concurrent lease acquisition holds $LEASE_LOCK) — retry shortly, or use a different --thread" >&2
-      exit 10
-    fi
-  fi
-  # Owner token: records WHO holds the mutex, so a paused-but-alive acquirer
-  # is distinguishable from a crashed one and every release can be
-  # ownership-checked. PUBLISHED WITH NOCLOBBER (set -C → open(O_EXCL)): the
-  # write fails if a token already exists. An acquirer that won the mkdir but
-  # stalled past the 60s ownerless-reclaim threshold resumes here to find the
-  # reclaimer's token — it must LOSE, not overwrite (an unguarded write would
-  # hand both processes a verified claim → double dispatch). A failed
-  # publication means the directory is no longer ours: refuse WITHOUT touching
-  # the existing token or the lock (HAVE_LEASE_LOCK is still false, so
-  # cleanup() leaves both alone). The reclaim path above removed the
-  # dead/absent owner file before its mkdir retry, so a legitimate winner
-  # always finds an empty slot.
-  if ! (set -C; printf '%s' "$$" > "$LEASE_LOCK/owner") 2>/dev/null; then
-    echo "thread $THREAD is busy (lost $LEASE_LOCK to a concurrent reclaim before publishing ownership — now owned by pid=$(cat "$LEASE_LOCK/owner" 2>/dev/null)) — retry shortly, or use a different --thread" >&2
+  LOCK_OWNER="$(cat "$LEASE_LOCK/owner" 2>/dev/null || true)"
+  if [[ "$LOCK_OWNER" =~ ^[1-9][0-9]{0,11}$ ]] && kill -0 "$LOCK_OWNER" 2>/dev/null; then
+    echo "thread $THREAD is busy (lease acquisition mutex $LEASE_LOCK is held by live pid=$LOCK_OWNER) — wait for it or use a different --thread" >&2
     exit 10
   fi
-  HAVE_LEASE_LOCK=true
+  if ! dir_lock_acquire; then
+    echo "thread $THREAD is busy (concurrent lease acquisition holds $LEASE_LOCK) — retry shortly, or use a different --thread" >&2
+    exit 10
+  fi
   # EXCLUSIVE acquisition: overwriting a live owner's lease would let the
   # faster of two overlapping dispatches remove the lease on exit (ownership
   # check passes for the overwriter) while the slower one still runs —
@@ -881,7 +691,7 @@ if ! $ONESHOT; then
   # would otherwise resume here and double-dispatch. If the owner token no
   # longer names this PID the mutex is LOST — abort without writing .active;
   # the ownership-checked release leaves the new owner's lock intact.
-  if [[ "$(cat "$LEASE_LOCK/owner" 2>/dev/null)" != "$$" ]]; then
+  if ! dir_lock_owned; then
     echo "thread $THREAD is busy (this acquisition lost $LEASE_LOCK to a stale-lock takeover mid-claim — now owned by pid=$(cat "$LEASE_LOCK/owner" 2>/dev/null)) — retry shortly, or use a different --thread" >&2
     exit 10   # cleanup()'s release is ownership-checked: the robber's lock survives
   fi
@@ -894,7 +704,7 @@ if ! $ONESHOT; then
     echo "cannot acquire the dispatch lease for thread '$THREAD': $LEASE_FILE is not a regular file holding this PID after acquisition — inspect the state dir." >&2
     exit 10
   fi
-  release_lease_lock
+  dir_lock_release_all
   # Detach child: canonical output boundary + status slate, established the
   # moment the lease is OURS — before ANY further preflight, so every later
   # warning (invalid saved .id discarded, ignored resume overrides, porcelain

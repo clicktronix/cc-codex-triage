@@ -22,8 +22,8 @@ Code built-ins, so use their namespaced forms.
 
 Required review captures a clean candidate's canonical base, tracked spec,
 HEAD, and tree before dispatch. It accepts only one bare final `APPROVE` from
-the claimed foreground round. Candidate movement, a dirty worktree, wrong
-prompt scope, background execution, no decision, cap exhaustion, or a failed
+the claimed round. Candidate movement, a dirty worktree, wrong prompt scope,
+no decision, cap exhaustion, or a failed
 attribution cannot produce approval.
 
 The only delivery marker is:
@@ -63,7 +63,7 @@ the turn. Paid commands other than `/review` remain user-invoked.
 
 - `codex` CLI >= 0.137.0 on `PATH`.
 - `~/.codex/config.toml` configured for an authorized model.
-- `setsid` or `python3` only when detached delivery is needed.
+- `setsid` or `python3` for long `/review`, `/plan`, and `/debate` handoff.
 
 Install:
 

@@ -29,6 +29,15 @@ compatibility layers are removed rather than translated.
 - [x] Reclassify scenario files as historical evidence and remove stale claims.
 - [x] Update manifests, READMEs, changelog and tests to the smaller surface.
 
+## Review follow-up
+
+- [x] Make worktree-local state unconditional and cover the former override.
+- [x] Give model-invoked `/review` only its three product-route executables.
+- [x] Exercise `begin -> dispatch -> record -> check` in one regression.
+- [x] Remove dead review-state modes and duplicate lock implementations.
+- [x] Limit detached delivery to long-running commands.
+- [x] Reconcile command parsing, status, routing prose, and scenario ownership.
+
 ## Verification
 
 - [x] Product-route regression for reply framing through the production verdict

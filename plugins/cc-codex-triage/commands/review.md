@@ -1,7 +1,7 @@
 ---
 description: Review code with a persistent Codex thread. Use --required only when an owning workflow needs machine-checked approval for one exact clean candidate.
 argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--cap N] [--background] <intent or focus>'
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
 # /review
@@ -45,10 +45,9 @@ choose a new explicit name instead of paying to resume unrelated history.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" <<< "$PROMPT"
    ```
 
-   For `--background`, run this same `dispatch.sh` call as a Claude-managed
-   background task. The wrapper isolates the paid worker and waits through its
-   watcher; do not add a second `--detach` protocol. Exit 20 means the worker is
-   still running and is not a failed review.
+   For `--background`, run this call as a Claude-managed background task. Handle
+   long-dispatch handoff as defined by skill `codex-triage`; do not add another
+   detach layer.
 
 4. Validate every finding against the cited code and its consumers. Apply only
    valid findings. Push back with file:line evidence when a claim is wrong.
@@ -102,13 +101,13 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    ```
 
    If the dispatch failed before writing a completed record, release the claim
-   with `review-state.sh abort`. Exit 20 remains a live claim; wait for its
-   watcher before recording.
+   with `review-state.sh abort`. During a long-dispatch handoff the claim stays
+   live; wait for its watcher before recording.
 
 4. Record the completed round and re-check approval:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" record "$THREAD" foreground "$CLAIM_TOKEN"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" record "$THREAD" "$CLAIM_TOKEN"
    "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" check "$THREAD"
    ```
 

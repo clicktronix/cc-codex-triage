@@ -1,6 +1,6 @@
 ---
-description: Force-reset a named Codex thread — next message to it starts a fresh `codex exec` and loses prior conversation memory.
-argument-hint: "<thread-name> [optional first message]"
+description: Force-reset a named Codex thread so its next normal command starts a fresh `codex exec` without prior conversation memory.
+argument-hint: "<thread-name>"
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 disable-model-invocation: true
 ---
@@ -15,23 +15,18 @@ That reset also clears the thread's **required-review** state — `.candidate`, 
 
 1. Parse first token from `$ARGUMENTS` as the thread name. Validate `[a-zA-Z0-9_.-]+`.
 
-2. If no further text after the name → just drop the pointer:
+2. Refuse extra text; this command resets state but never starts a paid dispatch.
+   Run:
 
    ```bash
    # The driver holds the same active lease used by dispatch for the complete
    # reset. A concurrent dispatch therefore wins or loses before any sidecar is
    # removed; there is no reset-review-state, then delete-pointer TOCTOU gap.
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --reset-only </dev/null
-   echo "Thread '$THREAD' reset. Next /thread, /review, or /plan invocation starts fresh."
+   echo "Thread '$THREAD' reset. The next command targeting it starts fresh."
    ```
 
-3. If an additional prompt is given on the same line → drop the pointer AND immediately fire the prompt with `--new`:
-
-   ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --new <<< "$PROMPT"
-   ```
-
-4. Show Codex's reply (if step 3 ran) or the reset confirmation (if step 2 ran).
+3. Show the reset confirmation.
 
 ## When to use
 

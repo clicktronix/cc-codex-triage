@@ -1,7 +1,7 @@
 ---
 description: Stress-test a plan or architecture decision in a persistent Codex thread. Iterates to APPROVE by default; use --once for one pass.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or question>"
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 disable-model-invocation: true
 ---
 
@@ -32,10 +32,9 @@ optional comments remain, or the round cap is reached.
    ```
 
    Initial-only model and effort flags are ignored with a warning on resume.
-   Exit 20 means the paid worker is still running; use the printed
-   `detach-watch.sh` command instead of dispatching again. For `--background`,
-   run this same wrapper as a Claude-managed background task; the wrapper owns
-   worker isolation and watcher delivery, so do not add another detach layer.
+   Handle long-dispatch handoff as defined by skill `codex-triage`. For
+   `--background`, run this wrapper as a Claude-managed background task; do not
+   add another detach layer.
 
 4. Show the reply verbatim. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around

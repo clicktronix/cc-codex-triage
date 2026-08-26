@@ -1,7 +1,7 @@
 ---
 description: Run a structured multi-round debate between Claude Code and Codex on a design decision or question, with every exchange visible to the user. Ends in an honest synthesis, not forced consensus.
 argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] <question or decision to debate>"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 disable-model-invocation: true
 ---
 
@@ -25,12 +25,7 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> [--topic "<text>"] <<< "$OPENING"
    ```
 
-   `dispatch.sh` detaches the worker and then waits for it here, bounded below
-   the caller's ceiling. A short dispatch returns the reply in this turn exactly
-   as a direct call would; one that outruns the window **exits 20 and hands off**
-   — the worker is untouched, and re-running the `detach-watch.sh` line it prints
-   as a background task delivers the reply. Never treat exit 20 as a failure: the
-   dispatch is still running and is already paid for.
+   Handle long-dispatch handoff as defined by skill `codex-triage`.
 
    `$OPENING` template:
 
@@ -49,7 +44,8 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
    arguments. You may read the repo to ground them.
    ```
 
-4. Compose and dispatch your rebuttal **following the skill's anti-capitulation rules** (concede only on named evidence; advance or sharpen; no unearned middle ground) — but **argue, don't narrate those rules** (skill `codex-triage`): no "уступаю по правилу", "на этом не уступаю", "вопрос на спор", no untranslated jargon. Present the exchange in the **Presentation format** below. Repeat until N rounds are spent — or stop early if a round adds nothing new (say so).
+4. Compose and dispatch the rebuttal following the skill's Debate rules. Present
+   the exchange in the format below. Stop early when a round adds nothing new.
 
 5. **Synthesis round.** Send: `Final round — synthesis. List: (1) points we agree on, (2) residual disagreements stated plainly, (3) what changed your mind, if anything, and on what evidence. Recommend a course of action, admitting uncertainty where it exists.` Then render the **Result** block (below) from both your and Codex's synthesis. If you and Codex still disagree, present both options to the user — do not fake a winner.
 
@@ -57,7 +53,7 @@ Claude Code and Codex argue a question over N rounds in a persistent thread. The
 
 ## Presentation format
 
-The user reads the debate, not the rulebook. Render it as a clean, scannable transcript — one labelled, visually separated block per speaker per round — then a single Result block at the end. Argue the point; never narrate which anti-capitulation rule you are applying.
+Render one labelled block per speaker per round, then one Result block.
 
 Each round looks like this (the `---` rules are the "frames"):
 

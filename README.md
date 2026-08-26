@@ -1,8 +1,8 @@
 # cc-codex-triage
 
 Claude Code plugin for persistent, named conversations with OpenAI Codex CLI.
-It keeps the useful core small: named threads, bounded reviews, detached
-delivery, and exact-candidate required approval.
+It keeps named threads and exact-candidate required approval, with bounded
+review loops and long-review handoff.
 
 ## Install
 

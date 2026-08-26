@@ -2,7 +2,8 @@
   "skills": [
     "codex-triage"
   ],
-  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#when-the-review-loop-is-the-wrong-tool",
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#reviews",
+  "historical_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#when-the-review-loop-is-the-wrong-tool",
   "query": "I'm on review round 6 of my branch with Codex. Round 4 raised three blocking findings and I fixed all three. Round 5 came back REQUEST_CHANGES with two findings that were entirely new — nothing carried over — and I fixed those too. Round 6 has now come back REQUEST_CHANGES with two MORE new blocking findings that were never mentioned before: a superseded attempt can charge against the winner's delivered batch, and generation switching neither hides stale events nor guarantees delivery of the successor's. Again nothing from the previous round is still open. Fix these and get me to APPROVE.",
   "baseline_failure": "Without a divergence criterion, the agent treats round 6 exactly like round 2: fix the two cited findings, re-dispatch, repeat. Two rounds running have now produced only NEW blocking classes while every prior finding was closed, which means the DESIGN is being discovered through review rather than validated by it — but nothing in the loop measures that, so it runs until the user stops it or the cap does.",
   "expected_behavior": [
