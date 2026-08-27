@@ -2,6 +2,7 @@
 # cc-codex-triage — dispatch that survives the caller's timeout.
 #
 # usage: dispatch.sh <thread> [driver flags...]   (prompt on stdin)
+#        dispatch.sh --watch <thread> <pid> <log-offset>
 #
 # Same contract as codex-thread.sh: prompt in, reply on stdout and nothing else,
 # status on stderr, driver exit codes.
@@ -26,6 +27,11 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 DRIVER="$SELF_DIR/codex-thread.sh"
 WATCHER="$SELF_DIR/detach-watch.sh"
+
+if [ "${1:-}" = --watch ]; then
+  [ "$#" -eq 4 ] || { echo "usage: dispatch.sh --watch <thread> <pid> <log-offset>" >&2; exit 1; }
+  exec bash "$WATCHER" "$2" "$3" "$4"
+fi
 
 # Foreground wait, inside the caller's 600 s ceiling with room for the handoff
 # message. Length-bounded: a 20-digit value makes every `[` comparison error out.
@@ -75,6 +81,7 @@ OFF="$(printf '%s' "$LAUNCH" | sed -n 's/.*log-offset=\([0-9][0-9]*\).*/\1/p' | 
 CC_WATCH_PORCELAIN=1 CC_DETACH_WATCH_TIMEOUT="$WAIT" bash "$WATCHER" "$THREAD" "$PID" "$OFF"; wrc=$?
 if [ "$wrc" -eq 20 ]; then
   echo "dispatch.sh: still running after ${WAIT}s — the worker is UNAFFECTED. Deliver it with:" >&2
-  echo "  bash '$WATCHER' $THREAD $PID $OFF     (as a background task)" >&2
+  printf '  "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" --watch %s %s %s     (as a background task)\n' \
+    "$THREAD" "$PID" "$OFF" >&2
 fi
 exit "$wrc"

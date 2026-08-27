@@ -3,6 +3,7 @@
 #
 # begin <thread> --base <ref> --spec <repo-relative-path> --cap N
 #                                capture a clean HEAD/tree candidate
+# advisory-check <thread>        refuse advisory use of a required thread
 # record <thread> <claim-token>   record the latest post-begin verdict
 # abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token>
 #                                release a pending round after no dispatch result
@@ -260,15 +261,13 @@ case "$VERB" in
     assert_claim "$3"
     LOG="$STATE_DIR/$THREAD.log"
     OFF=0
-    if [ -f "$CANDIDATE" ]; then
-      OFF="$(field "$CANDIDATE" log_bytes)"; OFF="${OFF:-0}"
-      OLD_GEN="$(field "$CANDIDATE" log_gen)"; OLD_GEN="${OLD_GEN:-0}"
-      valid_decimal "$OFF" 12 && valid_decimal "$OLD_GEN" 9 \
-        || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
-      NOW_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || NOW_GEN=""
-      valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
-      [ "$OLD_GEN" = "$NOW_GEN" ] || OFF=0
-    fi
+    OFF="$(field "$CANDIDATE" log_bytes)"; OFF="${OFF:-0}"
+    OLD_GEN="$(field "$CANDIDATE" log_gen)"; OLD_GEN="${OLD_GEN:-0}"
+    valid_decimal "$OFF" 12 && valid_decimal "$OLD_GEN" 9 \
+      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+    NOW_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || NOW_GEN=""
+    valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
+    [ "$OLD_GEN" = "$NOW_GEN" ] || OFF=0
     RECORD_TMP="$(mktemp "$STATE_DIR/$THREAD.review-record.XXXXXX")" || exit 1
     # Judge only the latest dispatch after the candidate cut. Otherwise a later
     # verdict-less/advisory pass could inherit an earlier required APPROVE and
@@ -278,7 +277,7 @@ case "$VERB" in
       seen { record=record $0 ORS }
       END { printf "%s", record }
     ' > "$RECORD_TMP"
-    VERDICT="$(bash "$VERDICT_HELPER" strict "$RECORD_TMP" 2>/dev/null)"; VRC=$?
+    VERDICT="$(bash "$VERDICT_HELPER" "$RECORD_TMP" 2>/dev/null)"; VRC=$?
     [ "$VRC" -eq 0 ] || VERDICT=NONE
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
 

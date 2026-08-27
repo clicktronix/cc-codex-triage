@@ -15,9 +15,11 @@ repository and run tests itself.
   `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`.
 - `--lens correctness|security|performance|architecture|ux|quick`: default
   `correctness`. Read the matching short prompt from
-  `../skills/codex-triage/references/review-lenses.md` on the initial round.
+  `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` on the
+  initial round.
 - `--once`: one advisory pass. Without it, address validated blocking findings
-  and resume until `APPROVE` or `--cap` (default 5).
+  and resume until `APPROVE` or the cap.
+- `--cap N`: maximum rounds, default 5. Required review accepts only 1–5.
 - `--background`: one advisory pass through `dispatch.sh`; never gate-eligible.
 - `--required --base <ref> --spec <path>`: one foreground delivery-gate round.
   It cannot combine with `--once` or `--background`.
@@ -96,8 +98,7 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
 3. Dispatch with mutation detection enabled:
 
    ```bash
-   CC_CODEX_TRIAGE_STRICT=1 \
-     "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" <<< "$PROMPT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict <<< "$PROMPT"
    ```
 
    If the dispatch failed before writing a completed record, release the claim

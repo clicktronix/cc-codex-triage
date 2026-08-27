@@ -67,7 +67,7 @@ approve() { # thread
   ARC=$?
 }
 
-echo "== one parser, two explicit policies =="
+echo "== one strict parser at the delivery boundary =="
 cat > "$T/strict.log" <<'EOF'
 [test]
 PROMPT:
@@ -77,24 +77,23 @@ REPLY:
   APPROVE
 ---
 EOF
-VOUT="$("$VERDICT" strict "$T/strict.log")"; VRC=$?
+VOUT="$("$VERDICT" "$T/strict.log")"; VRC=$?
 [[ "$VRC" -eq 0 && "$VOUT" == APPROVE ]] \
   && ok "strict accepts one final bare verdict from REPLY" \
   || bad "strict verdict rc=$VRC out=$VOUT"
 
 sed 's/^  APPROVE$/  **APPROVE**/' "$T/strict.log" > "$T/decorated.log"
-"$VERDICT" strict "$T/decorated.log" >/dev/null 2>&1 \
+"$VERDICT" "$T/decorated.log" >/dev/null 2>&1 \
   && bad "strict accepted Markdown decoration" \
   || ok "strict rejects decorated verdicts"
-VOUT="$("$VERDICT" informational "$T/decorated.log")"; VRC=$?
-[[ "$VRC" -eq 0 && "$VOUT" == APPROVE ]] \
-  && ok "informational mode can display a decorated verdict" \
-  || bad "informational verdict rc=$VRC out=$VOUT"
 
 awk '/^---$/{print "REPLY:\n  REQUEST_CHANGES\n---"} {print}' "$T/strict.log" > "$T/duplicate.log"
-"$VERDICT" strict "$T/duplicate.log" >/dev/null 2>&1 \
+"$VERDICT" "$T/duplicate.log" >/dev/null 2>&1 \
   && bad "strict accepted two verdicts" \
   || ok "strict rejects ambiguous duplicate verdicts"
+"$VERDICT" informational "$T/strict.log" >/dev/null 2>&1 \
+  && bad "removed display-only verdict policy is still callable" \
+  || ok "the parser exposes no tolerant display policy"
 
 echo "== complete required-review product route =="
 begin product-route 3
@@ -142,6 +141,14 @@ SOUT="$("$STATUS")"; SRC=$?
 [[ "$SRC" -eq 0 && "$SOUT" == *"exact"*"status=APPROVED"* ]] \
   && ok "status displays the recorded approval without re-deciding it" \
   || bad "status omitted approval: $SOUT"
+printf '%s\n' "$SOUT" | awk '
+  /^Threads:/{threads=1; next}
+  /^Required review:/{threads=0}
+  threads && /verdict=/{found=1}
+  END{exit found}
+' \
+  && ok "ordinary thread rows do not infer an approval-like verdict from log prose" \
+  || bad "status still decorates ordinary threads with an inferred verdict: $SOUT"
 
 echo "== fail closed on candidate and prompt drift =="
 begin dirty 3

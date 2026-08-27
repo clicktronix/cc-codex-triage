@@ -146,6 +146,31 @@ for command in review plan debate; do
     && ok \
     || bad "commands/$command.md must use the long-dispatch wrapper"
 done
+
+ASK_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/ask.md")"
+[[ "$ASK_ALLOWED" == 'Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)' ]] \
+  && ok \
+  || bad "commands/ask.md must grant only the driver it executes"
+
+REPLY_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/reply.md")"
+EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)'
+[[ "$REPLY_ALLOWED" == "$EXPECTED_REPLY" ]] \
+  && ok \
+  || bad "commands/reply.md must retain Read plus its three product-route scripts"
+
+REVIEW_COMMAND="$ROOT/plugins/cc-codex-triage/commands/review.md"
+grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must resolve its lens reference from CLAUDE_PLUGIN_ROOT"
+grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must express strict mutation policy as a driver flag"
+if grep -R -qE '(^|[[:space:]])\.\./skills/' "$ROOT/plugins/cc-codex-triage/commands"; then
+  bad "command bodies must not resolve plugin references relative to the project cwd"
+else
+  ok
+fi
+
 THREAD_COMMAND="$ROOT/plugins/cc-codex-triage/commands/thread.md"
 grep -q 'Parse leading `--oneshot` and `--topic <text>` flags, in either order' "$THREAD_COMMAND" \
   && ok \
@@ -156,6 +181,12 @@ if grep -q -- '--reset-only' "$THREAD_NEW" && ! grep -q -- ' --new ' "$THREAD_NE
 else
   bad "commands/thread-new.md must reset only, without starting a paid dispatch"
 fi
+
+SKILL="$ROOT/plugins/cc-codex-triage/skills/codex-triage/SKILL.md"
+grep -q '`dispatch\.sh --watch`' "$SKILL" \
+  && ! grep -q 'printed `detach-watch\.sh`' "$SKILL" \
+  && ok \
+  || bad "the long-dispatch handoff must stay behind the already-granted dispatch.sh route"
 
 echo "== skills =="
 SKILL_COUNT="$(find "$ROOT/plugins/cc-codex-triage/skills" -name SKILL.md -type f | wc -l | tr -d ' ')"

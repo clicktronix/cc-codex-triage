@@ -1,6 +1,6 @@
 ---
 name: codex-triage
-description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion or code review. Provides shared thread, review, and debate behavior; only /review may be started from a natural-language request.
+description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion or code review. Provides shared thread, review, and debate behavior.
 ---
 
 # Codex Triage
@@ -27,7 +27,7 @@ second opinion is one advisory pass, never an inferred required-review loop.
 
 Use one task per thread. Reuse a named thread only when its topic still matches;
 otherwise start a new one. `/review` and `/plan` default to branch-scoped names.
-Use `--oneshot` when no follow-up is expected.
+For commands that expose it, use `--oneshot` when no follow-up is expected.
 
 Thread state is worktree-local. A Codex resume keeps the cwd chosen on the
 initial dispatch, so sharing its session id with another worktree would review
@@ -38,8 +38,8 @@ silently discard a conversation. If a thread is busy (exit 10), wait or choose
 another thread rather than dispatching concurrently to the same session.
 
 Long `/review`, `/plan`, and `/debate` calls use `dispatch.sh`. Exit 20 means
-the paid worker is still running; run the printed `detach-watch.sh` command as
-a background task and do not dispatch the same turn again.
+the paid worker is still running; run the printed `dispatch.sh --watch` command
+as a background task and do not dispatch the same turn again.
 
 ## Prompt boundary
 

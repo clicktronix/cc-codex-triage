@@ -66,7 +66,7 @@ exit "${FAKE_CODEX_EXIT:-0}"
 STUB
 chmod +x "$T/bin/codex"
 export PATH="$T/bin:$PATH"
-unset CLAUDE_PROJECT_DIR CC_CODEX_FLAGS CC_CODEX_TRIAGE_STRICT 2>/dev/null || true
+unset CLAUDE_PROJECT_DIR 2>/dev/null || true
 
 # ── test repo ───────────────────────────────────────────────────────────────
 REPO="$T/repo"
@@ -171,7 +171,7 @@ grep -qx '  APPROVE' "$SD/noeol.log" \
 
 # And the delivery gate must actually read it. This calls the product parser;
 # the regression cannot stay green by restating a second, drifting grammar.
-if "$VERDICT" strict "$SD/noeol.log" >/dev/null; then
+if "$VERDICT" "$SD/noeol.log" >/dev/null; then
   ok "the strict required-review rule finds exactly one verdict, standing last"
 else
   bad "the strict required-review rule still finds no attributable verdict"
@@ -243,6 +243,24 @@ run t7 --model gpt-5.5 --effort high
 argv="$(tr '\0' '\n' < "$T/argv")"
 grep -qx -- '-m' <<<"$argv" && grep -qx 'gpt-5.5' <<<"$argv" && ok "--model -> -m gpt-5.5" || bad "--model not forwarded"
 grep -qx 'model_reasoning_effort=high' <<<"$argv" && ok "--effort -> -c model_reasoning_effort=high" || bad "--effort not forwarded"
+
+echo "== --read-only is a driver flag, not an environment-prefix convention =="
+rm -rf "$SD"
+FAKE_CODEX_ARGV="$T/read-initial.argv" run tro --read-only
+read_initial="$(tr '\0' '\n' < "$T/read-initial.argv")"
+[[ "$(next_after "$read_initial" '-s')" == read-only ]] \
+  && ok "--read-only forwards an adjacent -s read-only on initial dispatch" \
+  || bad "initial --read-only was not forwarded: $read_initial"
+FAKE_CODEX_ARGV="$T/read-resume.argv" run tro --read-only
+read_resume="$(tr '\0' '\n' < "$T/read-resume.argv")"
+grep -qx -- '-s' <<<"$read_resume" \
+  && bad "--read-only leaked into codex exec resume" \
+  || ok "resume keeps the session sandbox without forwarding -s"
+FAKE_CODEX_ARGV="$T/read-oneshot.argv" run tro-shot --read-only --oneshot
+read_oneshot="$(tr '\0' '\n' < "$T/read-oneshot.argv")"
+[[ "$(next_after "$read_oneshot" '-s')" == read-only ]] \
+  && ok "--read-only also reaches a one-shot dispatch" \
+  || bad "oneshot --read-only was not forwarded: $read_oneshot"
 
 echo "== invalid --effort rejected (exit 1) =="
 run t7 --effort turbo; [[ "$RC" -eq 1 ]] && ok "bad effort -> exit 1" || bad "bad effort rc=$RC"
@@ -567,10 +585,15 @@ OUT="$(cd "$REPO" && PATH="$SLOWBIN2:$PATH" CC_DISPATCH_WAIT=3 bash "$DISPATCH" 
 # LIVE dispatch indistinguishable from a dead one.
 [[ "$rc" -eq 20 ]] && ok "outrunning the wait window exits 20 (handoff, not failure)" || bad "handoff rc=$rc"
 [[ -z "$OUT" ]] && ok "and the handoff writes nothing to stdout" || bad "handoff polluted stdout: [$OUT]"
-grep -q 'detach-watch.sh' "$T/derr" && ok "and names the watcher that delivers it, on stderr" || bad "no handoff instruction on stderr"
+grep -q 'dispatch\.sh" --watch' "$T/derr" \
+  && ! grep -q 'bash .*detach-watch.sh' "$T/derr" \
+  && ok "and hands off through the already-granted dispatch route" \
+  || bad "handoff bypassed dispatch.sh permissions: $(cat "$T/derr")"
 W="$(pgrep -f "$SLOWBIN2/codex" | head -1)"
 [[ -n "$W" ]] && kill -0 "$W" 2>/dev/null && ok "the worker is UNAFFECTED by the handoff" || bad "worker died with the wait window"
-pkill -f "$SLOWBIN2/codex" 2>/dev/null; rm -rf "$SLOWBIN2" "$SD"
+pkill -f "$SLOWBIN2/codex" 2>/dev/null
+i=0; while [ -e "$SD/d-long.active" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+rm -rf "$SLOWBIN2" "$SD"
 
 echo "== a TERM mid-dispatch is actionable: child killed, lease freed, trace left =="
 # bash defers a trap until the current FOREGROUND child finishes, so with a plain
@@ -756,6 +779,10 @@ rm -f "$SD/orphan.log"
 # the dispatch that creates the thread, so stat'ing it reports creation time
 # under a "last activity" heading.
 run ix --topic "index probe"
+IDX_FROM_OUTSIDE="$(cd "$T" && CLAUDE_PROJECT_DIR="$REPO" bash "$IDXSH" --tsv 2>&1)"
+printf '%s\n' "$IDX_FROM_OUTSIDE" | awk -F'\t' '$1=="ix"{found=1} END{exit !found}' \
+  && ok "thread-index follows CLAUDE_PROJECT_DIR when the caller cwd drifts" \
+  || bad "thread-index ignored the project root outside cwd: $IDX_FROM_OUTSIDE"
 touch -t 202001010000 "$SD/ix.id"
 printf '%s\t' "$(bash "$IDXSH" --tsv | awk -F'\t' '$1=="ix"{print $5}')" | grep -q '^2020' \
   && bad "LAST_ACTIVITY still reads the .id mtime" || ok "LAST_ACTIVITY tracks the log, not thread creation"
@@ -1219,8 +1246,8 @@ grep -q 'log-offset=[0-9]' <<<"$OUT" && ok "log-offset printed" || bad "no log-o
 echo "== detach-watch: reply landed -> exit 0 and prints the detached worker output =="
 WATCH="${DRIVER%codex-thread.sh}detach-watch.sh"   # suite cwd is inside the fixture repo — derive from DRIVER, not $0
 OFF="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
-WOUT="$(bash "$WATCH" p2 "$DP2B" "$OFF" 2>&1)"; WRC=$?
-[[ "$WRC" -eq 0 ]] && grep -q 'DONE' <<<"$WOUT" && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "watcher reports the landed reply" || bad "watcher success path rc=$WRC out=$WOUT"
+WOUT="$(bash "$DISPATCH" --watch p2 "$DP2B" "$OFF" 2>&1)"; WRC=$?
+[[ "$WRC" -eq 0 ]] && grep -q 'DONE' <<<"$WOUT" && grep -q 'FAKE_REPLY' <<<"$WOUT" && ok "the granted dispatch --watch route delivers the landed reply" || bad "dispatch --watch success path rc=$WRC out=$WOUT"
 
 echo "== detach-watch: later foreground round is not attributed to the detached worker =="
 rm -rf "$SD"; mkdir -p "$SD"
@@ -1322,13 +1349,13 @@ rm -rf "$SD"
 
 echo "== detach + strict mutation: worker exits 5 with a log append — watcher must FAIL, not DONE =="
 # B2 regression: log growth alone is not success. The stub mutates a tracked
-# file mid-dispatch; under CC_CODEX_TRIAGE_STRICT=1 the worker appends the
+# file mid-dispatch; under --strict the worker appends the
 # exchange and exits 5 — the watcher must surface that, not report DONE.
 echo tracked > mutate-me.txt && git add mutate-me.txt && git commit -qm strict-fixture
 run p5 --detach   # non-strict warmup so the thread exists
 DP5="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
 i=0; while kill -0 "$DP5" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done
-CC_CODEX_TRIAGE_STRICT=1 FAKE_CODEX_MUTATE="$PWD/mutate-me.txt" run p5 --detach
+FAKE_CODEX_MUTATE="$PWD/mutate-me.txt" run p5 --detach --strict
 DP5B="$(sed -n 's/^DETACHED pid=\([0-9]*\).*/\1/p' <<<"$OUT")"
 OFF5="$(sed -n 's/.*log-offset=\([0-9]*\).*/\1/p' <<<"$OUT")"
 i=0; while kill -0 "$DP5B" 2>/dev/null && [[ $i -lt 100 ]]; do sleep 0.1; i=$((i+1)); done

@@ -48,6 +48,8 @@ A resumed Codex session keeps the cwd selected at creation, so session ids are
 never shared between worktrees. Removing a linked worktree removes its plugin
 state. This release does not migrate `.claude/codex-threads` or earlier
 common-Git state; start fresh threads after upgrading.
+Remove a leftover `.claude/codex-threads/` directory from each repository if
+the old version created one; it is no longer read or cleaned by this plugin.
 
 Same-thread dispatches are serialized. A busy thread exits 10. Resume failure
 exits 4 and preserves the saved id until the user explicitly chooses

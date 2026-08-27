@@ -8,8 +8,8 @@ compatibility layers are removed rather than translated.
 ## Invariants
 
 - A required approval names the exact candidate the reviewer actually read.
-- One verdict parser owns verdict recognition; strict and informational use are
-  explicit modes of that parser.
+- One strict verdict parser owns delivery-gate recognition; status reports
+  recorded gate state rather than inferring approval-like text from a log.
 - Model-invoked entry points receive only the executable permissions they need.
 - Existing user state is not silently rewritten. This release is a breaking
   reset of legacy thread and gate state.
@@ -19,7 +19,7 @@ compatibility layers are removed rather than translated.
 ## Work
 
 - [x] Bind resumable sessions to one worktree and reject cross-worktree reuse.
-- [x] Route both strict and informational verdict reads through one parser.
+- [x] Keep verdict recognition only at the exact-candidate gate.
 - [x] Remove the findings ledger, disposition commands and `--continue` state.
 - [x] Remove `/autoplan`, `/autoreview`, the Stop hook and their gate runtime.
 - [x] Remove `/cleanup` and permanent pre-0.5/pre-0.9 migration code.
@@ -37,6 +37,17 @@ compatibility layers are removed rather than translated.
 - [x] Remove dead review-state modes and duplicate lock implementations.
 - [x] Limit detached delivery to long-running commands.
 - [x] Reconcile command parsing, status, routing prose, and scenario ownership.
+
+## Final review follow-up
+
+- [x] Align `/reply` and `/review` permissions with the files and scripts they
+      actually use.
+- [x] Replace environment-prefixed command wrappers with typed driver flags and
+      keep long-run delivery behind `dispatch.sh --watch`.
+- [x] Remove display-only verdict inference. Keep the reclaim serializer after
+      the stale-lock contention regression disproved its proposed removal.
+- [x] Make thread listing honor `CLAUDE_PROJECT_DIR` and document the one-time
+      deletion of legacy repository state.
 
 ## Verification
 

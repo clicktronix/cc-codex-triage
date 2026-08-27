@@ -7,7 +7,7 @@
 # memory across turns.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach]
+#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
 #       --new               fresh persistent thread, discarding the existing one.
 #       --reset-only        atomically clear persistent thread state under the
@@ -20,6 +20,9 @@
 #       --topic <text>      one-line label for a NEW thread, ignored if the
 #                           thread already has one. Makes the thread findable
 #                           by subject rather than by name alone.
+#       --read-only         create initial/oneshot Codex sessions in the
+#                           read-only sandbox; ignored on resume.
+#       --strict            exit 5 when tracked-file status changes.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
 #                           reaping); prints `DETACHED pid=<pid>
@@ -48,8 +51,8 @@
 #   <thread>.active           PID lease held while a dispatch is in flight.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
-#                             mutex around stale-lock takeover. Both lock
-#                             directories use the shared dir-lock.sh contract.
+#                             serializes stale-lock replacement so a contender
+#                             cannot move a newly acquired lock generation.
 #   <thread>.detach-output    raw STDOUT of the LATEST --detach child (the
 #                             reply echo). Truncated per launch BY THE CHILD
 #                             after lease arbitration (only the lease owner
@@ -73,7 +76,7 @@
 #   2   codex CLI missing
 #   3   codex exec failed (initial or oneshot)
 #   4   codex exec resume failed (saved UUID preserved — re-run with --new)
-#   5   tracked-file mutation detected (only with CC_CODEX_TRIAGE_STRICT=1)
+#   5   tracked-file mutation detected with --strict
 #   6   --require-existing set but no existing thread
 #   7   persistent mode outside a git repository (state anchors to the repo
 #       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
@@ -119,6 +122,8 @@ RESET_ONLY=false
 ONESHOT=false
 REQUIRE_EXISTING=false
 DETACH=false
+READ_ONLY=false
+STRICT=false
 THREAD=""
 MODEL=""
 EFFORT=""
@@ -145,6 +150,8 @@ while (( $# )); do
     --oneshot) ONESHOT=true; shift ;;
     --reset-only) RESET_ONLY=true; shift ;;
     --detach) DETACH=true; shift ;;
+    --read-only) READ_ONLY=true; shift ;;
+    --strict) STRICT=true; shift ;;
     # INTERNAL, set only by this script's own detach launcher on the process it
     # spawns. Deliberately not in --help or any command file.
     --detach-child)
@@ -170,7 +177,7 @@ while (( $# )); do
 done
 
 [[ -z "$THREAD" ]] && {
-  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach]" >&2
+  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]" >&2
   echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
@@ -194,7 +201,7 @@ if $FORCE_NEW && $REQUIRE_EXISTING; then
   echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
   exit 1
 fi
-if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH \
+if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH || $READ_ONLY || $STRICT \
     || [ -n "$MODEL$EFFORT$SCHEMA$TOPIC$DETACH_READY_FILE" ]; }; then
   echo "--reset-only accepts only a persistent thread name" >&2
   exit 1
@@ -302,8 +309,8 @@ lease_busy_pid() {
 # ── detach launcher ───────────────────────────────────────────────────────
 # Re-execs this same script (same args minus --detach) in a NEW SESSION and
 # returns after a ready handshake. Lifecycle order is the contract:
-#   isolator preflight (above, exit 8 with zero state) → state dir + gitignore
-#   nudge (paths section above — the sidecar redirection below is performed by
+#   isolator preflight (above, exit 8 with zero state) → state directory
+#   creation (the sidecar redirection below is performed by
 #   the shell BEFORE the isolator runs, so on a repo's first-ever detach the
 #   directory must already exist) → persist stdin + allocate READY → spawn →
 #   poll READY.
@@ -628,10 +635,11 @@ fail_with_diag() {
   exit "$code"
 }
 
-# Build the codex flag array from CC_CODEX_FLAGS. Empty is fine — the
-# `${arr[@]+...}` guard keeps `set -u` happy on bash 3.2 (macOS default),
-# where expanding an empty array directly is an "unbound variable" error.
-read -r -a EXTRA_FLAGS <<< "${CC_CODEX_FLAGS:-}"
+# The driver exposes the supported Codex controls as typed flags. Keeping an
+# arbitrary shell-split environment escape hatch here made command permissions
+# depend on wrapper syntax and could not preserve values containing spaces.
+SANDBOX_ARGS=()
+$READ_ONLY && SANDBOX_ARGS+=( -s read-only )
 
 # model/effort: initial/oneshot ONLY (kept stable across the thread; WARN if passed
 # on resume). schema: a per-MESSAGE output shape — `codex exec resume` accepts
@@ -747,7 +755,7 @@ porcelain() {
   if ! out="$(git -C "$REPO_ROOT" status --porcelain -uall 2>/dev/null)"; then
     # A transient git failure (e.g. another process holding index.lock) must
     # not masquerade as an empty status — that would false-positive the guard
-    # (fatal under CC_CODEX_TRIAGE_STRICT=1). Emit a sentinel; the guard skips
+    # (fatal under --strict). Emit a sentinel; the guard skips
     # the comparison when either side carries it.
     echo "__PORCELAIN_UNAVAILABLE__"
     return 0
@@ -813,7 +821,7 @@ if $ONESHOT; then
   # Throwaway: no thread tracking, no rollout persisted on the Codex side.
   # codex exec resume cannot continue an --ephemeral session — that is the point.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
@@ -844,7 +852,7 @@ else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
   CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-  if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+  if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
         ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
@@ -883,7 +891,7 @@ fi
 # Limitation: git status --porcelain only detects status TRANSITIONS. If a file
 # was already dirty before the dispatch and Codex changes its content further,
 # the porcelain line is unchanged and this guard will not fire. Commit/stash WIP
-# or use CC_CODEX_FLAGS="-s read-only" for stronger protection.
+# or use `--read-only` for stronger protection.
 STRICT_MUTATION_EXIT=false
 if [[ -n "$REPO_ROOT" ]]; then
   POST_PORCELAIN="$(porcelain)"
@@ -896,7 +904,7 @@ if [[ -n "$REPO_ROOT" ]]; then
     echo "Codex was likely run with a writable sandbox. Inspect the working tree before continuing." >&2
     # Exit 5 is deferred until AFTER the audit log append below — the one
     # exchange you most want in the log is the suspicious one.
-    if [[ "${CC_CODEX_TRIAGE_STRICT:-0}" == "1" ]]; then STRICT_MUTATION_EXIT=true; fi
+    $STRICT && STRICT_MUTATION_EXIT=true
   fi
 fi
 

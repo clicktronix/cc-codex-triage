@@ -15,10 +15,14 @@ All notable changes to this project are documented in this file.
   delivery gate.
 - Removed the unused review-output schema, dead `DIVERGED` machine state, and
   manually duplicated translated READMEs.
+- Removed the untyped `CC_CODEX_FLAGS` and `CC_CODEX_TRIAGE_STRICT` environment
+  wrappers. Commands now use the driver's explicit `--read-only` and `--strict`
+  flags, which survive command permission matching.
 
 ### Changed
-- One `verdict.sh` owns both strict delivery parsing and tolerant informational
-  display parsing as explicit modes.
+- One strict `verdict.sh` owns delivery parsing. `/status` reports recorded
+  required-review state instead of inferring approval-like text from old log
+  prose.
 - Worktree-local state is unconditional; an environment override can no longer
   reconnect two checkouts. Required review has one claimed `record` route, and
   its complete `begin -> dispatch -> record -> check` path is covered end to

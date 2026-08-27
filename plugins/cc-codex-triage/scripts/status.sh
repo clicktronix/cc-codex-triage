@@ -12,14 +12,9 @@ if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/d
 fi
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
-VERDICT_SH="$SELF_DIR/verdict.sh"
 REQUIRED_CODEX="0.137.0"
 
 field_value() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
-last_verdict() {
-  _value="$(bash "$VERDICT_SH" informational "$STATE_DIR/$1.log" 0 2>/dev/null)"
-  printf '%s' "${_value:--}"
-}
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 { [ -n "$BRANCH" ] && [ "$BRANCH" != HEAD ]; } || BRANCH="(detached or unborn HEAD)"
@@ -54,9 +49,8 @@ for ID_FILE in "$STATE_DIR"/*.id; do
   NAME="$(basename "$ID_FILE" .id)"
   ROUNDS="$(cat "$STATE_DIR/$NAME.rounds" 2>/dev/null || echo 0)"
   SIZE="$(wc -c < "$STATE_DIR/$NAME.log" 2>/dev/null | tr -d ' ')"
-  VERDICT="$(last_verdict "$NAME")"
-  printf '  %-30s rounds=%-3s size=%-8s last=%-16s verdict=%s\n' \
-    "$NAME" "$ROUNDS" "${SIZE:-0}" "$(_mtime "$ID_FILE")" "$VERDICT"
+  printf '  %-30s rounds=%-3s size=%-8s last=%-16s\n' \
+    "$NAME" "$ROUNDS" "${SIZE:-0}" "$(_mtime "$ID_FILE")"
 done
 [ "$ANY" = 1 ] || echo "  (none)"
 

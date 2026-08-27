@@ -1,7 +1,7 @@
 ---
 description: Ask OpenAI Codex CLI an informational question in a persistent thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique. Pass --thread to keep a feature's questions with the rest of that feature's context.
 argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] <question>'
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 disable-model-invocation: true
 ---
 
@@ -29,15 +29,13 @@ This is the **informational** command — collaborative, not adversarial. For cr
    <the question>
    ```
 
-3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's). Pass the read-only default **only on an initial dispatch** — `codex exec resume` takes no `-s`, so a sandbox flag on a resume is silently ignored. Resolve `STATE_DIR` with `state-dir.sh`; it is a resume when `$STATE_DIR/<THREAD>.id` exists.
+3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's).
+   `--read-only` applies when the driver creates the thread and is harmless on
+   resume, whose sandbox is already fixed.
 
    ```bash
-   # initial dispatch (no .id yet):
-   CC_CODEX_FLAGS="${CC_CODEX_FLAGS:--s read-only}" \
-     "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> [--topic "<text>"] [--oneshot] <<< "$QUESTION"
-
-   # resume — the thread keeps the sandbox it was created with:
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> <<< "$QUESTION"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --read-only \
+     [--topic "<text>"] [--oneshot] <<< "$QUESTION"
    ```
 
    `/ask` is a short foreground question. Use `/review`, `/plan`, or `/debate`
