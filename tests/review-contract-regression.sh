@@ -125,19 +125,45 @@ append_reply one-record-route APPROVE
   || bad "legacy record mode still accepted a verdict"
 "$STATE" reset one-record-route >/dev/null 2>&1
 
-echo "== an undispatched claim can be released with the documented signature =="
-begin abort-route 3
+echo "== a claim with no completed dispatch record can be released =="
+begin abort-route 1
 "$STATE" abort abort-route dispatch-failure "$CLAIM" >/dev/null 2>"$T/err"; ABORT_RC=$?
 [[ "$ABORT_RC" -eq 10 \
     && "$(field "$SD/abort-route.review-state" status)" == ABORTED \
     && "$(field "$SD/abort-route.review-state" reason)" == dispatch-failure ]] \
   && ok "abort releases the pending claim with an explicit machine reason" \
   || bad "abort route rc=$ABORT_RC state=$(cat "$SD/abort-route.review-state" 2>/dev/null)"
-begin abort-route 3
-[[ "$BRC" -eq 0 && -n "$CLAIM" ]] \
-  && ok "the released thread can claim its next required-review round" \
+begin abort-route 1
+[[ "$BRC" -eq 0 && -n "$CLAIM" && "$BOUT" == *"attempt=1/1" ]] \
+  && ok "a claim with no completed dispatch record consumes no cap" \
   || bad "aborted thread stayed wedged (rc=$BRC err=$(cat "$T/err"))"
 "$STATE" reset abort-route >/dev/null 2>&1
+
+begin partial-abort 1
+sed 's/^attempts=1$/attempts=0/' "$SD/partial-abort.review-loop" > "$T/partial-loop"
+mv "$T/partial-loop" "$SD/partial-abort.review-loop"
+"$STATE" abort partial-abort dispatch-failure "$CLAIM" >/dev/null 2>"$T/err"; PARTIAL_ABORT_RC=$?
+[[ "$PARTIAL_ABORT_RC" -eq 10 \
+    && "$(field "$SD/partial-abort.review-state" status)" == PENDING \
+    && "$(field "$SD/partial-abort.review-loop" cap)" == 1 \
+    && "$(field "$SD/partial-abort.review-loop" attempts)" == 0 \
+    && "$(cat "$T/err")" == *"INVALID_CLAIM_STATE"* ]] \
+  && ok "a crash between refund and ABORTED cannot refund the claim twice" \
+  || bad "partial abort was not fail-closed (rc=$PARTIAL_ABORT_RC loop=$(cat "$SD/partial-abort.review-loop" 2>/dev/null) err=$(cat "$T/err"))"
+begin partial-abort 1
+[[ "$BRC" -eq 10 && "$(cat "$T/err")" == *"PENDING"* ]] \
+  && ok "a partially published abort blocks a new begin until reset" \
+  || bad "partial abort allowed a new begin (rc=$BRC out=$BOUT err=$(cat "$T/err"))"
+"$STATE" reset partial-abort >/dev/null 2>&1
+
+begin completed-abort 1
+append_reply completed-abort APPROVE
+"$STATE" abort completed-abort dispatch-failure "$CLAIM" >/dev/null 2>"$T/err"; COMPLETED_ABORT_RC=$?
+[[ "$COMPLETED_ABORT_RC" -eq 10 && "$(field "$SD/completed-abort.review-loop" attempts)" == 1 \
+    && "$(cat "$T/err")" == *"ROUND_COMPLETED"* ]] \
+  && ok "a completed dispatch cannot use abort to recover its consumed cap" \
+  || bad "completed round was refunded (rc=$COMPLETED_ABORT_RC loop=$(cat "$SD/completed-abort.review-loop" 2>/dev/null) err=$(cat "$T/err"))"
+"$STATE" reset completed-abort >/dev/null 2>&1
 
 echo "== exact clean candidate approval =="
 approve exact

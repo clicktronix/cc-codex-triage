@@ -229,7 +229,7 @@ case "$VERB" in
     if [ "$ATTEMPTS" -ge "$CAP" ]; then
       [ -f "$CANDIDATE" ] \
         && write_state CAP_REACHED NONE false "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
-      die 10 "CAP_REACHED: required review already claimed $CAP attempt(s)"
+      die 10 "CAP_REACHED: required review already completed $CAP round(s)"
     fi
     ATTEMPT=$((ATTEMPTS + 1))
     write_loop_state "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" || exit 1
@@ -359,6 +359,30 @@ case "$VERB" in
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
+    LOOP_BASE_SHA="$(field "$LOOP_STATE" base_sha)"
+    LOOP_SPEC_PATH="$(field "$LOOP_STATE" spec_path)"
+    LOOP_CAP="$(field "$LOOP_STATE" cap)"
+    LOOP_START="$(field "$LOOP_STATE" start_round)"
+    LOOP_ATTEMPTS="$(field "$LOOP_STATE" attempts)"
+    C_BASE_SHA="$(field "$CANDIDATE" base_sha)"
+    C_SPEC_PATH="$(field "$CANDIDATE" spec_path)"
+    C_CAP="$(field "$CANDIDATE" cap)"
+    C_START="$(field "$CANDIDATE" loop_start_round)"
+    C_ATTEMPT="$(field "$CANDIDATE" attempt)"
+    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;; esac
+    valid_decimal "$LOOP_START" 7 && valid_decimal "$C_START" 7 \
+      && valid_decimal "$LOOP_ATTEMPTS" 7 && valid_decimal "$C_ATTEMPT" 7 \
+      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+    [ "$LOOP_BASE_SHA" = "$C_BASE_SHA" ] && [ "$LOOP_SPEC_PATH" = "$C_SPEC_PATH" ] \
+      && [ "$LOOP_CAP" = "$C_CAP" ] && [ "$LOOP_START" = "$C_START" ] \
+      && [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && [ "$LOOP_ATTEMPTS" -gt 0 ] \
+      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+    # The unchanged round/log proof above establishes that no dispatch
+    # completed. Return the reserved slot before publishing ABORTED. A crash
+    # between these writes remains fail-closed: PENDING blocks begin, and the
+    # attempt mismatch prevents a second abort from refunding twice.
+    write_loop_state "$LOOP_BASE_SHA" "$LOOP_SPEC_PATH" "$LOOP_CAP" "$LOOP_START" "$((LOOP_ATTEMPTS - 1))" \
+      || exit 1
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
     write_state ABORTED NONE false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$3" || exit 1
     die 10 "ABORTED: required-review round released after $3"

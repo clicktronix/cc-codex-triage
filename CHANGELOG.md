@@ -43,6 +43,9 @@ All notable changes to this project are documented in this file.
   rules needed by the current request.
 
 ### Fixed
+- Aborting a required-review claim with no completed dispatch record returns
+  its reserved cap slot. A transient tool failure can no longer exhaust
+  `--cap 1` without completing a review round.
 - **A reply without a trailing newline no longer swallows the log separator.**
   The driver logged replies with `sed 's/^/  /'`, and BSD sed leaves an
   unterminated final line unterminated, so `---` landed on it. When that line
