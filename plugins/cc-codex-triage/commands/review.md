@@ -19,9 +19,9 @@ repository and run tests itself.
   initial round.
 - `--once`: one advisory pass. Without it, address validated blocking findings
   and resume until `APPROVE` or the cap.
-- `--cap N`: maximum completed review rounds, default 5. Required review
-  accepts only 1–5; a claim with no completed dispatch record consumes none
-  when released with `abort`.
+- `--cap N`: maximum claimed review attempts, default 5. Required review
+  accepts only 1–5. `abort` returns an unrecorded claim's slot; a process loss
+  during claim publication stays fail-closed and may require `/thread-new`.
 - `--background`: one advisory pass through `dispatch.sh`; never gate-eligible.
 - `--required --base <ref> --spec <path>`: one foreground delivery-gate round.
   It cannot combine with `--once` or `--background`.
@@ -111,9 +111,7 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
      "$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"
    ```
 
-   `abort` succeeds only while the round count, log size, and log generation
-   remain unchanged. If any changed, the dispatch produced a record: use
-   `record`, not `abort`.
+   If `abort` reports `ROUND_COMPLETED`, use `record` instead.
 
    During a long-dispatch handoff the claim stays live; wait for its watcher
    before recording.

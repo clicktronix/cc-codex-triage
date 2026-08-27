@@ -229,7 +229,7 @@ case "$VERB" in
     if [ "$ATTEMPTS" -ge "$CAP" ]; then
       [ -f "$CANDIDATE" ] \
         && write_state CAP_REACHED NONE false "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
-      die 10 "CAP_REACHED: required review already completed $CAP round(s)"
+      die 10 "CAP_REACHED: required review already claimed $CAP attempt(s)"
     fi
     ATTEMPT=$((ATTEMPTS + 1))
     write_loop_state "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" || exit 1
@@ -375,12 +375,13 @@ case "$VERB" in
       || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
     [ "$LOOP_BASE_SHA" = "$C_BASE_SHA" ] && [ "$LOOP_SPEC_PATH" = "$C_SPEC_PATH" ] \
       && [ "$LOOP_CAP" = "$C_CAP" ] && [ "$LOOP_START" = "$C_START" ] \
-      && [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && [ "$LOOP_ATTEMPTS" -gt 0 ] \
+      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+    [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && [ "$LOOP_ATTEMPTS" -gt 0 ] \
       || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
     # The unchanged round/log proof above establishes that no dispatch
-    # completed. Return the reserved slot before publishing ABORTED. A crash
-    # between these writes remains fail-closed: PENDING blocks begin, and the
-    # attempt mismatch prevents a second abort from refunding twice.
+    # completed. Return a reserved slot, if present, before publishing ABORTED.
+    # A crash between these writes remains fail-closed: PENDING blocks begin,
+    # and the attempt mismatch prevents a second abort from refunding twice.
     write_loop_state "$LOOP_BASE_SHA" "$LOOP_SPEC_PATH" "$LOOP_CAP" "$LOOP_START" "$((LOOP_ATTEMPTS - 1))" \
       || exit 1
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
