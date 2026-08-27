@@ -165,6 +165,9 @@ grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md'
 grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict' "$REVIEW_COMMAND" \
   && ok \
   || bad "commands/review.md must express strict mutation policy as a driver flag"
+grep -qF '"$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must show the complete abort signature so a failed round cannot remain pending"
 if grep -R -qE '(^|[[:space:]])\.\./skills/' "$ROOT/plugins/cc-codex-triage/commands"; then
   bad "command bodies must not resolve plugin references relative to the project cwd"
 else

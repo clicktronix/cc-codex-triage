@@ -44,8 +44,9 @@ compatibility layers are removed rather than translated.
       actually use.
 - [x] Replace environment-prefixed command wrappers with typed driver flags and
       keep long-run delivery behind `dispatch.sh --watch`.
-- [x] Remove display-only verdict inference. Keep the reclaim serializer after
-      the stale-lock contention regression disproved its proposed removal.
+- [x] Remove display-only verdict inference. Retain the reclaim serializer as a
+      concurrency design choice; the suite verifies the retained protocol, not
+      that no simpler correct lock can exist.
 - [x] Make thread listing honor `CLAUDE_PROJECT_DIR` and document the one-time
       deletion of legacy repository state.
 

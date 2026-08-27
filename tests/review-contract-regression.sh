@@ -125,6 +125,20 @@ append_reply one-record-route APPROVE
   || bad "legacy record mode still accepted a verdict"
 "$STATE" reset one-record-route >/dev/null 2>&1
 
+echo "== an undispatched claim can be released with the documented signature =="
+begin abort-route 3
+"$STATE" abort abort-route dispatch-failure "$CLAIM" >/dev/null 2>"$T/err"; ABORT_RC=$?
+[[ "$ABORT_RC" -eq 10 \
+    && "$(field "$SD/abort-route.review-state" status)" == ABORTED \
+    && "$(field "$SD/abort-route.review-state" reason)" == dispatch-failure ]] \
+  && ok "abort releases the pending claim with an explicit machine reason" \
+  || bad "abort route rc=$ABORT_RC state=$(cat "$SD/abort-route.review-state" 2>/dev/null)"
+begin abort-route 3
+[[ "$BRC" -eq 0 && -n "$CLAIM" ]] \
+  && ok "the released thread can claim its next required-review round" \
+  || bad "aborted thread stayed wedged (rc=$BRC err=$(cat "$T/err"))"
+"$STATE" reset abort-route >/dev/null 2>&1
+
 echo "== exact clean candidate approval =="
 approve exact
 [[ "$BRC" -eq 0 && -n "$CLAIM" ]] \

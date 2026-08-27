@@ -101,9 +101,16 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict <<< "$PROMPT"
    ```
 
-   If the dispatch failed before writing a completed record, release the claim
-   with `review-state.sh abort`. During a long-dispatch handoff the claim stays
-   live; wait for its watcher before recording.
+   If the dispatch failed before writing a completed record, release the claim:
+
+   ```bash
+   ABORT_REASON=dispatch-failure  # or timeout / tool-failure
+   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" abort \
+     "$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"
+   ```
+
+   During a long-dispatch handoff the claim stays live; wait for its watcher
+   before recording.
 
 4. Record the completed round and re-check approval:
 
