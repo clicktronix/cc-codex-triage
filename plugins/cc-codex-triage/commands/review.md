@@ -22,6 +22,8 @@ repository and run tests itself.
 - `--cap N`: maximum claimed review attempts, default 5. Required review
   accepts only 1–5. `abort` returns an unrecorded claim's slot; a process loss
   during claim publication stays fail-closed and may require `/thread-new`.
+  A refunded dispatch may still have incurred Codex cost; `--cap` does not
+  bound those calls.
 - `--background`: one advisory pass through `dispatch.sh`; never gate-eligible.
 - `--required --base <ref> --spec <path>`: one foreground delivery-gate round.
   It cannot combine with `--once` or `--background`.
