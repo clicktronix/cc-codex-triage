@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.11.0] - 2026-08-28
 
 ### Breaking
 - Thread state is now worktree-local. Legacy `.claude/codex-threads` and
