@@ -1,230 +1,92 @@
 ---
 name: codex-triage
-description: Use when the user wants to involve OpenAI Codex CLI from Claude Code — asking it a question, getting a second opinion on code or a plan, validating another agent's findings, or replying to something Codex said — especially across multiple turns of the same conversation.
+description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion or code review. Provides shared thread, review, and debate behavior.
 ---
 
 # Codex Triage
 
-## When to invoke
+Follow an explicitly invoked command. For a natural-language request, only a
+second opinion or code review may start `/review`; otherwise name the relevant
+namespaced command and wait for the user to invoke it.
 
-- The user types any plugin command: `/ask`, `/review`, `/plan`, `/reply`, `/debate`, `/status`, `/thread <name>`, `/thread-list`, `/thread-new`, `/cleanup`, `/review-dispute`, `/review-accept`, `/review-defer`, `/autoreview`, `/autoplan`.
-- The user says "спроси Codex", "what does Codex think", "проверь второй моделью", "cross-validate", "second opinion", or pastes a review from a different agent and asks Claude to validate it.
-- A long-running investigation where the same Codex thread needs context across many Claude Code turns.
+| Intent | Command |
+|---|---|
+| Informational question | `/ask` |
+| Code, diff, PR, or third-party review | `/review` |
+| Plan or architecture stress-test | `/plan` |
+| Reply to an existing Codex thread | `/reply` |
+| Structured disagreement watched by the user | `/debate` |
+| Arbitrary named conversation | `/thread` |
+| Inspect or reset local state | `/status`, `/thread-list`, `/thread-new` |
 
-### Routing — which command for which intent
-
-| Intent | Command | Thread |
-|---|---|---|
-| Informational question ("how does X work", "is there already a Y") | `/ask` | `ask` (read-only), or `--thread <feature>` |
-| Critique of code / diff / PR / a third-party review | `/review` (iterates to APPROVE; `--once` = single pass) | `review-<branch>` (default) or per-task |
-| Stress-test a plan or design | `/plan` (iterates to APPROVE; `--once` = single pass) | `plan-<branch>` (default) or per-task |
-| Reply back to something Codex said | `/reply [thread]` | named thread, default `review-<branch-slug>` (falls back to a legacy bare `review` if only that exists) |
-| Structured disagreement on a decision, user watching | `/debate [--rounds]` | `debate-<slug>` |
-| See plugin / thread / gate state in this repo | `/status` (read-only) | — |
-| Dispose of a recorded finding (false-positive / accepted / deferred) | `/review-dispute` / `/review-accept` / `/review-defer <id>` | the finding's review thread |
-| Anything else, isolated by topic | `/thread <name>` | `<name>` |
-| Self-verification before finishing a turn | `/autoreview on` / `/autoplan on` | `review-<branch>` / `plan-<branch>` |
-
-`ask`/`review`/`plan` carry intent framing (and `ask` defaults to read-only); `/thread` is a plain passthrough.
-
-**`/review` is model-invocable for owning workflows.** Use `--required` only when the user started a delivery workflow that names Codex review as a gate; that invocation authorizes foreground rounds up to the explicit cap. All other slash commands remain `disable-model-invocation`, and the sibling **`codex-second-opinion`** remains the bounded one-pass escape hatch for a genuine decision fork. Never turn a spontaneous second opinion into a required review loop.
-
-**`/review` and `/plan` iterate to APPROVE by default** — dispatch, address blocking findings, re-review, until APPROVE or the `--cap` round limit. Use `--once` for a single pass you act on yourself (and Judge-mode — a pasted third-party review — always runs a single classification pass, never a loop).
-
-**One task = one thread.** `/review` and `/plan` default to a **branch-scoped** thread (`review-<branch>` / `plan-<branch>`, e.g. `review-main` on `main` — there is no main/master special-case) so each branch, and the matching `/autoreview` / `/autoplan` gate, stay on one isolated thread; the bare `review`/`plan` names are only via an explicit `--thread`. Reusing one thread across different tasks pays every later round's resume re-feeding the first task's history and muddies the audit log — start a fresh `--thread <topic>` instead.
-
-**One feature = one thread, across commands.** Those defaults are per *command kind*, so a feature's context splits across `ask`, `plan-<branch>` and `debate-<slug>`. Point `/ask`, `/plan` and `/debate` at one `--thread <feature>`; leave `/review` on its branch thread, since the gate reads verdicts from that log. Two limits: the **sandbox is fixed at session creation** (`codex exec resume` takes `-m` and `--output-schema` but no `-s`, and the driver withholds the `-c` override that could reach it), so a feature thread picks read-only or write once; and every resume re-feeds the history, so split a large thread into `<feature>-2` with a written handoff. `/thread-list` shows rounds and size — for calibration, production threads reach ~130 KB by round 9 and the longest (13 rounds) never converged.
-
-**`--oneshot`** (any command except list/new): throwaway — no thread tracked, ephemeral Codex session, leaves no trace. Use for a one-off where no follow-up is planned. Without it, every command keeps a persistent thread.
+`/review` is model-invocable only because an owning workflow may require its
+exact-candidate gate. Every other paid command is user-invoked. A spontaneous
+second opinion is one advisory pass, never an inferred required-review loop.
 
 ## Threads
 
-Thread and review files live under the repository's common Git directory, reported by `scripts/state-dir.sh`. This location is shared by all worktrees and survives deletion of a disposable worktree. Armed gates and the fingerprint cache instead live under the current worktree's absolute Git directory, reported by `scripts/gate-dir.sh`; two worktrees never overwrite each other's gate. A first mutating command migrates matching legacy `.claude/codex-threads/` state without overwriting conflicts:
+Use one task per thread. Reuse a named thread only when its topic still matches;
+otherwise start a new one. `/review` and `/plan` default to branch-scoped names.
+For commands that expose it, use `--oneshot` when no follow-up is expected.
 
-- `<name>.id` — saved Codex session UUID for the thread.
-- `<name>.log` — append-only audit log of prompt/reply pairs (rotated to `.log.1` at ~1 MB; rotation happens before each append, so the latest entry is always in the current `.log`).
-- `<name>.last-error.jsonl` — raw Codex stream from the most recent failure (the path the driver points you at on error; removed on the thread's next successful dispatch, capped to the last 64 KB).
-- `<name>.detach-output` — raw STDOUT of the LATEST `--detach` child (truncated per launch by the lease-owning child; the reply itself still lands in the `.log` as usual).
-- `<name>.detach-stderr` — the latest detach child's STDERR — warnings a successful run emits (invalid saved ID discarded, ignored resume overrides, porcelain guard notes); the watcher surfaces it on every outcome.
-- `<name>.detach-status` — the latest detach child's real exit status (`pid=`/`rc=` lines, written atomically on exit) — what `detach-watch.sh` bases its verdict on; no matching record → the watcher reports UNKNOWN (exit 4), never success-from-log-growth.
-- `<name>.topic` — one-line label of what the thread is about, set by `--topic` when it is created. `thread-index.sh` lists it so an agent can reuse the right thread instead of opening a new one.
-- `<name>.dispatch-fp` / `<name>.dispatch-fp-plan` — code state the thread was last dispatched against, whole-tree and (for the armed plan thread) plan-scoped, captured *before* Codex runs. The same values are stamped into that dispatch's log header (`fp=` / `fp-plan=`), which is how a gate releases the state the verdict actually judged rather than whatever a later dispatch left behind; the sidecars are the fallback for records written before headers carried them.
-- `<name>.log-gen` — how many times the driver has rotated this thread log. A gate's verdict window is a byte offset into the log as it was, so a changed count tells the hook to parse the whole current log instead of from an offset that now points into unrelated content.
-- `<name>.candidate` — exact clean HEAD, tree and content fingerprint captured before a required review round.
-- `<name>.review-state` — machine-readable latest verdict and gate eligibility. `APPROVED` is the only successful required-review status.
-- `<name>.approved` — exact candidate approval baseline. Always validate it with `review-state.sh check`; any code movement makes it stale.
-- `gate-index` (worktree gate directory) — a cached git index the whole-tree fingerprint seeds itself from, so git's stat cache survives between turns without mixing different worktrees. An optimisation only: a stale or missing one is repaired by the next run.
-- `<name>.active` — PID lease held while a dispatch is in flight (written just before codex runs, removed on exit by its owner); `/cleanup` treats a live lease as "thread in use" and skips it.
-- `<name>.active.lock` — transient acquisition mutex directory (with an owner-PID token inside) held only while a dispatch claims the lease. Stale recovery is automatic: a lock whose owner PID is dead, or an ownerless lock older than 60s, is reclaimed by the next dispatch; a lock with a live owner is never stolen.
+Thread state is worktree-local. A Codex resume keeps the cwd chosen on the
+initial dispatch, so sharing its session id with another worktree would review
+the wrong checkout. Removing a worktree removes its plugin state.
 
-List with `/thread-list`, which prints `scripts/thread-index.sh` — name, rounds, size, last activity, topic, and a `[busy]` marker for a thread with a dispatch in flight. That script is a local read with no Codex dispatch, so `codex-second-opinion` may run it directly to **pick an existing thread rather than open a new one**. Force-reset (drop saved UUID and the topic, next dispatch starts fresh) with `/thread-new <name>`.
+If resume exits 4, report the failure and ask before using `--new`. Never
+silently discard a conversation. If a thread is busy (exit 10), wait or choose
+another thread rather than dispatching concurrently to the same session.
 
-**Name and label a thread when you create it.** The name is the handle (`feat-391`, `review-<branch>`); `--topic "what it is about"` is what makes it findable later. A thread called `review-391-a` with no topic tells the next agent nothing.
+Long `/review`, `/plan`, and `/debate` calls use `dispatch.sh`. Exit 20 means
+the paid worker is still running; run the printed `dispatch.sh --watch` command
+as a background task and do not dispatch the same turn again.
 
-The plugin never touches `~/.codex/sessions/rollout-*.jsonl` directly. Codex CLI manages those. `--oneshot` runs `codex exec --ephemeral` and writes **no** `.id`, `.log`, or rollout — a true throwaway.
+## Prompt boundary
 
-## The driver — how every dispatch actually runs
+Codex is an agent running in the repository. It can read files, inspect diffs,
+and run tests. Send only what it cannot infer:
 
-All commands shell out to the bundled driver. When you need to dispatch without a command body in context (e.g. the autoreview gate pointed you here, or the user asked in prose), call it directly:
+- the user's intent;
+- the review or question scope;
+- the requested focus;
+- external evidence not present in the repository.
 
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <thread> [--new|--oneshot|--require-existing|--detach] <<< "$PROMPT"
-```
+Show Codex's answer verbatim. If a tool call failed, report the failure instead
+of predicting the missing output.
 
-The prompt goes on stdin; the reply comes on stdout (show it verbatim). Exit codes: 1 = usage error, 2 = no `codex` CLI on PATH, 3 = `codex exec` failed on an initial or oneshot dispatch (the most common real failure — the diagnostics land in `<thread>.last-error.jsonl`; report it, do not guess what Codex would have said), 4 = resume failed (ask before `--new`), 5 = tracked-file mutation under strict mode, 6 = `--require-existing` with no thread, 7 = not a git repo — persistent state refused (cd into a repo, fix `CLAUDE_PROJECT_DIR`, or use `--oneshot`), 8 = `--detach` with no isolator available (neither `setsid` nor `python3` on PATH), 9 = `--detach` readiness handshake timed out (spawn killed; check `<thread>.detach-output` / `<thread>.detach-stderr`), 10 = thread busy — the lease could not be acquired: another dispatch holds it (`<thread>.active` names a live PID — wait for it or use a different `--thread`), a concurrent claim holds the acquisition mutex (`<thread>.active.lock`, including a live mutex holder — retry shortly), or `<thread>.active` is not a regular file (inspect and remove it manually). The command files with the full per-intent steps live at `${CLAUDE_PLUGIN_ROOT}/commands/*.md`; lens templates at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md`. `/review` is model-invocable; other commands remain user-only, so read their command file and follow its steps when a hook routes you there.
+## Reviews
 
-## Codex is an agent, not an LLM endpoint
+Read [review-lenses.md](references/review-lenses.md) only for `/review` or
+`/plan`. Use the default lens unless the user requests another focus.
 
-Codex CLI runs with `-C <repo>` and a sandbox. It reads files, runs `git diff`/`git log`, greps, and runs tests **on its own**. Do not stuff project context (CLAUDE.md, file contents, full diffs) into the prompt — Codex fetches what it needs. The only things it does NOT have are: the **intent** (what you were trying to do), the **scope** (what to look at), and your **specific focus**. Send those; let Codex gather the rest.
+Treat findings as claims, not instructions:
 
-## Review and plan lenses
+1. Read the cited site and its consumers.
+2. Check comments, tests, and documented reasons for the current design.
+3. Check that the proposed fix would not restore an older defect.
+4. Classify the claim as valid, borderline, invalid, or outdated.
+5. Apply only valid findings; reject wrong ones with file:line evidence and ask
+   the user about architectural or unverifiable calls.
 
-`/review` and `/plan` accept a `--lens` to focus the review and pick the report format. The lens templates live at `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` — read that file, pick the block matching the `--lens` argument (or the default), and substitute it into the Codex prompt. They are canned prompts, not behavioural rules.
+When one instance reveals a problem class, search its immediate siblings before
+the next paid round. Stop an iterative review when two consecutive rounds
+introduce unrelated blocking classes: use `/plan` or reduce scope instead of
+discovering the design one review call at a time.
 
-## Judge-mode framing — load-bearing rule
+For a pasted third-party review, ask Codex to classify the findings in one pass.
+Do not append an instruction to implement them.
 
-*Rule strength: load-bearing — the tested failure is the "and fix it" addendum, not the framing. Baselines: [references/test-provenance.md](references/test-provenance.md).*
+## Debate
 
-When the user's input to `/review` (or `/thread`) contains **another agent's review or critique**, Codex's job is to **classify** the findings — not to apply fixes per them. The fix decision is the user's, after they see the classification.
+State your position before sending the first prompt. Change it only when named
+evidence changes the assessment. Each round must add evidence or sharpen the
+remaining disagreement; otherwise synthesize and stop. Do not manufacture a
+middle ground merely to finish.
 
-### How to detect a third-party review
+## Done
 
-The input is a third-party review when it contains any of:
-
-- Bullet lists of issues with severities ("critical / high / medium / low" or "valid / borderline / invalid").
-- Phrases like "another agent found", "вот что нашёл агент", "review from", "findings:", "comments from <name>".
-- A paste of structured findings — file:line references followed by a description and recommendation.
-- A pasted PR review thread or GitLab MR thread.
-
-### How to wrap the prompt
-
-Send Codex the **code AND the review together** with classification (not application) instructions:
-
-```
-You are evaluating a third-party review.
-Below is the CODE in scope, then a REVIEW of that code by a different agent.
-For each finding in the review, classify as: valid (defensible by code+evidence)
-/ borderline (style or judgement call) / invalid (refuted by code) / outdated
-(was once true, code has changed). Cite the file:line you used to decide.
-Do NOT accept claims at face value. End with a one-line overall verdict.
-
---- CODE ---
-<the code in scope, or `git diff` output>
-
---- REVIEW ---
-<the user's pasted review>
-```
-
-**Do NOT append "provide a corrected implementation" / "apply the valid fixes" / "rewrite the function with these fixes applied"** to the prompt. The user decides what to apply after seeing the classification. (Background: arXiv 2509.16533 found 23.5–80.3% sycophantic capitulation under sequential rebuttal framing. Agents already mitigate the framing problem unprompted; the residual failure is the helpfulness-driven "and fix it" addendum.)
-
-When the input is the user's own direct question with no third-party review, pass it through unwrapped.
-
-## Answering Codex back
-
-*Rule strength: weak reminder — happy path did not reproduce; kept for the tool-failure case. Baselines: [references/test-provenance.md](references/test-provenance.md).*
-
-When replying via `/reply`: do the tool work Codex asks for and paste the **verbatim** output (don't predict it); represent the user's position, not Codex's; reject a finding only with a concrete file:line; and don't re-affirm a claim Codex already walked back mid-message. Capable models do this anyway — it is spelled out for weak-model and tool-failure cases. Keep replies short (≤500 words).
-
-## Debating Codex — anti-capitulation rules
-
-*Rule strength: narrow but real — targets premise-level capitulation onset under wrap-it-up pressure. Baselines: [references/test-provenance.md](references/test-provenance.md).*
-
-When running `/debate`, you are a party with a position, not a moderator:
-
-- **Commit first.** Form and state your own position (with evidence) BEFORE sending the topic to Codex and before reading its reply. Show it to the user.
-- **Concede only on evidence.** You may change your stance on a point ONLY by naming the specific evidence (file:line, doc, measurement, counter-example) that changed your assessment. "That's a fair point" without named evidence is forbidden.
-- **Advance or sharpen.** Each round must add new evidence or sharpen the disagreement. Repeating the prior round's argument means the debate is done — move to synthesis.
-- **No unearned middle ground.** Do not split the difference to end the discussion. A compromise needs its own justification.
-- **Argue, don't narrate the rules.** These rules govern your *reasoning*, not your *wording*. Never transcribe them into the message — no "уступаю с называнием доказательства", "на этом не уступаю", "вопрос на спор", "residual-решение, на котором не уступаю". Just make the argument: cite the evidence, add the new point, name the disagreement. Rule-compliance must show in the *substance*, not in labels announcing which rule you are obeying. Write in the conversation's language and avoid untranslated jargon ("wedge", "moat", "residual", "sequencing", "плацдарм") in your own turns; Codex's verbatim reply is exempt. (Observed leaking in a real production debate — see [references/test-provenance.md](references/test-provenance.md).)
-- **Honest synthesis.** The final round lists: points of agreement, residual disagreements (stated plainly, not papered over), what changed whose mind and why, and a recommendation that admits uncertainty where it exists.
-
-## Validating inbound Codex findings — verify before you apply
-
-*Rule strength: reminder — strong models verify unaided, but were relying on a skill this plugin doesn't ship; the principle is encoded inline. The untested failure is not going to read the files under speed pressure. Baselines: [references/test-provenance.md](references/test-provenance.md).*
-
-A Codex `/review` reply is a set of **claims to evaluate**, not orders to execute. Codex ran with `-C <repo>` but it saw the scope you sent and reasoned from the diff — it does **not** have the intent, the surrounding render/call path, or the reasons behind the current code. Treat every finding as "defensible until checked against the code."
-
-Before applying ANY finding:
-
-1. **Read the cited site and its consumers** — not just the line Codex quoted. The bug it describes often lives in how the value is *used* (a "stale field leaks" claim is false if the consumer gates on a different field).
-2. **Check for a reason the current code is the way it is** — a comment, a named bug/issue, a test that pins the behaviour. Codex can't see why; you can.
-3. **Check the suggested fix doesn't regress** — a "fix" that resets/widens/reorders can reintroduce exactly what the current code guards against.
-4. **Classify:** valid (code+evidence back it) / borderline (style or judgement) / invalid (refuted by code) / outdated (was true, code moved on).
-5. **Then act:** apply valid findings (and fix the neighborhood, below); reject invalid/outdated ones via `/reply` with the concrete file:line that refutes them; surface borderline ones — and anything that conflicts with a deliberate architectural decision — to the user rather than silently complying.
-
-**If you can't verify** a finding without something you don't have (a runtime trace, a missing file, prod data), say so — "I can't confirm this without X; investigate, ask, or apply on your judgement?" — instead of applying on faith.
-
-**The `/autoreview` APPROVE gate is not a reason to comply.** The gate releases on APPROVE *or* the round cap; an evidence-backed rejection is a legitimate way to resolve a round. Never apply a finding you believe is wrong just to make the gate release — that ships a regression to satisfy a counter. If Codex holds a finding you've refuted with file:line, escalate to the user (lower the gate, accept the cap), don't rubber-stamp it.
-
-This is the inbound mirror of Judge-mode: there you tell Codex not to take a third party's claims at face value; here you don't take Codex's.
-
-## Addressing findings — fix the neighborhood, not the cited line
-
-*Rule strength: real at production scale — small fixtures pass unaided; the documented failure is cross-file neighborhoods (a real loop spent 3 of 8 rounds on one invariant). Baselines: [references/test-provenance.md](references/test-provenance.md).*
-
-When fixing a review finding, treat it as an instance of a **problem class**, not a line defect:
-
-1. Before patching, ask: *what invariant does this finding describe?*
-2. Search for every other site where that invariant applies — sibling functions, parallel code paths, other ingress points, the same check elsewhere in the call chain.
-3. Fix ALL of them in this round, and say which sites you covered in the re-review request.
-4. Check ordering/interaction: a guard added in the right place but after an earlier branch that bypasses it is not a fix.
-
-A fix that addresses only the cited line invites the next round to flag the sibling — every such round costs a full Codex dispatch.
-
-## When the review loop is the wrong tool
-
-*Rule strength: production RED, no synthetic baseline — the failure needs a task whose design is genuinely unfinished, and any fixture cheap enough to probe is small enough to converge. Baselines: [references/test-provenance.md](references/test-provenance.md), scenario `review-divergence`.*
-
-Iterating to APPROVE assumes the review is **closing** a known design. Check each round which regime you are in:
-
-- **Converging** — this round's findings are repairs of earlier ones (still open, partially fixed, a sibling of the same invariant, an ordering correction), and the blocking count is falling. Keep going; this is what the loop is for.
-- **Diverging** — this round's blocking findings are **new classes** with nothing carried over, and it has happened two rounds running. The design is being discovered through review rather than validated by it, one paid dispatch at a time.
-
-**Round count is not the signal — repeat structure is.** A 9-round thread whose blocking findings decay 10 → 6 → 3 → … → 0 is healthy and must not be interrupted. A 3-round thread that produces three unrelated blocking classes is already diverging.
-
-On divergence, stop dispatching and put it to the user: go back to `/plan` on the design, or cut the scope to something the current design covers. Say plainly that the findings are real and the review is working — it is being asked to do design work, which costs one full dispatch per decision and is the most expensive way to make one.
-
-**A plan thread that never reached APPROVE predicts this.** If `/plan` ended on `REQUEST_CHANGES` or its cap and implementation started anyway, expect the review to collect the difference. Check `<plugin>/scripts/status.sh` output (or the plan thread's last verdict) before opening a long review loop.
-
-## Self-verification gates (`/autoreview`, `/autoplan`)
-
-Arming reviews existing work first, then gates future turns. `/autoreview on`: if the branch already has changes, run the review flow on it immediately (no manual step); then a Stop hook blocks the end of every future turn whose code differs from the last state the gate released, until the per-branch review thread reaches an **APPROVE earned inside that cycle** or the round cap. `/autoplan on`: stress-test already-changed plan docs immediately, then gate future plan-doc changes until the plan thread has seen one dispatch within the cycle (the gate detects thread-log growth, not command identity).
-
-**The unit is a cycle, not an arming** — this is what makes the loop continue rather than fall silent:
-
-- It hashes working-tree **content** (tracked and untracked; `.gitignore` honoured), so **committing the fixes keeps the gate engaged** while **committing already-approved bytes costs no round**.
-- Each release records what it approved and advances the verdict window, so **one APPROVE covers one state**, not the rest of the arming.
-- The cap bounds one cycle and is refilled only by a real release.
-
-The hook never calls Codex itself — when blocked, invoke model-callable `/review` or read the user-only `plan.md` command file, then follow the requested thread/lens, validate findings, and finish the turn. Runaway-safe: the numeric-validated round cap is the hard terminator (malformed state fails open), the success release is the in-cycle verdict (autoreview) / in-cycle dispatch on the plan thread (autoplan), branch scoping keeps it out of unrelated turns. Armed state lives in the current worktree's gate directory; shared thread state remains available across worktrees. An armed file written before 0.9 keeps the old dirty-tree behaviour until its first release, and follows the cycle model after it.
-
-## Common failure modes
-
-| Failure | Trigger | Counter |
-|---|---|---|
-| Silent fresh exec after resume failure | Driver exits 4 because `codex exec resume` failed (session expired / CLI upgrade / model unavailable) | Surface the exit-code-4 stderr to the user. Ask explicitly whether to `--new`. Never auto-rerun with `--new`. |
-| Sandbox change mid-thread | User passes `CC_CODEX_FLAGS="-s read-only"` between turns of an existing thread | The sandbox is fixed at session creation and `codex exec resume` does not take `-s`; the change only applies on `--new` (which loses memory). (Where the CLI does accept `-m`/`-c` on resume, the driver still omits them to keep the thread stable — `CC_CODEX_FLAGS` only affects the initial dispatch.) |
-| Cross-thread contamination via `--last` | The saved `<name>.id` is missing or invalid | The driver falls back to a fresh exec, NOT to `codex exec resume --last`. `--last` would bind the named thread to whatever was most recently touched in `~/.codex/sessions/`. |
-| Tracked-file mutation under `workspace-write` | Default Codex sandbox lets it write files; a "review" thread might edit code | Driver snapshots `git status --porcelain` pre/post each dispatch (filtering its own state dir) and warns on diff. Set `CC_CODEX_TRIAGE_STRICT=1` to make it fatal. For pure review, use `CC_CODEX_FLAGS="-s read-only"`. **Limitation:** porcelain detects status *transitions* only — if a file was already dirty and Codex changes it further, the status line is unchanged and the guard stays silent. Commit/stash WIP first for full protection. |
-| Sycophantic capitulation on paste | A third-party review is pasted as "fix this" rather than "evaluate this" | Apply Judge-mode framing above. |
-| Applying a wrong Codex finding to release the gate | `/autoreview` armed, Codex returns a plausible-but-wrong-in-context CRITICAL, user/gate push for speed | Validate against the code first (read the consumers, not just the cited line); reject with file:line via `/reply`; the gate's round cap, not compliance, is the escape hatch. |
-| Guessing instead of running, when a tool call fails | `/reply` and the requested command errors (missing file, broken env) | Debug or report the failure honestly — do not guess the output. (Happy path: agents run it fine on their own.) |
-| Wrong intent → wrong sandbox | Using `/review` for an informational question (or vice versa) | Route per the table above. `/ask` is read-only and informational; `/review` is adversarial. |
-| Background dispatch reaped by the harness | A dispatch launched via `Bash(..., run_in_background: true)` dies mid-flight when the harness kills the process group | Use the driver's `--detach` instead — a plain foreground call that re-execs the dispatch in its own session (survives group kills) and prints `DETACHED pid=<pid> output=<thread>.detach-output log-offset=<B>`. Then launch the bundled watcher as a Claude-managed background task — `Bash(bash <plugin>/scripts/detach-watch.sh <thread> <pid> <B>, run_in_background: true)` — its completion notification delivers the reply plus any worker warnings from `<thread>.detach-stderr` (exit 0), the failure diagnostics (exit 1; the worker's real exit status comes from `<thread>.detach-status`, so a post-READY failure that appends nothing to the log is still surfaced), a still-running timeout notice (exit 3), or UNKNOWN when no status record matches the worker PID (exit 4 — treat as failure until verified). Log polling alone cannot see that failure class — use it only as the fallback when the watcher was reaped (the worker is unaffected). |
-| Codex run stalled mid-investigation | A dispatch returned but produced no verdict / an incomplete reply (Codex was interrupted or ran long) | Do NOT restart the whole investigation. Resume the SAME thread asking it to report what it already concluded without re-running: `Your previous run stalled before a verdict. Do NOT restart — report the findings you already reached and give your verdict line.` The thread keeps its memory, so this recovers the work for one extra dispatch. |
-
-## Prerequisites
-
-- `codex` CLI on PATH (`npm install -g @openai/codex`).
-- `~/.codex/config.toml` configured with a model the user is authorised for.
-
-## Verification Gate
-
-Before reporting the triage as done:
-
-- [ ] The driver's stdout was shown to the user verbatim (do not paraphrase Codex's reply).
-- [ ] If the driver warned about a porcelain diff, the diff was surfaced before continuing.
-- [ ] If the driver exited with code 4 (resume failed), the user was asked whether to `--new` — not auto-resumed.
-- [ ] If the input was a third-party review, the wrapped prompt to Codex was constructed using the Judge-mode template above, not as a rebuttal.
-- [ ] If Codex returned review findings, each was validated against the code before applying — invalid/outdated ones rejected via `/reply` with file:line, not applied to release the gate.
-- [ ] If replying via `/reply` and Codex requested tool work that failed, the failure was reported honestly — not papered over with a guessed result.
+- The selected command matches the user's intent.
+- The answer or failure is shown without fabrication.
+- Review findings are verified before any fix.
+- Required approval is claimed only through `/review --required` and its exact
+  machine marker, never inferred from prose or `/status`.

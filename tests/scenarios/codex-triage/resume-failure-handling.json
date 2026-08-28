@@ -1,6 +1,7 @@
 {
   "skills": ["codex-triage"],
-  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#common-failure-modes",
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#threads",
+  "historical_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#common-failure-modes",
   "query": "I ran /review 'analyse this CSV ingest path' yesterday. Today I ran /review 'what's the worst case for the deduplication step?' expecting Codex to remember yesterday's context. The driver script exited with code 4 and printed: 'codex exec resume FAILED for thread \"review\" (session=019a...). Possible causes: session expired/deleted, codex CLI upgrade broke wire format, or model unavailable.' How should I proceed?",
   "baseline_failure": "Without the codex-triage skill, the agent (a) immediately re-runs with --new (silently destroying the thread's accumulated memory of yesterday's discussion), or (b) suggests deleting .claude/codex-threads/review.id and re-running (same effect), or (c) treats exit code 4 as a generic error and retries the same command, masking the real cause.",
   "expected_behavior": [

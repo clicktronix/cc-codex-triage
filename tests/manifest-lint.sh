@@ -12,6 +12,7 @@
 #
 # The checks are deliberately structural. Paid commands remain user-only except
 # `/review`, whose model-invocable contract is intentional and tested here.
+# Every Bash grant is also limited to bundled plugin scripts.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -95,6 +96,11 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
 }
 
 echo "== commands =="
+EXPECTED_COMMANDS="ask debate plan reply review status thread thread-list thread-new"
+ACTUAL_COMMANDS="$(for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do basename "$f" .md; done | sort | tr '\n' ' ' | sed 's/ $//')"
+[[ "$ACTUAL_COMMANDS" == "$EXPECTED_COMMANDS" ]] \
+  && ok \
+  || bad "command surface is '$ACTUAL_COMMANDS', expected '$EXPECTED_COMMANDS'"
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   if [[ "$(basename "$f")" == review.md ]]; then
     check_manifest "$f" description allowed-tools
@@ -103,19 +109,101 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
     else
       ok
     fi
+    allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
+    expected='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
+    [[ "$allowed" == "$expected" ]] \
+      && ok \
+      || bad "commands/review.md: model-invoked Bash grant is '$allowed', expected the three product-route scripts"
   else
     # Every other command stays user-invoked; do not blanket-enable paid tools.
     check_manifest "$f" description allowed-tools disable-model-invocation=true
   fi
+  allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
+  if [[ "$allowed" == *Bash* && "$allowed" != *'${CLAUDE_PLUGIN_ROOT}/scripts/'* ]]; then
+    bad "${f#$ROOT/}: Bash permission is not scoped to bundled scripts"
+  else
+    ok
+  fi
+  if [[ "$allowed" == *'${CLAUDE_PLUGIN_ROOT}/scripts/*)'* ]]; then
+    bad "${f#$ROOT/}: Bash permission grants every bundled script"
+  else
+    ok
+  fi
 done
 
+echo "== command routing boundaries =="
+for command in ask reply thread; do
+  file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
+  if grep -q 'scripts/codex-thread\.sh' "$file" && ! grep -q 'scripts/dispatch\.sh' "$file"; then
+    ok
+  else
+    bad "commands/$command.md must use the foreground driver directly"
+  fi
+done
+for command in review plan debate; do
+  file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
+  grep -q 'scripts/dispatch\.sh' "$file" \
+    && ok \
+    || bad "commands/$command.md must use the long-dispatch wrapper"
+done
+
+ASK_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/ask.md")"
+[[ "$ASK_ALLOWED" == 'Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)' ]] \
+  && ok \
+  || bad "commands/ask.md must grant only the driver it executes"
+
+REPLY_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/reply.md")"
+EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)'
+[[ "$REPLY_ALLOWED" == "$EXPECTED_REPLY" ]] \
+  && ok \
+  || bad "commands/reply.md must retain Read plus its three product-route scripts"
+
+REVIEW_COMMAND="$ROOT/plugins/cc-codex-triage/commands/review.md"
+grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must resolve its lens reference from CLAUDE_PLUGIN_ROOT"
+grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must express strict mutation policy as a driver flag"
+grep -qF '"$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"' "$REVIEW_COMMAND" \
+  && ok \
+  || bad "commands/review.md must show the complete abort signature so a failed round cannot remain pending"
+if grep -R -qE '(^|[[:space:]])\.\./skills/' "$ROOT/plugins/cc-codex-triage/commands"; then
+  bad "command bodies must not resolve plugin references relative to the project cwd"
+else
+  ok
+fi
+
+THREAD_COMMAND="$ROOT/plugins/cc-codex-triage/commands/thread.md"
+grep -q 'Parse leading `--oneshot` and `--topic <text>` flags, in either order' "$THREAD_COMMAND" \
+  && ok \
+  || bad "commands/thread.md must parse both advertised leading flags"
+THREAD_NEW="$ROOT/plugins/cc-codex-triage/commands/thread-new.md"
+if grep -q -- '--reset-only' "$THREAD_NEW" && ! grep -q -- ' --new ' "$THREAD_NEW"; then
+  ok
+else
+  bad "commands/thread-new.md must reset only, without starting a paid dispatch"
+fi
+
+SKILL="$ROOT/plugins/cc-codex-triage/skills/codex-triage/SKILL.md"
+grep -q '`dispatch\.sh --watch`' "$SKILL" \
+  && ! grep -q 'printed `detach-watch\.sh`' "$SKILL" \
+  && ok \
+  || bad "the long-dispatch handoff must stay behind the already-granted dispatch.sh route"
+
 echo "== skills =="
+SKILL_COUNT="$(find "$ROOT/plugins/cc-codex-triage/skills" -name SKILL.md -type f | wc -l | tr -d ' ')"
+[[ "$SKILL_COUNT" == 1 ]] && ok || bad "expected one routing skill, found $SKILL_COUNT"
 for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
 done
 
+[[ ! -e "$ROOT/plugins/cc-codex-triage/hooks/hooks.json" ]] \
+  && ok || bad "optional Stop-hook subsystem was re-registered"
+
 echo "== required runtime helpers =="
-for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/round-counter.sh; do
+for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/dir-lock.sh scripts/round-counter.sh \
+              scripts/state-dir.sh scripts/status.sh scripts/thread-name.sh scripts/verdict.sh; do
   path="$ROOT/plugins/cc-codex-triage/$helper"
   if [[ -f "$path" && -x "$path" ]] \
       && git -C "$ROOT" ls-files --error-unmatch -- "plugins/cc-codex-triage/$helper" >/dev/null 2>&1; then

@@ -1,6 +1,7 @@
 {
   "skills": ["codex-triage"],
-  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#addressing-findings--fix-the-neighborhood-not-the-cited-line",
+  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#reviews",
+  "historical_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#addressing-findings--fix-the-neighborhood-not-the-cited-line",
   "query": "Codex review of my branch returned one blocking finding:\n\n  issue (blocking): empty tool_call_id only validated for the first pending write\n\n  File: writes.py line 12 (`validate_batch`): the guard checks `batch[0].tool_call_id` only; a batch whose SECOND element has an empty id passes validation and reaches dispatch.\n  Recommendation: validate every element.\n\nwrites.py is a real file on disk. Fix the finding so I can send the branch back for re-review.",
   "fixture_note": "writes.py (provided on disk to the test agent, NOT described in the query) contains THREE functions with the identical first-element-only validation pattern: validate_batch (the cited one), validate_retry_batch, validate_import_batch. The query must NOT mention the siblings — discovering them is exactly what the scenario tests.",
   "baseline_failure": "Without the codex-triage 'fix the neighborhood' rule, the agent patches ONLY validate_batch (the cited site), leaving validate_retry_batch and validate_import_batch with the identical first-element-only bug — guaranteeing the next review round flags a sibling and the loop burns another full Codex dispatch.",

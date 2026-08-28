@@ -2,7 +2,59 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.11.0] - 2026-08-28
+
+### Breaking
+- Thread state is now worktree-local. Legacy `.claude/codex-threads` and
+  common-Git state are not migrated; start new threads after upgrading. This
+  prevents a resumed Codex session from reviewing the checkout where it was
+  created while its result is attributed to another worktree.
+- Removed `/autoplan`, `/autoreview`, the Stop hook, `/cleanup`, the findings
+  ledger, `--continue`, the three finding-disposition commands, and the
+  overlapping `codex-second-opinion` skill. Required review remains the only
+  delivery gate.
+- Removed the unused review-output schema, dead `DIVERGED` machine state, and
+  manually duplicated translated READMEs.
+- Removed the untyped `CC_CODEX_FLAGS` and `CC_CODEX_TRIAGE_STRICT` environment
+  wrappers. Commands now use the driver's explicit `--read-only` and `--strict`
+  flags, which survive command permission matching.
+
+### Changed
+- One strict `verdict.sh` owns delivery parsing. `/status` reports recorded
+  required-review state instead of inferring approval-like text from old log
+  prose.
+- Worktree-local state is unconditional; an environment override can no longer
+  reconnect two checkouts. Required review has one claimed `record` route, and
+  its complete `begin -> dispatch -> record -> check` path is covered end to
+  end.
+- Short `/ask`, `/reply`, and `/thread` calls use the foreground driver;
+  detached handoff is reserved for `/review`, `/plan`, and `/debate`.
+- `/thread-new` is reset-only. It never combines state deletion with an
+  optional paid dispatch.
+- Required approval is bound to clean HEAD and tree. The former content
+  fingerprint duplicated the same identity for a clean candidate and was
+  removed with the optional gate subsystem.
+- Command Bash permissions are scoped to bundled plugin executables instead of
+  pre-approving arbitrary shell commands.
+- Driver and required-review state share one recoverable directory-lock
+  implementation instead of maintaining two copies of the same concurrency
+  protocol.
+- The primary skill and lens reference now contain only routing and behavioral
+  rules needed by the current request.
+
+### Fixed
+- Aborting a required-review claim with no completed dispatch record returns
+  its reserved cap slot. A transient tool failure can no longer exhaust
+  `--cap 1` without completing a review round.
+- **A reply without a trailing newline no longer swallows the log separator.**
+  The driver logged replies with `sed 's/^/  /'`, and BSD sed leaves an
+  unterminated final line unterminated, so `---` landed on it. When that line
+  was the verdict the log ended `  APPROVE---`, which the required-review
+  recorder — comparing the line to `APPROVE` exactly — read as no verdict at
+  all. Observed on a real pull request: Codex approved and no machine could
+  attribute the approval, so the gate reported `CAP_REACHED` on a candidate its
+  reviewer had passed. The driver now indents with `awk`, whose `print` always
+  terminates the line and adds nothing when the input already did.
 
 ## [0.10.0] - 2026-08-12
 

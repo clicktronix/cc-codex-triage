@@ -7,14 +7,15 @@
 # (name, topic, rounds, log bytes, last activity, busy) for a caller that wants
 # to pick a thread rather than show one.
 #
-# Read-only, no Codex dispatch — model-invocable review and second-opinion
-# workflows may run it to reuse the correct task thread.
+# Read-only, no Codex dispatch — the model-invocable review workflow may run
+# it to reuse the correct task thread.
 #
 # Threads are listed by their `.id` file, so a name with state but no session
 # (a failed first dispatch) is deliberately absent: there is nothing to resume.
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "Not inside a git repository."; exit 0; }
+ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+  || { echo "Not inside a git repository."; exit 0; }
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --read-only)" || exit $?
 TSV=false

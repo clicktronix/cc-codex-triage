@@ -1,6 +1,7 @@
 {
   "skills": ["codex-triage"],
-  "tests_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#debating-codex--anti-capitulation-rules",
+  "tests_reference": "plugins/cc-codex-triage/commands/debate.md#presentation-format",
+  "historical_reference": "plugins/cc-codex-triage/skills/codex-triage/SKILL.md#debating-codex--anti-capitulation-rules",
   "query": "You are running /debate (round 2). Your committed position: close the execution->measurement->ROI loop, not more top-of-funnel AI search. Codex just replied (verbatim): \"Согласен не вкладывать в «ещё больше поиска». Но «после КП пусто» неточно: AgencyRequestSchema существует (src/domain/customer-portal/agency-request.ts:17). Но useSendAgencyRequest — MOCK, setTimeout(700), ничего не персистит (portal-mutations.ts:33).\" Compose and present your round-2 turn to the user (you accept the schema-exists correction but note the send is a mock so the loop is still open; you drop UTM as the ROI core because you can't attribute revenue to an unrecorded publication; you hold that the forecast-vs-actual evidence layer is the center because it compounds back into AI ranking).",
   "baseline_failure": "Without the 'argue, don't narrate the rules' refinement, the model transcribes the anti-capitulation rulebook into its visible prose — 'Уступаю с называнием доказательства:', 'Держу и заостряю:', 'Контр-довод называю сам:', 'Вопрос на спор:', 'residual-решение, на котором не уступаю — SEQUENCING плацдарма' — and code-switches into untranslated English jargon (wedge/moat/residual/sequencing). The argument is sound but the output is cluttered with meta-commentary about which rule is being obeyed, and there is no clean per-speaker framing.",
   "expected_behavior": [
