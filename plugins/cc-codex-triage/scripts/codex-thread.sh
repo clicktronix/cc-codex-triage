@@ -20,8 +20,7 @@
 #       --topic <text>      one-line label for a NEW thread, ignored if the
 #                           thread already has one. Makes the thread findable
 #                           by subject rather than by name alone.
-#       --read-only         create initial/oneshot Codex sessions in the
-#                           read-only sandbox; ignored on resume.
+#       --read-only         apply read-only sandbox on new AND resumed calls.
 #       --strict            exit 5 when tracked-file status changes.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
@@ -48,6 +47,8 @@
 #   <thread>.candidate        exact clean candidate captured by required /review.
 #   <thread>.review-state     latest machine-readable review/gate result.
 #   <thread>.approved         last gate-eligible exact-candidate APPROVE.
+#   <thread>.dispatch-receipt actual required candidate and completion status.
+#   <thread>.last-usage.json   requested controls and observed token usage (cost unknown).
 #   <thread>.active           PID lease held while a dispatch is in flight.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
@@ -62,7 +63,7 @@
 #                             .log marker contract above is unchanged.
 #   <thread>.detach-stderr    raw STDERR of the LATEST --detach child —
 #                             warnings a successful run emits (invalid saved
-#                             .id discarded, ignored resume overrides,
+#                             .id discarded,
 #                             porcelain guard notes) live here, split from
 #                             the reply so the watcher can deliver them.
 #   <thread>.detach-status    the LATEST detach child's real exit status
@@ -102,6 +103,7 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
 . "$SELF_DIR/dir-lock.sh"
+. "$SELF_DIR/candidate-receipt.sh"
 
 # ── the detached-child role ───────────────────────────────────────────────
 # "You are the re-exec'd child of a --detach launcher": redirect the reply into
@@ -565,7 +567,7 @@ abort_dispatch() { # $1=signal name
   if [[ -n "${CODEX_PID:-}" ]]; then
     kill -TERM "$CODEX_PID" 2>/dev/null || true
     local _i=0
-    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 30 ]]; do
+    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 50 ]]; do
       sleep 0.1
       _i=$((_i+1))
     done
@@ -641,9 +643,8 @@ fail_with_diag() {
 SANDBOX_ARGS=()
 $READ_ONLY && SANDBOX_ARGS+=( -s read-only )
 
-# model/effort: initial/oneshot ONLY (kept stable across the thread; WARN if passed
-# on resume). schema: a per-MESSAGE output shape — `codex exec resume` accepts
-# --output-schema, so it applies on EVERY path (initial, oneshot, AND resume).
+# Explicit model/effort/sandbox apply to every dispatch; omitted controls use
+# Codex configuration. Schema is also per-message.
 OVERRIDES=()
 [[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
 [[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
@@ -715,7 +716,7 @@ if ! $ONESHOT; then
   dir_lock_release_all
   # Detach child: canonical output boundary + status slate, established the
   # moment the lease is OURS — before ANY further preflight, so every later
-  # warning (invalid saved .id discarded, ignored resume overrides, porcelain
+  # warning (invalid saved .id discarded, porcelain
   # guard notes) lands in the canonical sidecars instead of the launcher's
   # discarded pre-lease tmpfile. stdout and stderr are SPLIT: the reply echo
   # goes to <thread>.detach-output, warnings/errors to <thread>.detach-stderr
@@ -733,6 +734,20 @@ fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW || $RESET_ONLY; then
+  # Preserve old state before an explicit new lifecycle, while owning the lease.
+  ARCHIVE=""
+  ARCHIVE_FILES=()
+  for suffix in id log log.1 rounds topic candidate review-state review-loop approved dispatch-receipt last-usage.json; do
+    source_file="$STATE_DIR/$THREAD.$suffix"
+    [[ ! -L "$source_file" ]] || { echo "refusing symlinked reset source: $source_file" >&2; exit 7; }
+    [[ -f "$source_file" ]] || continue
+    ARCHIVE_FILES+=("$THREAD.$suffix")
+  done
+  if (( ${#ARCHIVE_FILES[@]} )); then
+    ARCHIVE="$(mktemp "$STATE_DIR/$THREAD.archive.XXXXXX")" || exit 7
+    tar -cf "$ARCHIVE" -C "$STATE_DIR" "${ARCHIVE_FILES[@]}" || exit 7
+    echo "Previous thread state retained in tar archive $ARCHIVE" >&2
+  fi
   # Reset required-review state while holding the dispatch lease.
   # last-abort belongs to the incarnation being discarded.
   CC_CODEX_REVIEW_RESET_LEASE_PID="$$" \
@@ -807,13 +822,17 @@ run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by 
   # `<&0` is required: POSIX gives an async list's stdin /dev/null before any
   # explicit redirection, so the caller's herestring died at the `&` and codex
   # read an empty prompt.
-  "$@" <&0 &
+  python3 "$SELF_DIR/process-group.py" "$@" <&0 &
   CODEX_PID=$!
   local rc=0
   wait "$CODEX_PID" || rc=$?
   CODEX_PID=""
   return "$rc"
 }
+
+# Capture actual required input, after the lease and before the paid call.
+REQUIRED_CLAIM=""
+if ! $ONESHOT; then required_dispatch_start || exit $?; fi
 
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
@@ -831,14 +850,9 @@ if $ONESHOT; then
   rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
-  # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
-  # session creation and resume does not take them; -m/-c are accepted by newer
-  # codex CLIs but we deliberately omit them to keep the thread's model/config
-  # stable. --output-schema DOES apply here — it shapes this single message.
-  if [[ -n "$MODEL$EFFORT" ]]; then
-    echo "WARN: --model/--effort are ignored on resume (kept stable across the thread). Use --new to change them." >&2
-  fi
-  if ! run_codex codex exec resume --json "$SID" \
+  # Parent exec flags apply to resume too; explicit per-call controls win.
+  if ! run_codex codex exec --json -C "$ROOT" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
+        ${OVERRIDES[@]+"${OVERRIDES[@]}"} resume "$SID" \
         ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
@@ -846,6 +860,8 @@ elif [[ -n "$SID" ]]; then
       "Possible causes: session expired/deleted, codex CLI upgrade broke wire format, or model unavailable." \
       "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
   fi
+  python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
+    "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT" >/dev/null
   # last-error means the LAST error: a successful dispatch clears the diag.
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 else
@@ -862,21 +878,8 @@ else
   # diag write on a UUID-extraction failure below lands in a clean slot and is
   # never erased by its own dispatch.
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
-  # Extract the session UUID from the JSONL stream. First event carrying a
-  # thread_id / session_id / conversation_id wins. Two-step: match the whole
-  # key:value pair (whitespace-tolerant), then strip down to the value — no
-  # fixed substr offsets, so a formatting change in codex --json output (e.g.
-  # a space after the colon) cannot silently break thread persistence. The
-  # strict UUID shape check happens below in bash ($UUID_RE).
-  SID="$(awk '
-    match($0, /"(thread_id|session_id|conversation_id)"[ \t]*:[ \t]*"[0-9a-fA-F-]+"/) {
-      s = substr($0, RSTART, RLENGTH)
-      sub(/^.*"[ \t]*:[ \t]*"/, "", s)   # drop key, colon, opening quote
-      sub(/"$/, "", s)                   # drop closing quote
-      print s
-      exit
-    }
-  ' "$JSONL_FILE")"
+  SID="$(python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
+    "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT")"
   if [[ -n "$SID" && "$SID" =~ $UUID_RE ]]; then
     echo "$SID" > "$ID_FILE"
   else
@@ -896,7 +899,8 @@ STRICT_MUTATION_EXIT=false
 if [[ -n "$REPO_ROOT" ]]; then
   POST_PORCELAIN="$(porcelain)"
   if [[ "$PRE_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* || "$POST_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* ]]; then
-    echo "WARN: git status was unavailable for the mutation guard (pre or post) — skipping the comparison this round." >&2
+    echo "WARN: git status was unavailable for the mutation guard (pre or post)." >&2
+    $STRICT && STRICT_MUTATION_EXIT=true
   elif [[ "$PRE_PORCELAIN" != "$POST_PORCELAIN" ]]; then
     echo "WARN: tracked-file status changed during codex dispatch ($MODE)." >&2
     echo "Diff (pre vs post):" >&2
@@ -988,4 +992,5 @@ if $STRICT_MUTATION_EXIT; then
   exit 5
 fi
 
+required_dispatch_finish || exit $?
 cat "$OUT_FILE"

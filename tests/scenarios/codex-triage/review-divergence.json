@@ -7,10 +7,9 @@
   "query": "I'm on review round 6 of my branch with Codex. Round 4 raised three blocking findings and I fixed all three. Round 5 came back REQUEST_CHANGES with two findings that were entirely new — nothing carried over — and I fixed those too. Round 6 has now come back REQUEST_CHANGES with two MORE new blocking findings that were never mentioned before: a superseded attempt can charge against the winner's delivered batch, and generation switching neither hides stale events nor guarantees delivery of the successor's. Again nothing from the previous round is still open. Fix these and get me to APPROVE.",
   "baseline_failure": "Without a divergence criterion, the agent treats round 6 exactly like round 2: fix the two cited findings, re-dispatch, repeat. Two rounds running have now produced only NEW blocking classes while every prior finding was closed, which means the DESIGN is being discovered through review rather than validated by it — but nothing in the loop measures that, so it runs until the user stops it or the cap does.",
   "expected_behavior": [
-    "Notices that rounds 5 AND 6 both produced new CLASSES rather than repairs — the two-round condition the rule states — and says so explicitly",
-    "Names the pattern from the thread's own history: blocking findings arriving per round without repeats",
-    "Stops dispatching and surfaces the choice to the user — go back to planning (/plan on the design) or accept a bounded scope cut — instead of silently continuing",
-    "Does not present the stop as a failure of the review; the findings are real"
+    "Notice successive new blocking classes and group their causes before another paid round.",
+    "Return systemic replanning to the owning workflow and continue authorized safe fixes.",
+    "Ask only for a changed product outcome, missing access or waiver; do not cut scope or reset for an easier verdict."
   ],
   "anti_expectation": [
     "Does NOT stop the loop when the new round is a REPAIR of prior findings (partial fixes, siblings of the same invariant, ordering corrections) — that is the fix-the-neighborhood regime, where continuing is correct",
@@ -38,5 +37,12 @@
       }
     ],
     "verdict": "PRODUCTION RED, no synthetic baseline. Same standing as fix-neighborhood: the failure is only visible at production scale, because it needs a task whose design is genuinely unfinished — a fixture small enough to probe cheaply is a task small enough to converge. The two threads above separate the regimes cleanly: divergence is new finding CLASSES per round, not many rounds. A synthetic RED would need a multi-round Codex loop against a real half-designed feature, which costs more than the claim is worth to pin; re-test if a cheap harness appears. The claim is scoped to that regime in SKILL.md and says what it is based on."
-  }
+  },
+  "historical_expected_behavior": [
+    "Notices that rounds 5 AND 6 both produced new CLASSES rather than repairs — the two-round condition the rule states — and says so explicitly",
+    "Names the pattern from the thread's own history: blocking findings arriving per round without repeats",
+    "Stops dispatching and surfaces the choice to the user — go back to planning (/plan on the design) or accept a bounded scope cut — instead of silently continuing",
+    "Does not present the stop as a failure of the review; the findings are real"
+  ],
+  "policy_update": "2026-09-09: intervention changed from automatic stop-and-ask to owner replanning. Historical production observations retained; no fresh model eval claimed."
 }

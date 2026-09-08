@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Resolve persistent state for the current Git worktree.
 #
-# A Codex session keeps the cwd from its initial `codex exec -C`. Sharing its
-# session id with another worktree can therefore review one checkout and label
-# another. State lives under the current worktree's absolute Git directory so
-# a saved session can only be resumed from the checkout that created it.
+# Keep each task's conversation scoped to its worktree by policy. The driver
+# explicitly passes this checkout on resume too. State is not shared implicitly
+# with another checkout; retain needed history before removing a worktree.
 #
 # usage: state-dir.sh [--read-only]
 set -u

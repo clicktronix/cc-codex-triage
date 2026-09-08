@@ -57,7 +57,7 @@ atomic_write() { # $1=path; body on stdin
   return 1
 }
 assert_state_files_safe() {
-  for _suffix in candidate review-state review-loop approved log rounds; do
+  for _suffix in candidate review-state review-loop approved log rounds dispatch-receipt; do
     _path="$STATE_DIR/$THREAD.$_suffix"
     [ ! -L "$_path" ] || { echo "refusing symlinked required-review state: $_path" >&2; exit 7; }
     [ ! -e "$_path" ] || [ -f "$_path" ] \
@@ -305,6 +305,11 @@ case "$VERB" in
     elif [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ]; then STALE_REASON=round_counter_mismatch
     elif ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
       STALE_REASON=prompt_scope_mismatch
+    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" != complete ] \
+      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" != "$(field "$CANDIDATE" claim_token)" ] \
+      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" head)" != "$C_HEAD" ] \
+      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" tree)" != "$C_TREE" ]; then
+      STALE_REASON=dispatch_candidate_mismatch
     fi
     if [ -n "$STALE_REASON" ]; then
       write_state STALE "$VERDICT" false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
@@ -391,6 +396,7 @@ case "$VERB" in
 
   check)
     [ $# -eq 2 ] || usage
+    assert_no_live_dispatch
     [ -f "$CANDIDATE" ] && [ -f "$REVIEW_STATE" ] && [ -f "$APPROVED" ] \
       || { echo "NO_APPROVAL" >&2; exit 10; }
     # APPROVED is published in two renames: first the live review state, then
@@ -412,6 +418,10 @@ case "$VERB" in
       && [ "$(field "$APPROVED" base_sha)" = "$(field "$CANDIDATE" base_sha)" ] \
       && [ "$(field "$APPROVED" spec_path)" = "$(field "$CANDIDATE" spec_path)" ] \
       || { echo "NO_APPROVAL" >&2; exit 10; }
+    [ "$(round_now)" = "$(field "$APPROVED" round)" ] \
+      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" = complete ] \
+      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" = "$(field "$APPROVED" claim_token)" ] \
+      || die 10 "NO_APPROVAL: a newer dispatch or missing receipt requires review"
     clean_candidate || { echo "STALE: candidate is dirty" >&2; exit 11; }
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
     [ "$HEAD_SHA" = "$(field "$APPROVED" head)" ] \
@@ -423,7 +433,7 @@ case "$VERB" in
   reset)
     [ $# -eq 2 ] || usage
     assert_no_live_dispatch "${CC_CODEX_REVIEW_RESET_LEASE_PID:-}"
-    rm -f "$CANDIDATE" "$REVIEW_STATE" "$LOOP_STATE" "$APPROVED" \
+    rm -f "$CANDIDATE" "$REVIEW_STATE" "$LOOP_STATE" "$APPROVED" "$STATE_DIR/$THREAD.dispatch-receipt" \
       || die 7 "cannot reset required-review state"
     echo "RESET required-review state for $THREAD"
     ;;

@@ -1,6 +1,6 @@
 ---
 description: Review code with a persistent Codex thread. Use --required only when an owning workflow needs machine-checked approval for one exact clean candidate.
-argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--cap N] [--background] <intent or focus>'
+argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--cap N] [--background] [--model <m>] [--effort <e>] <intent or focus>'
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
@@ -19,6 +19,8 @@ repository and run tests itself.
   initial round.
 - `--once`: one advisory pass. Without it, address validated blocking findings
   and resume until `APPROVE` or the cap.
+- `--model <m>`, `--effort <e>`: optional explicit controls on every dispatch, including resume.
+  Otherwise Codex uses its configuration; do not assume a particular effort or dollar cost.
 - `--cap N`: maximum claimed review attempts, default 5. Required review
   accepts only 1–5. `abort` returns an unrecorded claim's slot; a process loss
   during claim publication stays fail-closed and may require `/thread-new`.
@@ -51,88 +53,21 @@ choose a new explicit name instead of paying to resume unrelated history.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" <<< "$PROMPT"
    ```
 
+   Append `--model` / `--effort` only when explicitly supplied.
+
    For `--background`, run this call as a Claude-managed background task. Handle
    long-dispatch handoff as defined by skill `codex-triage`; do not add another
    detach layer.
 
 4. Validate every finding against the cited code and its consumers. Apply only
    valid findings. Push back with file:line evidence when a claim is wrong.
-   Stop and ask the user when the decision is architectural or the evidence is
-   unavailable.
+   Follow the shared skill's ownership contract for fixes, missing decisions and evidence.
 
-5. Iterate only while blocking findings are converging. Stop at the cap or
-   after two rounds of entirely new problem classes; review is then discovering
-   the design rather than validating it.
+5. Iterate within the authorized budget. New problem classes call for systemic
+   replanning by the owner. At the cap, stop paid review attempts and delivery,
+   return outstanding findings, and continue safe repairs.
 
 ## Required review
 
-A required round only approves the clean HEAD/tree captured before dispatch.
-The first round pins base, spec, and cap until `/thread-new` resets the thread.
-
-1. Claim the round before the paid dispatch:
-
-   ```bash
-   BEGIN_RESULT=$("${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" begin "$THREAD" \
-     --base "$BASE" --spec "$SPEC_PATH" --cap "$CAP")
-   CLAIM_TOKEN="${BEGIN_RESULT##* claim=}"
-   CLAIM_TOKEN="${CLAIM_TOKEN%% *}"
-   ```
-
-   Any failure stops the workflow. A dirty candidate is not downgraded to an
-   advisory review.
-
-2. The prompt must begin with these four lines, once each, with values read
-   from the candidate record:
-
-   ```text
-   REQUIRED_REVIEW
-   BASE_SHA: <canonical base SHA>
-   CANDIDATE_SHA: <candidate HEAD>
-   SPEC_PATH: <repo-relative spec path>
-   ```
-
-   Then include the intent, full base-to-candidate scope, chosen lens, and:
-
-   ```text
-   End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES. Do not return COMMENT.
-   ```
-
-   Repeat the exact-verdict instruction on every resumed round.
-
-3. Dispatch with mutation detection enabled:
-
-   ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict <<< "$PROMPT"
-   ```
-
-   If the dispatch failed before writing a completed record, release the claim:
-
-   ```bash
-   ABORT_REASON=dispatch-failure  # or timeout / tool-failure
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" abort \
-     "$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"
-   ```
-
-   If `abort` reports `ROUND_COMPLETED`, use `record` instead.
-
-   During a long-dispatch handoff the claim stays live; wait for its watcher
-   before recording.
-
-4. Record the completed round and re-check approval:
-
-   ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" record "$THREAD" "$CLAIM_TOKEN"
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" check "$THREAD"
-   ```
-
-   Only the final command's exact marker authorizes the owning workflow:
-
-   ```text
-   CC_CODEX_REQUIRED_REVIEW APPROVE thread=<thread> head=<sha> tree=<sha> base_sha=<sha> spec_path=<path>
-   ```
-
-On `REQUEST_CHANGES`, return the validated findings to the owning workflow.
-Do not edit, commit, or invent an approval inside this command. A refuted or
-deferred finding may be explained on the same immutable candidate, but a fresh
-round must still earn `APPROVE`. `CAP_REACHED` is a hard stop; only an explicit
-`/thread-new` starts a new required lifecycle.
+Read `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`
+for `--required`. It owns the claim/dispatch/record/check sequence and recovery.

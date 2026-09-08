@@ -253,9 +253,9 @@ read_initial="$(tr '\0' '\n' < "$T/read-initial.argv")"
   || bad "initial --read-only was not forwarded: $read_initial"
 FAKE_CODEX_ARGV="$T/read-resume.argv" run tro --read-only
 read_resume="$(tr '\0' '\n' < "$T/read-resume.argv")"
-grep -qx -- '-s' <<<"$read_resume" \
-  && bad "--read-only leaked into codex exec resume" \
-  || ok "resume keeps the session sandbox without forwarding -s"
+[[ "$(next_after "$read_resume" '-s')" == read-only ]] \
+  && ok "resume explicitly reapplies the read-only sandbox" \
+  || bad "resume --read-only was not forwarded: $read_resume"
 FAKE_CODEX_ARGV="$T/read-oneshot.argv" run tro-shot --read-only --oneshot
 read_oneshot="$(tr '\0' '\n' < "$T/read-oneshot.argv")"
 [[ "$(next_after "$read_oneshot" '-s')" == read-only ]] \
@@ -275,16 +275,16 @@ argv="$(tr '\0' '\n' < "$T/argv")"
 grep -qx -- '--output-schema' <<<"$argv" && ok "--schema -> --output-schema" || bad "--schema not forwarded"
 [[ "$(next_after "$argv" '--output-schema')" == "$T/s.json" ]] && ok "schema path immediately follows --output-schema (initial)" || bad "schema path not adjacent to --output-schema (initial)"
 
-echo "== model/effort IGNORED + WARN on resume; schema IS forwarded on resume =="
+echo "== explicit model/effort/sandbox controls apply on resume =="
 rm -rf "$SD"; run t10                       # initial creates .id
 FAKE_CODEX_ARGV="$T/argv2" run t10 --model gpt-5.5
 argv2="$(tr '\0' '\n' < "$T/argv2")"
-grep -qx 'gpt-5.5' <<<"$argv2" && bad "model leaked into resume" || ok "model not forwarded on resume"
-grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for model" || bad "no resume WARN"
+grep -qx 'gpt-5.5' <<<"$argv2" && ok "model forwarded on resume" || bad "model missing on resume"
+grep -qi 'ignored on resume' "$T/err" && bad "model incorrectly ignored" || ok "model override honored"
 FAKE_CODEX_ARGV="$T/argv2b" run t10 --effort high
 argv2b="$(tr '\0' '\n' < "$T/argv2b")"
-grep -qx 'model_reasoning_effort=high' <<<"$argv2b" && bad "effort leaked into resume" || ok "effort not forwarded on resume"
-grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for effort" || bad "no resume WARN for effort"
+grep -qx 'model_reasoning_effort=high' <<<"$argv2b" && ok "effort forwarded on resume" || bad "effort missing on resume"
+grep -qi 'ignored on resume' "$T/err" && bad "effort incorrectly ignored" || ok "effort override honored"
 echo '{}' > "$T/s.json"
 FAKE_CODEX_ARGV="$T/argv3" run t10 --schema "$T/s.json"
 argv3="$(tr '\0' '\n' < "$T/argv3")"

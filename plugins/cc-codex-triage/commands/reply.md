@@ -1,8 +1,7 @@
 ---
 description: Compose a reply from Claude Code back into an active Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback.
 argument-hint: "[thread-name] <directive or position>"
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
-disable-model-invocation: true
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
 # /reply
@@ -13,21 +12,27 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
 
 1. Resolve `STATE_DIR` with `state-dir.sh`. If the first token names an existing thread (`$STATE_DIR/<token>.id`), use it. Otherwise use `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`. If that thread does not exist, stop and ask the user to start one with `/ask`, `/review`, or `/plan`; never fall back to unrelated legacy state.
 
-2. Recover Codex's last message: read the tail of `$STATE_DIR/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
+2. If `$STATE_DIR/<thread>.candidate` exists, read its canonical base/spec/cap and
+   follow `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`
+   with this follow-up included in the new required prompt. Reconcile any pending
+   attempt first; never reset or treat an ordinary reply as fresh gate approval.
+   For advisory threads continue below.
 
-3. Classify what Codex's last message needs:
-   - **Question** → answer it from project state (TodoWrite, plan, recent conversation).
+3. Recover Codex's last message: read the tail of `$STATE_DIR/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
+
+4. Classify what Codex's last message needs:
+   - **Question** → answer it from project state (native task list, plan, recent conversation).
    - **Tool request** (run a test, show a file, grep) → actually DO it with your tools, capture verbatim output, include it.
    - **Options A/B/C** → state the user's choice (from the directive) with a one-line reason; ask Codex to detail it.
    - **Finding you disagree with** → push back with file:line evidence.
 
-4. Compose the reply (≤500 words) and pipe to the driver:
+5. Compose the reply (≤500 words) and pipe to the driver:
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
    ```
 
-5. Show Codex's next reply verbatim. Handle exit code 4 (resume failed) per the skill — ask before `--new`. Exit code 6 means no such thread — see step 1.
+6. Show the updated findings/verdict and link the full log. Handle exit code 4 (resume failed) per the skill — ask before `--new`. Exit code 6 means no such thread — see step 1.
 
 ## Notes
 

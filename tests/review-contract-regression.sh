@@ -25,7 +25,7 @@ for arg in "$@"; do
 done
 cat >/dev/null
 printf '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}\n'
-printf 'reviewed the exact candidate\nAPPROVE' > "$out"
+printf 'reviewed the exact candidate\n%s\n' "${FAKE_REVIEW_VERDICT:-APPROVE}" > "$out"
 STUB
 chmod +x "$T/bin/codex"
 export PATH="$T/bin:$PATH"
@@ -49,15 +49,16 @@ begin() { # thread cap
   CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 }
 
-append_reply() { # thread verdict [spec] [head]
-  local thread="$1" verdict="$2" spec="${3:-docs/spec.md}" head="${4:-$(git rev-parse HEAD)}"
-  local base round
+append_reply() { # exercise the driver; wrong scope stays a recorder refusal
+  local thread="$1" verdict="$2" spec="${3:-docs/spec.md}" head="${4:-$(git rev-parse HEAD)}" base
   base="$(field "$SD/$thread.candidate" base_sha)"
-  round="$(cat "$SD/$thread.rounds" 2>/dev/null || printf '0')"
-  case "$round" in ''|*[!0-9]*) round=0 ;; esac
-  printf '[test] mode=resume thread=%s round=%s\nPROMPT:\n  REQUIRED_REVIEW\n  BASE_SHA: %s\n  CANDIDATE_SHA: %s\n  SPEC_PATH: %s\nREPLY:\n  %s\n---\n' \
-    "$thread" "$((round + 1))" "$base" "$head" "$spec" "$verdict" >> "$SD/$thread.log"
-  printf '%s\n' "$((round + 1))" > "$SD/$thread.rounds"
+  FAKE_REVIEW_VERDICT="$verdict" "$PLUGIN/scripts/codex-thread.sh" "$thread" --strict <<EOF >/dev/null
+REQUIRED_REVIEW
+BASE_SHA: $base
+CANDIDATE_SHA: $head
+SPEC_PATH: $spec
+Review the candidate.
+EOF
 }
 
 approve() { # thread

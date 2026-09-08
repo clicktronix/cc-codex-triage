@@ -2,7 +2,6 @@
 description: Ask OpenAI Codex CLI an informational question in a persistent thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique. Pass --thread to keep a feature's questions with the rest of that feature's context.
 argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] <question>'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
-disable-model-invocation: true
 ---
 
 # /ask
@@ -30,8 +29,8 @@ This is the **informational** command — collaborative, not adversarial. For cr
    ```
 
 3. Run via Bash (timeout 600000 — the caller's ceiling, not the dispatch's).
-   `--read-only` applies when the driver creates the thread and is harmless on
-   resume, whose sandbox is already fixed.
+   `--read-only` applies to both new and resumed calls, including a thread that
+   previously used a writable configuration.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --read-only \
@@ -41,7 +40,7 @@ This is the **informational** command — collaborative, not adversarial. For cr
    `/ask` is a short foreground question. Use `/review`, `/plan`, or `/debate`
    when the work may need long-running handoff.
 
-4. Show Codex's reply verbatim.
+4. Answer with Codex's evidence and uncertainty; link the full log when summarizing.
 
 5. Handle driver exit code 4 (resume failed) per skill `codex-triage` — ask the user before `--new`, do not auto-reset.
 
@@ -52,6 +51,6 @@ The default `ask` thread is repo-wide — right for "is there already a helper f
 ## Notes
 
 - Thread state is local to the current worktree; default thread: `ask`.
-- A thread created with the read-only default never trips the tracked-file mutation guard.
+- External worktree movement can still trigger the mutation guard; do not attribute it to Codex without evidence.
 - Need write access (e.g. "try this fix")? That is a different intent — use `/thread <name>` without the read-only default, or `/review`.
 - Force-reset: `/thread-new <thread>`.

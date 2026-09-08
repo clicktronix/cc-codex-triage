@@ -2,7 +2,8 @@
 
 Claude Code plugin for persistent, named conversations with OpenAI Codex CLI.
 It keeps named threads and exact-candidate required approval, with bounded
-review loops and long-review handoff.
+review loops and long-review handoff. Requires Python 3.8+ and Codex CLI.
+Ask/plan/review/reply support bounded calls from an authorized owning workflow.
 
 ## Install
 
@@ -35,6 +36,8 @@ tests/
   driver-regression.sh
   review-contract-regression.sh
   manifest-lint.sh
+  product-integrity.py
+  run.sh
   scenarios/
 wiki/PLANS/
 ```
@@ -45,9 +48,7 @@ cover the product routes and required gate.
 ## Development
 
 ```bash
-bash tests/manifest-lint.sh
-bash tests/driver-regression.sh
-bash tests/review-contract-regression.sh
+bash tests/run.sh
 ```
 
 This repository intentionally packages a Claude Code plugin only. Codex CLI is

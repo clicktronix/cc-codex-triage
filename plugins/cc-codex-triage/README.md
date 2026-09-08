@@ -18,13 +18,20 @@ Commands are namespaced: `/cc-codex-triage:review`,
 `/cc-codex-triage:ask`, and so on. `/review` and `/plan` collide with Claude
 Code built-ins, so use their namespaced forms.
 
+One internal routing skill, `codex-triage`, supplies ownership, evidence and thread
+conventions. It is loaded when relevant; use the commands above for actions.
+`ask`, `plan`, `review` and `reply` may be called by an already-authorized workflow.
+The owner retains tasks, fixes and delivery; the bridge does not create backlog items.
+
 ## Required review
 
 Required review captures a clean candidate's canonical base, tracked spec,
 HEAD, and tree before dispatch. It accepts only one bare final `APPROVE` from
-the claimed round. Candidate movement, a dirty worktree, wrong prompt scope,
-no decision, cap exhaustion, or a failed
-attribution cannot produce approval.
+the claimed round with a completed driver receipt. The driver checks actual clean
+HEAD/tree before and after the call. Wrong prompt scope, missing receipts or decisions,
+cap exhaustion and detected candidate movement refuse approval. A later reply or failed
+dispatch revokes the previous approval. Endpoint checks do not prove the filesystem
+was immutable throughout the call; the owner must keep the review candidate stable.
 
 The only delivery marker is:
 
@@ -44,28 +51,31 @@ directory:
 <absolute-git-dir>/cc-codex-triage/threads/
 ```
 
-A resumed Codex session keeps the cwd selected at creation, so session ids are
-never shared between worktrees. Removing a linked worktree removes its plugin
-state. This release does not migrate `.claude/codex-threads` or earlier
-common-Git state; start fresh threads after upgrading.
-Remove a leftover `.claude/codex-threads/` directory from each repository if
-the old version created one; it is no longer read or cleaned by this plugin.
+Session ids are worktree-local by policy; the driver passes this checkout on resume
+too. Keep it until delivery and archive needed history before removing it. Upgrading
+0.11 to 0.12 preserves sessions, but old approvals need a fresh claimed round to acquire
+a dispatch receipt. Earlier `.claude/codex-threads` and common-Git state are not migrated;
+preserve any useful legacy logs before choosing a new thread.
 
 Same-thread dispatches are serialized. A busy thread exits 10. Resume failure
 exits 4 and preserves the saved id until the user explicitly chooses
-`/thread-new`.
+`/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`.
+Reviewers run in separate process groups; cancellation signals the entire reviewer process group
+without signalling the host terminal. Watcher timeout still hands off a live worker.
 
 ## Permissions
 
 Command frontmatter scopes pre-approved Bash to this plugin's executable
 scripts through `${CLAUDE_PLUGIN_ROOT}`. It does not grant arbitrary Bash for
-the turn. Paid commands other than `/review` remain user-invoked.
+the turn. These grants do not remove other host tools. `/debate`, arbitrary `/thread`
+and resets remain user-invoked; bounded ask/plan/review/reply may belong to an approved flow.
 
 ## Prerequisites
 
-- `codex` CLI >= 0.137.0 on `PATH`.
+- `codex` CLI on `PATH`; parent `exec` options on resume are checked with CLI 0.153.4.
 - `~/.codex/config.toml` configured for an authorized model.
-- `setsid` or `python3` for long `/review`, `/plan`, and `/debate` handoff.
+- Python 3.8+ for typed JSON events and process-group supervision.
+- `setsid` or the Python fallback handles long-dispatch handoff.
 
 Install:
 
@@ -75,3 +85,16 @@ Install:
 ```
 
 The plugin never edits Codex rollout files under `~/.codex/sessions`.
+
+## Controls and evidence
+
+`review` and `plan` accept `--model` and `--effort`; explicit controls apply on
+resume too. `ask` applies the read-only sandbox on every call. Omitted model/effort
+use Codex configuration, not a promised model profile. `<thread>.last-usage.json`
+records requested controls and observed token usage; dollar cost stays unknown.
+A failed paid call may consume tokens even when its required-review slot is refunded.
+
+Required mechanics live in [required-review.md](skills/codex-triage/references/required-review.md).
+At cap or divergence, return the missing approval to the owner and continue safe
+repairs; do not reset to seek a more favourable verdict. Existing valid test evidence
+can be reused until its inputs change. No live model eval is implied by offline CI.
