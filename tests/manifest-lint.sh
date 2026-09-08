@@ -96,14 +96,14 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
 }
 
 echo "== commands =="
-EXPECTED_COMMANDS="ask debate plan reply review status thread thread-list thread-new"
+EXPECTED_COMMANDS="ask debate plan reply research review status thread thread-list thread-new"
 ACTUAL_COMMANDS="$(for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do basename "$f" .md; done | sort | tr '\n' ' ' | sed 's/ $//')"
 [[ "$ACTUAL_COMMANDS" == "$EXPECTED_COMMANDS" ]] \
   && ok \
   || bad "command surface is '$ACTUAL_COMMANDS', expected '$EXPECTED_COMMANDS'"
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   command="$(basename "$f" .md)"
-  if [[ "$command" == review || "$command" == ask || "$command" == plan || "$command" == reply ]]; then
+  if [[ "$command" == review || "$command" == ask || "$command" == plan || "$command" == reply || "$command" == research ]]; then
     check_manifest "$f" description allowed-tools
     if awk 'NR>1 && /^---$/{exit} /^disable-model-invocation:/{found=1} END{exit found?0:1}' "$f"; then
       bad "commands/$command.md: authorized workflow entrypoint must remain model-invocable"
@@ -141,7 +141,7 @@ for command in ask thread; do
     bad "commands/$command.md must use the foreground driver directly"
   fi
 done
-for command in review plan debate; do
+for command in review plan research debate; do
   file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
   grep -q 'scripts/dispatch\.sh' "$file" \
     && ok \

@@ -126,6 +126,40 @@ class ProductIntegrity(unittest.TestCase):
         self.assertFalse((self.sd/'review.active').exists())
 
 
+    def research_recipe(self):
+        command=(SCRIPTS.parent/'commands/research.md').read_text()
+        return command.split('```bash\n',1)[1].split('```',1)[0]
+
+    def test_research_recipe_preserves_search_read_only_and_conversation(self):
+        self.git('checkout','-qb','feature/research')
+        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),PROMPT='Compare recovery approaches.',
+                        VERDICT='Recommendation with sources; no review verdict.')
+        for resumed in [False,True]:
+            p=self.run_cmd(['bash','-c',self.research_recipe()])
+            self.assertEqual(p.returncode,0,p.stderr)
+            args=json.loads((self.root/'calls').read_text())
+            self.assertIn('web_search="live"',args)
+            self.assertEqual(args[args.index('-s')+1],'read-only')
+            self.assertEqual('resume' in args,resumed)
+            if resumed:
+                self.assertLess(args.index('web_search="live"'),args.index('resume'))
+            self.assertIn('Recommendation with sources',p.stdout)
+        thread='research-feature-research'
+        self.assertEqual((self.sd/(thread+'.rounds')).read_text().strip(),'2')
+        self.assertTrue((self.sd/(thread+'.id')).is_file())
+        self.assertFalse((self.sd/(thread+'.candidate')).exists())
+        self.assertFalse((self.sd/(thread+'.approved')).exists())
+        self.assertEqual(self.git('status','--porcelain').stdout,'')
+
+    def test_research_recipe_leaves_required_thread_approval_untouched(self):
+        self.approve()
+        prior=(self.root/'calls').read_bytes()
+        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),THREAD='review',PROMPT='Research a question.')
+        p=self.run_cmd(['bash','-c',self.research_recipe()])
+        self.assertNotEqual(p.returncode,0)
+        self.assertEqual((self.root/'calls').read_bytes(),prior)
+        self.assertEqual(self.gate('check','review').returncode,0)
+
     def test_reset_archives_session_and_log_before_clearing(self):
         self.approve()
         session=(self.sd/'review.id').read_bytes()

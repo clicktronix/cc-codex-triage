@@ -3,7 +3,7 @@
 Claude Code plugin for persistent, named conversations with OpenAI Codex CLI.
 It keeps named threads and exact-candidate required approval, with bounded
 review loops and long-review handoff. Requires Python 3.8+ and Codex CLI.
-Ask/plan/review/reply support bounded calls from an authorized owning workflow.
+Ask/research/plan/review/reply support bounded calls from an authorized owning workflow.
 
 ## Install
 
@@ -18,9 +18,10 @@ Use commands through the namespace, for example:
 /cc-codex-triage:review review this branch for correctness
 /cc-codex-triage:plan --lens pre-mortem wiki/PLANS/change.md
 /cc-codex-triage:ask --thread feature-x how is retry state represented?
+/cc-codex-triage:research --thread job-recovery compare recovery approaches using current docs and this repository
 ```
 
-The available commands are `/ask`, `/review`, `/plan`, `/reply`, `/debate`,
+The available commands are `/ask`, `/research`, `/review`, `/plan`, `/reply`, `/debate`,
 `/thread`, `/thread-list`, `/thread-new`, and `/status`. See the
 [plugin README](plugins/cc-codex-triage/README.md) for contracts and state.
 

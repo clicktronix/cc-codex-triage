@@ -5,6 +5,7 @@ Persistent, worktree-local Codex CLI conversations for Claude Code.
 ## Commands
 
 - `/ask`: informational question, read-only by default.
+- `/research`: one research pass using primary sources, live web search and repository evidence.
 - `/review`: advisory code review; `--once` for one pass.
 - `/review --required --base <ref> --spec <path>`: machine-checked approval
   for one exact clean candidate.
@@ -20,7 +21,7 @@ Code built-ins, so use their namespaced forms.
 
 One internal routing skill, `codex-triage`, supplies ownership, evidence and thread
 conventions. It is loaded when relevant; use the commands above for actions.
-`ask`, `plan`, `review` and `reply` may be called by an already-authorized workflow.
+`ask`, `research`, `plan`, `review` and `reply` may be called by an already-authorized workflow.
 The owner retains tasks, fixes and delivery; the bridge does not create backlog items.
 
 ## Required review
@@ -68,7 +69,7 @@ without signalling the host terminal. Watcher timeout still hands off a live wor
 Command frontmatter scopes pre-approved Bash to this plugin's executable
 scripts through `${CLAUDE_PLUGIN_ROOT}`. It does not grant arbitrary Bash for
 the turn. These grants do not remove other host tools. `/debate`, arbitrary `/thread`
-and resets remain user-invoked; bounded ask/plan/review/reply may belong to an approved flow.
+and resets remain user-invoked; bounded ask/research/plan/review/reply may belong to an approved flow.
 
 ## Prerequisites
 
@@ -98,3 +99,18 @@ Required mechanics live in [required-review.md](skills/codex-triage/references/r
 At cap or divergence, return the missing approval to the owner and continue safe
 repairs; do not reset to seek a more favourable verdict. Existing valid test evidence
 can be reused until its inputs change. No live model eval is implied by offline CI.
+
+`research` accepts `--thread`, `--model`, `--effort`, and `--background`. It requests
+live web search on each call using Codex's [web search configuration](https://developers.openai.com/codex/config-basic/#web-search),
+uses the read-only shell sandbox, and returns cited conclusions with explicit limits.
+Provider/tool availability is checked through actual research, not inferred from a flag.
+The owner can supply missing evidence or write the requested report; research never
+produces a required-review approval. Continue a study with the same research thread.
+
+The internal skill routes requests, preserves task ownership and conversation history,
+validates review findings, reuses current evidence, and defines handoff/recovery. An
+already-authorized owner may invoke ask/research/plan/review/reply without another
+permission question for each call, within the task and call budget. Debate, arbitrary
+thread dispatch, reset, and the status/list slash commands remain user-invoked. Reading
+existing state and logs is ordinary inspection. These invocation controls follow
+[Claude Code skill frontmatter](https://code.claude.com/docs/en/skills).

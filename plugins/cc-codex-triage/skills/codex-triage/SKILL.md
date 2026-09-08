@@ -1,7 +1,7 @@
 ---
 name: codex-triage
 user-invocable: false
-description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion or code review. Provides shared thread, review, and debate behavior.
+description: Use when the user invokes a cc-codex-triage command or asks Claude Code for a Codex second opinion, research, or code review. Provides shared ownership, thread and evidence behavior.
 ---
 
 # Codex Triage
@@ -12,6 +12,7 @@ to the matching command. Do not start paid work spontaneously.
 | Intent | Command |
 |---|---|
 | Informational question | `/ask` |
+| Research with sources or comparison of approaches | `/research` |
 | Code, diff, PR, or third-party review | `/review` |
 | Plan or architecture stress-test | `/plan` |
 | Reply to an existing Codex thread | `/reply` |
@@ -19,9 +20,11 @@ to the matching command. Do not start paid work spontaneously.
 | Arbitrary named conversation | `/thread` |
 | Inspect or reset local state | `/status`, `/thread-list`, `/thread-new` |
 
-`/ask`, `/plan`, `/review`, and `/reply` support authorized workflow calls. The owner names
-the task, purpose and permitted review budget; use one advisory pass unless iteration was
-requested. `/debate`, arbitrary `/thread`, and reset remain user-invoked.
+`/ask`, `/research`, `/plan`, `/review`, and `/reply` support authorized workflow calls. The owner names
+the task, purpose and permitted call budget; use one advisory pass unless iteration was
+requested. Existing task authorization covers these bounded calls; do not ask again
+for each invocation. `/debate`, arbitrary `/thread`, reset and the status/list slash
+commands remain user-invoked; reading existing state/logs is ordinary inspection.
 
 ## Ownership
 
@@ -39,7 +42,7 @@ Coordinate heavy checks with the owner; do not spawn nested reviewers or workers
 ## Threads
 
 Use one task per thread. Reuse a named thread only when its topic still matches;
-otherwise start a new one. `/review` and `/plan` default to branch-scoped names.
+otherwise start a new one. `/review`, `/plan`, and `/research` default to branch-scoped names.
 For commands that expose it, use `--oneshot` when no follow-up is expected.
 
 Thread state is worktree-local by policy. The driver passes this checkout on every
@@ -50,7 +53,7 @@ If resume exits 4, report the failure and ask before using `--new`. Never
 silently discard a conversation. If a thread is busy (exit 10), wait or choose
 another thread rather than dispatching concurrently to the same session.
 
-Long `/review`, `/plan`, and `/debate` calls use `dispatch.sh`. Exit 20 means
+Long `/review`, `/plan`, `/research`, and `/debate` calls use `dispatch.sh`. Exit 20 means
 the paid worker is still running; run the printed `dispatch.sh --watch` command
 as a background task and do not dispatch the same turn again.
 
@@ -64,7 +67,8 @@ and run tests. Send only what it cannot infer:
 - the requested focus;
 - external evidence not present in the repository.
 
-Show findings and the exact final verdict; after fixes, summarize the delta and link
+For research, return cited conclusions and uncertainty. For review, show findings
+and the exact final verdict; after fixes, summarize the delta and link
 the full thread log. Show the full answer when requested. Report tool failures instead
 of predicting output. Never rewrite REQUEST_CHANGES into APPROVE.
 

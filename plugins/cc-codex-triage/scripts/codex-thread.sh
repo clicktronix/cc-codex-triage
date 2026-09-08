@@ -7,7 +7,7 @@
 # memory across turns.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]
+#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
 #       --new               fresh persistent thread, discarding the existing one.
 #       --reset-only        atomically clear persistent thread state under the
@@ -21,6 +21,7 @@
 #                           thread already has one. Makes the thread findable
 #                           by subject rather than by name alone.
 #       --read-only         apply read-only sandbox on new AND resumed calls.
+#       --search            request live web search on new AND resumed calls.
 #       --strict            exit 5 when tracked-file status changes.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
@@ -125,6 +126,7 @@ ONESHOT=false
 REQUIRE_EXISTING=false
 DETACH=false
 READ_ONLY=false
+LIVE_SEARCH=false
 STRICT=false
 THREAD=""
 MODEL=""
@@ -153,6 +155,7 @@ while (( $# )); do
     --reset-only) RESET_ONLY=true; shift ;;
     --detach) DETACH=true; shift ;;
     --read-only) READ_ONLY=true; shift ;;
+    --search) LIVE_SEARCH=true; shift ;;
     --strict) STRICT=true; shift ;;
     # INTERNAL, set only by this script's own detach launcher on the process it
     # spawns. Deliberately not in --help or any command file.
@@ -179,7 +182,7 @@ while (( $# )); do
 done
 
 [[ -z "$THREAD" ]] && {
-  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]" >&2
+  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]" >&2
   echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
@@ -646,6 +649,7 @@ $READ_ONLY && SANDBOX_ARGS+=( -s read-only )
 # Explicit model/effort/sandbox apply to every dispatch; omitted controls use
 # Codex configuration. Schema is also per-message.
 OVERRIDES=()
+$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
 [[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
 [[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
 SCHEMA_ARGS=()
