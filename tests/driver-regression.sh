@@ -12,6 +12,7 @@ VERDICT="${DRIVER%codex-thread.sh}verdict.sh"
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
+export XDG_STATE_HOME="$T/user-state"
 
 # ── stub codex ──────────────────────────────────────────────────────────────
 mkdir -p "$T/bin"
@@ -293,21 +294,21 @@ grep -qx -- '--output-schema' <<<"$argv3" && ok "--schema forwarded on resume" |
 grep -qi 'ignored on resume' "$T/err" && bad "schema wrongly warned as ignored" || ok "no false resume WARN for schema"
 unset FAKE_CODEX_ARGV
 
-echo "== exit 7: persistent dispatch from a non-repo cwd, no env =="
+echo "== persistent dispatch from a standalone directory =="
 mkdir -p "$T/norepo"
 NOREPO="$(cd "$T/norepo" && pwd)"   # canonicalized: the driver reports bash's normalized $PWD
 cd "$NOREPO"
 run a1
-[[ "$RC" -eq 7 ]] && ok "non-repo cwd -> exit 7" || bad "non-repo cwd rc=$RC"
-grep -q "not inside a git repository" "$T/err" && grep -qF "$NOREPO" "$T/err" && ok "message names the candidate dir" || bad "exit-7 message wrong: $(cat "$T/err")"
+[[ "$RC" -eq 0 ]] && ok "non-repo cwd dispatches" || bad "non-repo cwd rc=$RC"
+[[ -d "$XDG_STATE_HOME/cc-codex-triage/contexts" ]] && ok "standalone state is outside the working directory" || bad "standalone state missing"
 [[ ! -e "$NOREPO/.claude" ]] && ok "no .claude created in non-repo dir" || bad ".claude created in non-repo dir"
 cd "$REPO"
 
-echo "== exit 7: CLAUDE_PROJECT_DIR -> existing NON-repo dir =="
+echo "== CLAUDE_PROJECT_DIR -> existing standalone directory =="
 export CLAUDE_PROJECT_DIR="$NOREPO"
 run a2
 unset CLAUDE_PROJECT_DIR
-[[ "$RC" -eq 7 ]] && ok "env candidate non-repo -> exit 7" || bad "env non-repo rc=$RC"
+[[ "$RC" -eq 0 ]] && ok "env candidate standalone dispatches" || bad "env standalone rc=$RC"
 [[ -z "$(ls -A "$NOREPO")" ]] && ok "nothing written to the candidate dir" || bad "candidate dir not empty: $(ls -A "$NOREPO")"
 
 echo "== exit 7: CLAUDE_PROJECT_DIR -> nonexistent path =="
@@ -1284,10 +1285,10 @@ WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
 [[ "$WRC" -eq 4 ]] && grep -q 'UNKNOWN' <<<"$WOUT" \
   && ok "pid-mismatched status -> UNKNOWN, not the other launch's verdict" || bad "pid-mismatch rc=$WRC out=$WOUT"
 
-echo "== detach-watch: outside a git repo -> exit 7 =="
+echo "== detach-watch: standalone directory with no matching dispatch =="
 WNG="$T/watchnongit"; mkdir -p "$WNG"
-( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 1 ) >/dev/null 2>&1; WRC=$?
-[[ "$WRC" -eq 7 ]] && ok "watcher outside a repo -> exit 7" || bad "watcher non-git rc=$WRC"
+( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 99999999 ) >/dev/null 2>&1; WRC=$?
+[[ "$WRC" -eq 4 ]] && ok "standalone watcher reports unknown dispatch" || bad "watcher non-git rc=$WRC"
 
 echo "== detach-watch: INSTANT child (reply lands before the watcher starts) -> still DONE =="
 # B1 regression: log-offset is measured pre-spawn, so a reply appended before

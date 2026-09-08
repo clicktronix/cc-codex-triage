@@ -1,11 +1,11 @@
 # cc-codex-triage plugin
 
-Persistent, worktree-local Codex CLI conversations for Claude Code.
+Persistent Codex CLI conversations for Claude Code, scoped to a Git worktree or standalone directory.
 
 ## Commands
 
 - `/ask`: informational question, read-only by default.
-- `/research`: one research pass using primary sources, live web search and repository evidence.
+- `/research`: one research pass using primary sources, live web search and optional repository evidence.
 - `/review`: advisory code review; `--once` for one pass.
 - `/review --required --base <ref> --spec <path>`: machine-checked approval
   for one exact clean candidate.
@@ -21,7 +21,7 @@ Code built-ins, so use their namespaced forms.
 
 One internal routing skill, `codex-triage`, supplies ownership, evidence and thread
 conventions. It is loaded when relevant; use the commands above for actions.
-`ask`, `research`, `plan`, `review` and `reply` may be called by an already-authorized workflow.
+`ask`, `research`, `plan`, `review`, `reply` and `debate` may be called by an already-authorized workflow.
 The owner retains tasks, fixes and delivery; the bridge does not create backlog items.
 
 ## Required review
@@ -45,22 +45,24 @@ the marker's `head` with its candidate. `/status` is informational.
 
 ## State
 
-`scripts/state-dir.sh` stores state under the current worktree's absolute Git
+`scripts/state-dir.sh` stores repository state under the current worktree's absolute Git
 directory:
 
 ```text
 <absolute-git-dir>/cc-codex-triage/threads/
 ```
 
-Session ids are worktree-local by policy; the driver passes this checkout on resume
+Outside Git, state lives in `${XDG_STATE_HOME:-$HOME/.local/state}/cc-codex-triage/contexts/<sha256-of-physical-directory>/threads/`. No Git initialization or files in the working directory are needed. Use the same directory to continue, list or reset these conversations. Only required review needs a Git candidate.
+
+Session ids are context-local by policy; the driver passes this checkout on resume
 too. Keep it until delivery and archive needed history before removing it. Upgrading
 0.11 to 0.12 preserves sessions, but old approvals need a fresh claimed round to acquire
 a dispatch receipt. Earlier `.claude/codex-threads` and common-Git state are not migrated;
 preserve any useful legacy logs before choosing a new thread.
 
 Same-thread dispatches are serialized. A busy thread exits 10. Resume failure
-exits 4 and preserves the saved id until the user explicitly chooses
-`/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`.
+exits 4 and preserves the saved id;
+an owned idle advisory thread may be retired with `/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`.
 Reviewers run in separate process groups; cancellation signals the entire reviewer process group
 without signalling the host terminal. Watcher timeout still hands off a live worker.
 
@@ -68,8 +70,8 @@ without signalling the host terminal. Watcher timeout still hands off a live wor
 
 Command frontmatter scopes pre-approved Bash to this plugin's executable
 scripts through `${CLAUDE_PLUGIN_ROOT}`. It does not grant arbitrary Bash for
-the turn. These grants do not remove other host tools. `/debate`, arbitrary `/thread`
-and resets remain user-invoked; bounded ask/research/plan/review/reply may belong to an approved flow.
+the turn. These grants do not remove other host tools. Bounded ask/research/plan/review/reply/debate
+and owned thread maintenance may belong to an approved flow. Arbitrary `/thread` remains user-invoked.
 
 ## Prerequisites
 
@@ -109,8 +111,9 @@ produces a required-review approval. Continue a study with the same research thr
 
 The internal skill routes requests, preserves task ownership and conversation history,
 validates review findings, reuses current evidence, and defines handoff/recovery. An
-already-authorized owner may invoke ask/research/plan/review/reply without another
-permission question for each call, within the task and call budget. Debate, arbitrary
-thread dispatch, reset, and the status/list slash commands remain user-invoked. Reading
-existing state and logs is ordinary inspection. These invocation controls follow
+already-authorized owner may invoke ask/research/plan/review/reply/debate without another
+permission question for each call, within the task and call budget. It can use status/list
+and retire owned idle advisory threads with reset, retaining the archive. Active tasks
+and required-review decisions remain intact; reset cannot bypass a cap or approval.
+Arbitrary `/thread` dispatch remains user-invoked. These invocation controls follow
 [Claude Code skill frontmatter](https://code.claude.com/docs/en/skills).

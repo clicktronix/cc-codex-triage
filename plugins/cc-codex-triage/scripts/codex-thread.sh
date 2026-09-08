@@ -80,8 +80,7 @@
 #   4   codex exec resume failed (saved UUID preserved — re-run with --new)
 #   5   tracked-file mutation detected with --strict
 #   6   --require-existing set but no existing thread
-#   7   persistent mode outside a git repository (state anchors to the repo
-#       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
+#   7   invalid context directory or unsafe/unavailable thread state
 #   8   --detach: no session isolator (neither `setsid` nor `python3` on
 #       PATH) — refused with ZERO state written
 #   9   --detach: ready-handshake timed out on a still-ALIVE child (spawn
@@ -183,7 +182,7 @@ done
 
 [[ -z "$THREAD" ]] && {
   echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]" >&2
-  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
+  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 invalid context/state, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
@@ -206,7 +205,7 @@ if $FORCE_NEW && $REQUIRE_EXISTING; then
   echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
   exit 1
 fi
-if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH || $READ_ONLY || $STRICT \
+if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH || $READ_ONLY || $LIVE_SEARCH || $STRICT \
     || [ -n "$MODEL$EFFORT$SCHEMA$TOPIC$DETACH_READY_FILE" ]; }; then
   echo "--reset-only accepts only a persistent thread name" >&2
   exit 1
@@ -229,26 +228,13 @@ if ! $RESET_ONLY && ! command -v codex >/dev/null 2>&1; then
 fi
 
 # ── anchor cwd ────────────────────────────────────────────────────────────
-# State paths are repo-relative, but the Bash tool's cwd persists across calls
-# and can drift into subdirectories. Persistent modes anchor to the RESOLVED
-# repo root — the candidate (CLAUDE_PROJECT_DIR or PWD) is passed through
-# `git rev-parse --show-toplevel`, so a candidate inside a subdirectory
-# resolves UP to the root and driver/hook state can never split. A candidate
-# that is not inside a repo (or does not exist) is a hard error: writing state
-# to an arbitrary directory is exactly the incident this guards against.
-# --oneshot skips resolution entirely — it keeps no repo state.
-if ! $ONESHOT; then
-  # set -e-safe form: a bare ROOT=$(git ...) failure would exit 128 here,
-  # before any check could produce the diagnostic below.
-  if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
-    echo "not inside a git repository (candidate: ${CLAUDE_PROJECT_DIR:-$PWD})." >&2
-    echo "Persistent threads anchor their state to the current worktree Git directory. Fix one of:" >&2
-    echo "  - cd into the target repository," >&2
-    echo "  - point CLAUDE_PROJECT_DIR at (or inside) a git repository," >&2
-    echo "  - or use --oneshot for a state-less dispatch." >&2
-    exit 7
-  fi
-  cd "$ROOT"
+# Resolve a Git worktree root or a standalone directory consistently across
+# driver, watcher and inspection. Standalone state lives outside the directory.
+ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
+cd "$ROOT"
+GIT_ARGS=()
+if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+  GIT_ARGS+=( --skip-git-repo-check )
 fi
 
 # ── detach preflight: select the session isolator ─────────────────────────
@@ -843,9 +829,9 @@ if $ONESHOT; then
   MODE="oneshot"
   # Throwaway: no thread tracking, no rollout persisted on the Codex side.
   # codex exec resume cannot continue an --ephemeral session — that is the point.
-  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  CWD_FOR_CODEX="$ROOT"
   if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
-        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
@@ -856,7 +842,7 @@ elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
   # Parent exec flags apply to resume too; explicit per-call controls win.
   if ! run_codex codex exec --json -C "$ROOT" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
-        ${OVERRIDES[@]+"${OVERRIDES[@]}"} resume "$SID" \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} resume "$SID" \
         ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
@@ -871,9 +857,9 @@ elif [[ -n "$SID" ]]; then
 else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
-  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  CWD_FOR_CODEX="$ROOT"
   if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
-        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
   fi

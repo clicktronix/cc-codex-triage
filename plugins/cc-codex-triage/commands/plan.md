@@ -41,5 +41,5 @@ optional comments remain, or the round cap is reached.
    New blocking classes call for systemic replanning, not an automatic user question.
    In an owning workflow return findings and let it continue the task.
 
-5. Exit 4 means resume failed: ask before resetting the thread. Exit 5 means
+5. Exit 4 means resume failed: follow the skill's recovery rules. Exit 5 means
    Codex changed tracked files: show the diff and stop.

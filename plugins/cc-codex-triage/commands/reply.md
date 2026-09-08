@@ -32,9 +32,9 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
    ```
 
-6. Show the updated findings/verdict and link the full log. Handle exit code 4 (resume failed) per the skill — ask before `--new`. Exit code 6 means no such thread — see step 1.
+6. Show the updated findings/verdict and link the full log. Handle exit code 4 (resume failed) per the skill's ownership/recovery rules. Exit code 6 means no such thread — see step 1.
 
 ## Notes
 
 - `/reply` only makes sense for a thread that already exists. If none does, you probably want `/ask`, `/review`, or `/plan` to start one.
-- Thread state is local to the current worktree.
+- Thread state is local to the current context.

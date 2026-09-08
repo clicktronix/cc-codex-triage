@@ -16,15 +16,16 @@ to the matching command. Do not start paid work spontaneously.
 | Code, diff, PR, or third-party review | `/review` |
 | Plan or architecture stress-test | `/plan` |
 | Reply to an existing Codex thread | `/reply` |
-| Structured disagreement watched by the user | `/debate` |
+| Compare defensible competing positions | `/debate` |
 | Arbitrary named conversation | `/thread` |
 | Inspect or reset local state | `/status`, `/thread-list`, `/thread-new` |
 
-`/ask`, `/research`, `/plan`, `/review`, and `/reply` support authorized workflow calls. The owner names
-the task, purpose and permitted call budget; use one advisory pass unless iteration was
-requested. Existing task authorization covers these bounded calls; do not ask again
-for each invocation. `/debate`, arbitrary `/thread`, reset and the status/list slash
-commands remain user-invoked; reading existing state/logs is ordinary inspection.
+`/ask`, `/research`, `/plan`, `/review`, `/reply`, and `/debate` support authorized workflow calls. The owner names
+the task, purpose and permitted call budget. In an owning workflow, use one advisory
+pass by default; debate has its own round ceiling. Existing task authorization covers
+these bounded calls; do not ask again
+for each invocation. The agent may inspect `/status` and `/thread-list` and reset its
+idle obsolete threads with `/thread-new`. Arbitrary `/thread` dispatch remains user-invoked.
 
 ## Ownership
 
@@ -42,16 +43,19 @@ Coordinate heavy checks with the owner; do not spawn nested reviewers or workers
 ## Threads
 
 Use one task per thread. Reuse a named thread only when its topic still matches;
-otherwise start a new one. `/review`, `/plan`, and `/research` default to branch-scoped names.
+otherwise choose a distinct name. Default names use the branch or standalone directory.
 For commands that expose it, use `--oneshot` when no follow-up is expected.
 
-Thread state is worktree-local by policy. The driver passes this checkout on every
-dispatch, including resume. Retain it through required review and delivery; archive
-needed logs before removing a disposable worktree.
+Threads are scoped to the current Git worktree or, outside Git, the physical working
+directory. The driver passes that context on resume. Research and debate can be general;
+only required review needs Git. Retain a worktree through its review and delivery.
 
-If resume exits 4, report the failure and ask before using `--new`. Never
-silently discard a conversation. If a thread is busy (exit 10), wait or choose
-another thread rather than dispatching concurrently to the same session.
+If resume exits 4, inspect the diagnostic and recover within existing authorization.
+Reset an owned advisory thread only when recovery needs a fresh session, retaining the
+archive. For required review, reconcile the pending claim before any lifecycle change.
+If a thread is busy (exit 10), wait rather than resetting it. Never reset another active
+task, hide unresolved findings, or reset to bypass a cap/approval. Report routine cleanup
+briefly; ask only when ownership or an outstanding user decision is unclear.
 
 Long `/review`, `/plan`, `/research`, and `/debate` calls use `dispatch.sh`. Exit 20 means
 the paid worker is still running; run the printed `dispatch.sh --watch` command
@@ -59,8 +63,8 @@ as a background task and do not dispatch the same turn again.
 
 ## Prompt boundary
 
-Codex is an agent running in the repository. It can read files, inspect diffs,
-and run tests. Send only what it cannot infer:
+Codex can use its available tools and local context, including relevant files, diffs
+and tests when a repository is part of the task. Send only what it cannot infer:
 
 - the user's intent;
 - the review or question scope;

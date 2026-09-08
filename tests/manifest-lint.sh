@@ -10,8 +10,8 @@
 # the user asking. Four suites and 487 tests were green throughout, because
 # every one of them tests behaviour and nothing read the manifests.
 #
-# The checks are deliberately structural. Paid commands remain user-only except
-# `/review`, whose model-invocable contract is intentional and tested here.
+# The checks are deliberately structural. Bounded workflow and maintenance commands
+# are model-invocable; arbitrary `/thread` remains user-invoked.
 # Every Bash grant is also limited to bundled plugin scripts.
 set -u
 
@@ -103,10 +103,10 @@ ACTUAL_COMMANDS="$(for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do ba
   || bad "command surface is '$ACTUAL_COMMANDS', expected '$EXPECTED_COMMANDS'"
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   command="$(basename "$f" .md)"
-  if [[ "$command" == review || "$command" == ask || "$command" == plan || "$command" == reply || "$command" == research ]]; then
+  if [[ "$command" != thread ]]; then
     check_manifest "$f" description allowed-tools
     if awk 'NR>1 && /^---$/{exit} /^disable-model-invocation:/{found=1} END{exit found?0:1}' "$f"; then
-      bad "commands/$command.md: authorized workflow entrypoint must remain model-invocable"
+      bad "commands/$command.md: workflow entrypoint must remain model-invocable"
     else
       ok
     fi
@@ -116,7 +116,7 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
       [[ "$allowed" == "$expected" ]] && ok || bad "review grants must stay scoped to its three product-route scripts"
     fi
   else
-    # Every other command stays user-invoked; do not blanket-enable paid tools.
+    # Arbitrary writable conversation dispatch stays user-invoked.
     check_manifest "$f" description allowed-tools disable-model-invocation=true
   fi
   allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"

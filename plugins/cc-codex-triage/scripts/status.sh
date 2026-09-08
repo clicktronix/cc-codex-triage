@@ -5,11 +5,7 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/lib.sh"
 
-if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
-    || [ -z "$ROOT" ]; then
-  echo "Not inside a git repository — no thread state to report."
-  exit 0
-fi
+ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
 REQUIRED_CODEX="0.137.0"
@@ -21,9 +17,14 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 CHANGES="$(git status --porcelain -uall 2>/dev/null | grep -c . | tr -d ' ')"
 
 echo "cc-codex-triage status"
-echo "  repo branch : $BRANCH"
-echo "  working tree: ${CHANGES:-0} change(s)"
-echo "  state dir   : $STATE_DIR (current worktree)"
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "  repo branch : $BRANCH"
+  echo "  working tree: ${CHANGES:-0} change(s)"
+else
+  echo "  directory   : $ROOT (no Git repository)"
+
+fi
+echo "  state dir   : $STATE_DIR (current context)"
 
 if command -v codex >/dev/null 2>&1; then
   RAW="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' | head -1)"

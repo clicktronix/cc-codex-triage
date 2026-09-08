@@ -27,9 +27,9 @@ VERB="${1:-}"; THREAD="${2:-}"
 [ -n "$VERB" ] && [ -n "$THREAD" ] || usage
 case "$THREAD" in *[!a-zA-Z0-9_.-]*|'') echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1 ;; esac
 
-if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
-  echo "not inside a git repository" >&2
-  exit 7
+ROOT="$(bash "$STATE_HELPER" --root)" || exit $?
+if ! git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
+  case "$VERB" in advisory-check|reset) ;; *) die 7 "required review needs a Git repository" ;; esac
 fi
 cd "$ROOT" || exit 7
 STATE_DIR="$(bash "$STATE_HELPER")" || exit $?

@@ -160,6 +160,48 @@ class ProductIntegrity(unittest.TestCase):
         self.assertEqual((self.root/'calls').read_bytes(),prior)
         self.assertEqual(self.gate('check','review').returncode,0)
 
+    def test_standalone_research_resume_inspect_and_reset(self):
+        context=self.root/'general-research'; context.mkdir()
+        self.env.update(CLAUDE_PROJECT_DIR=str(context),XDG_STATE_HOME=str(self.root/'state'),
+                        CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),PROMPT='Research an unrelated general question.',
+                        VERDICT='Evidence and limitations.')
+        for resumed in [False,True]:
+            p=self.run_cmd(['bash','-c',self.research_recipe()])
+            self.assertEqual(p.returncode,0,p.stderr)
+            args=json.loads((self.root/'calls').read_text())
+            self.assertIn('--skip-git-repo-check',args)
+            self.assertEqual('resume' in args,resumed)
+            self.assertEqual(Path(args[args.index('-C')+1]).resolve(),context.resolve())
+        state=self.run_cmd(['bash',SCRIPTS/'state-dir.sh','--read-only'])
+        self.assertEqual(state.returncode,0,state.stderr)
+        self.sd=Path(state.stdout.strip());thread='research-general-research'
+        for script in ['thread-index.sh','status.sh']:
+            p=self.run_cmd(['bash',SCRIPTS/script])
+            self.assertEqual(p.returncode,0,p.stderr); self.assertIn(thread,p.stdout)
+        required=self.gate('begin',thread,'--base','HEAD','--spec','spec.md','--cap','3')
+        self.assertEqual(required.returncode,7)
+        self.assertIn('required review needs a Git repository',required.stderr)
+        p=self.run_cmd(['bash',SCRIPTS/'codex-thread.sh',thread,'--reset-only'])
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertFalse((self.sd/(thread+'.id')).exists())
+        self.assertEqual(len(list(self.sd.glob(thread+'.archive.*'))),1)
+        self.assertEqual(list(context.iterdir()),[])
+        self.env['CLAUDE_PROJECT_DIR']=str(self.root)
+        other=self.run_cmd(['bash',SCRIPTS/'state-dir.sh','--read-only'])
+        self.assertNotEqual(other.stdout,state.stdout)
+        self.assertFalse(Path(other.stdout.strip()).exists())
+
+    def test_debate_recipe_runs_outside_git(self):
+        context=self.root/'general-debate';context.mkdir()
+        self.env.update(CLAUDE_PROJECT_DIR=str(context),XDG_STATE_HOME=str(self.root/'state'),
+                        CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),THREAD='debate-topic',OPENING='Compare these positions.')
+        recipe=(SCRIPTS.parent/'commands/debate.md').read_text().split('```bash\n',1)[1].split('```',1)[0]
+        p=self.run_cmd(['bash','-c',recipe]);self.assertEqual(p.returncode,0,p.stderr)
+        args=json.loads((self.root/'calls').read_text())
+        self.assertIn('--skip-git-repo-check',args)
+        self.assertEqual(args[args.index('-s')+1],'read-only')
+        self.assertEqual(list(context.iterdir()),[])
+
     def test_reset_archives_session_and_log_before_clearing(self):
         self.approve()
         session=(self.sd/'review.id').read_bytes()

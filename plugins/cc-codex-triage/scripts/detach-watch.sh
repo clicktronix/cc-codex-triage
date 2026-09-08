@@ -15,7 +15,7 @@
 # failed (prints its rc + diagnostics); 2 usage; 3 timeout — worker still
 # running; 4 UNKNOWN — no status record matches this PID (SIGKILL, or a
 # newer launch already replaced it): treat as failure until confirmed —
-# log growth alone is never read as success; 7 not a git repo. Watch state
+# log growth alone is never read as success; 7 invalid context/state. Watch state
 # is read-only: this script writes nothing.
 #
 # CC_WATCH_PORCELAIN=1 switches to the MACHINE contract, for a caller that
@@ -40,10 +40,7 @@ case "$OFFSET" in *[!0-9]*) echo "log-offset must be numeric" >&2; exit 2 ;; esa
 
 # Same resolved-root rule as the driver; hard-fail — watching the wrong dir
 # would report "no log" for a thread that is running fine at the real root.
-if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
-  echo "detach-watch.sh must run inside a git repository" >&2
-  exit 7
-fi
+ROOT="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 7
 STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --read-only)" || exit $?
 LOG="$STATE_DIR/$THREAD.log"

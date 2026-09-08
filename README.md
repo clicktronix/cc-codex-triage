@@ -2,8 +2,8 @@
 
 Claude Code plugin for persistent, named conversations with OpenAI Codex CLI.
 It keeps named threads and exact-candidate required approval, with bounded
-review loops and long-review handoff. Requires Python 3.8+ and Codex CLI.
-Ask/research/plan/review/reply support bounded calls from an authorized owning workflow.
+review loops and long-review handoff. General research/debate also work outside Git. Requires Python 3.8+ and Codex CLI.
+Ask/research/plan/review/reply/debate support bounded calls from an authorized owning workflow.
 
 ## Install
 
