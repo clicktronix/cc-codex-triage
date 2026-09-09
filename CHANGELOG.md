@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.13.0] - 2026-09-09
+
+### Added
+- `--model` and `--effort` on every command that dispatches to Codex: `ask`, `debate`, `reply`
+  and `thread` join `review`, `plan` and `research`. Explicit controls apply on resume too;
+  omitted, Codex uses its own configuration. `status`, `thread-list` and `thread-new` never
+  dispatch and are unchanged.
+- Recipes the suite executes forward the controls with `${MODEL:+--model "$MODEL"}`, so an unset
+  control expands to nothing; a structural check requires every dispatching command to both
+  advertise and forward both flags, and a product test runs the published `research` recipe with
+  and without them and inspects the CLI argv.
+
 ## [0.12.0] - 2026-09-09
 
 ### Added
