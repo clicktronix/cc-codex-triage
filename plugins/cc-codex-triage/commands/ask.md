@@ -1,6 +1,6 @@
 ---
 description: Ask OpenAI Codex CLI an informational question in a persistent thread. Use for "how does X work here", "is there already a Y", "what's the idiomatic way to Z" — exploration, not critique. Pass --thread to keep a feature's questions with the rest of that feature's context.
-argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] <question>'
+argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] [--model <m>] [--effort <e>] <question>'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 ---
 
@@ -16,6 +16,8 @@ This is the **informational** command — collaborative, not adversarial. For cr
    - `--thread <name>` → target thread (must match `[a-zA-Z0-9_.-]+`). **Default: `ask`**, a single context-wide thread for one-off questions.
    - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
    - `--oneshot` → strip it and pass `--oneshot` to the driver.
+   - `--model <m>`, `--effort <e>` → pass through unchanged; they apply to this call, resumed or
+     not. Omitted, Codex uses its own configuration — do not assume a model or a price.
    The rest is the question. See **Thread choice** below for which thread to target.
 
 2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts:
@@ -34,7 +36,7 @@ This is the **informational** command — collaborative, not adversarial. For cr
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --read-only \
-     [--topic "<text>"] [--oneshot] <<< "$QUESTION"
+     [--topic "<text>"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] <<< "$QUESTION"
    ```
 
    `/ask` is a short foreground question. Use `/review`, `/plan`, or `/debate`

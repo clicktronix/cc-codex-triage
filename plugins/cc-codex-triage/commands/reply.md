@@ -1,6 +1,6 @@
 ---
 description: Compose a reply from Claude Code back into an active Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback.
-argument-hint: "[thread-name] <directive or position>"
+argument-hint: "[thread-name] [--model <m>] [--effort <e>] <directive or position>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
@@ -26,10 +26,12 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
    - **Options A/B/C** → state the user's choice (from the directive) with a one-line reason; ask Codex to detail it.
    - **Finding you disagree with** → push back with file:line evidence.
 
-5. Compose the reply (≤500 words) and pipe to the driver:
+5. Compose the reply (≤500 words) and pipe to the driver. `--model` / `--effort`, when supplied,
+   apply to this resumed call only; omitted, the thread continues on Codex's configuration:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing <<< "$REPLY_TEXT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing \
+     [--model "$MODEL"] [--effort "$EFFORT"] <<< "$REPLY_TEXT"
    ```
 
 6. Show the updated findings/verdict and link the full log. Handle exit code 4 (resume failed) per the skill's ownership/recovery rules. Exit code 6 means no such thread — see step 1.
