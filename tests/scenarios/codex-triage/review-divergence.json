@@ -18,20 +18,20 @@
   ],
   "baseline_observed": {
     "date": "2026-08-01",
-    "method": "Production-observed, not a synthetic probe. Indexed every .claude/codex-threads/*.log across stokli (backend, frontend, bot, and three worktrees) and marqa (platform, analyzer, two worktrees) — 37 threads, 187 replies — extracted the verdict and the finding headers per round, and read the divergent threads in full. No fresh-subagent RED was dispatched for this scenario.",
+    "method": "Production-observed, not a synthetic probe. Indexed every .claude/codex-threads/*.log across five private repositories and five of their worktrees in two organisations — 37 threads, 187 replies — extracted the verdict and the finding headers per round, and read the divergent threads in full. The logs are not public: this is a recorded observation, not a reproducible one. No fresh-subagent RED was dispatched for this scenario.",
     "runs_production_observed": [
       {
-        "source": "stokli/backend .claude/worktrees/refactor+266-thread-execution-lease/.claude/codex-threads/review-refactor-266-thread-execution-lease.log (2026-07-29 → 07-31)",
+        "source": "a private backend repository, review thread of a thread-execution-lease refactor (2026-07-29 → 07-31)",
         "red": true,
         "note": "13 rounds, 15 replies, never an APPROVE. Every round produced 2-5 blocking findings and NOT ONE was a repeat: billing fence, terminal-error idempotency, finalizer lease, checkpoint recovery, SSE generation switching. The loop was doing distributed-systems design, one round at a time, at a full Codex dispatch each."
       },
       {
-        "source": "stokli/backend .../plan-refactor-266-thread-execution-lease.log (2026-07-28)",
+        "source": "the same task's PLAN thread in that repository (2026-07-28)",
         "red": true,
         "note": "The same task's PLAN thread ended at round 6 on REQUEST_CHANGES — 'these are executable contradictions and safety gaps, not optional cleanup' — at 14:58 on 07-28. Implementation started 07-29. The 13 review rounds are what the unapproved plan cost. This is the signal the criterion is meant to catch, one day earlier."
       },
       {
-        "source": "marqa/platform .claude/codex-threads/review-feat-400-analytics-ui.log (2026-07-30)",
+        "source": "a private platform repository, review thread of an analytics-UI feature (2026-07-30)",
         "red": false,
         "note": "CONTRAST CASE, and the reason the criterion is about finding CLASSES rather than round count. 9 rounds, but blocking findings decay 10 → 6 → 3 → 4 → 2 → 2 → 2 → 1 → 0 and most are repairs of prior ones ('still not fixed', 'partially fixed'). One finding — the presence envelope across five RPCs — survived rounds 4-8. This thread was converging; stopping it at round 6 would have been wrong. A round-count trigger would have fired here."
       }

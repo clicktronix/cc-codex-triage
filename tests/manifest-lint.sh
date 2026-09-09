@@ -132,6 +132,19 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   fi
 done
 
+echo "== instruction surfaces carry no private provenance =="
+# Commands, the skill and the README are what a stranger reads and what the model loads. A private
+# repository name or a home-directory path there is a citation nobody else can check; history in
+# CHANGELOG.md and recorded scenario outcomes are not in this set on purpose.
+if grep -RnE 'stokli|marqa|smartcat|/Users/[a-z]+/' \
+     "$ROOT/plugins/cc-codex-triage/commands" "$ROOT/plugins/cc-codex-triage/skills" \
+     "$ROOT/plugins/cc-codex-triage/README.md" "$ROOT/README.md" \
+     "$ROOT/tests/scenarios" 2>/dev/null; then
+  bad "a private repository name or personal path is cited on an instruction or scenario surface"
+else
+  ok
+fi
+
 echo "== every dispatching command exposes --model / --effort =="
 # The driver has parsed both flags on every path since 0.12.0 and applies them on resume.
 # A command that dispatches but hides them in its hint leaves the user with no way to pick

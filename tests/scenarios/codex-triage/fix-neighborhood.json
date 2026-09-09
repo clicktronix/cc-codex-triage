@@ -22,7 +22,7 @@
       { "model": "haiku", "framing": "adversarial", "red": false, "note": "Even under 'fix quickly', fixed all three validators unprompted." }
     ],
     "runs_production_observed": [
-      { "source": "stokli/backend .claude/codex-threads/review.log rounds 6-8 (2026-06-08/09)", "red": true, "note": "Real multi-file codebase: ONE invariant (malformed tool_call_id guard) took 3 review rounds because each fix patched exactly the cited site — first element only (R6), then all elements but after a bypassing branch (R7), then correct ordering (R8). Each extra round = a full Codex dispatch." }
+      { "source": "a private backend repository's Codex review thread, rounds 6-8 (2026-06-08/09); the log is not public, so this run is recorded, not reproducible", "red": true, "note": "Real multi-file codebase: ONE invariant (malformed tool_call_id guard) took 3 review rounds because each fix patched exactly the cited site — first element only (R6), then all elements but after a bypassing branch (R7), then correct ordering (R8). Each extra round = a full Codex dispatch." }
     ],
     "verdict": "SPLIT. Synthetic small-scale baseline is UNREPRODUCIBLE — when the siblings sit in the same 40-line file, both models fix them unprompted, so the rule adds nothing there. The REAL failure mode is cross-file / cross-call-chain neighborhoods at production scale, where it is directly documented (3 burned rounds). Keep the SKILL rule, scoped honestly to that regime; the lens-side exhaustive-instances rule targets the reviewer half of the same loop. Re-test later with a multi-file fixture if a synthetic RED is wanted."
   }

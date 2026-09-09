@@ -20,12 +20,14 @@ This is the **informational** command — collaborative, not adversarial. For cr
      not. Omitted, Codex uses its own configuration — do not assume a model or a price.
    The rest is the question. See **Thread choice** below for which thread to target.
 
-2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts:
+2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts.
+   A repository is optional context, not a precondition — a general question outside Git gets the
+   same framing and no project assumptions:
 
    ```
-   Answer this question about the project. You may read files and run read-only
-   commands to ground your answer, but do NOT edit anything or perform a full
-   code review — just answer.
+   Answer this question. When a repository is part of the context, you may read
+   files and run read-only commands to ground your answer; a general question
+   needs neither. Do NOT edit anything or perform a full code review — just answer.
 
    <the question>
    ```
