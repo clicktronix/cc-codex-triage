@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.12.0] - Unreleased
+## [0.12.0] - 2026-09-09
 
 ### Added
 - Source-backed `/research` with live search, read-only shell sandbox and a reusable
