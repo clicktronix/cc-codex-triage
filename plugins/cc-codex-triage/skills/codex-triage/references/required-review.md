@@ -50,6 +50,10 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    ```
 
    If `abort` reports `ROUND_COMPLETED`, use `record` instead.
+   For `INVALID_CLAIM_STATE`, follow [state recovery](../../../commands/thread-new.md#recovery).
+   `STALE (dispatch_incomplete)` means the completion receipt is absent: inspect the
+   dispatch error, including any strict mutation warning. It does not by itself mean
+   the candidate changed. Reconcile the failure and retry only within the review budget.
 
    During a long-dispatch handoff the claim stays live; wait for its watcher
    before recording.
@@ -72,7 +76,8 @@ Do not edit, commit, or invent an approval inside this command. A refuted findin
 waiver may be explained on the same candidate, but a fresh round must earn `APPROVE`.
 Tracking an issue does not resolve a defect. The owner decides whether independent future
 work belongs elsewhere. At the cap, return terminal review state; the owner continues safe repairs
-and reports the missing approval once. Never reset merely to seek a favourable verdict.
+and reports the missing approval once. Another review budget needs user authorization;
+reuse a decision already given. Never reset merely to seek a favourable verdict.
 
 The driver checks the actual clean HEAD/tree before and after the call and records a
 completion receipt. These are endpoint checks, not proof of an immutable filesystem

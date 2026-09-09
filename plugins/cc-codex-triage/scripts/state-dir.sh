@@ -29,7 +29,8 @@ else
   $ROOT_ONLY && { printf '%s\n' "$ROOT"; exit 0; }
   STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
   case "$STATE_HOME" in /*) ;; *) echo "XDG_STATE_HOME must be absolute" >&2; exit 7 ;; esac
-  CONTEXT_KEY="$(printf '%s' "$ROOT" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')" || exit 7
+  CONTEXT_KEY="$(printf '%s' "$ROOT" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null)" \
+    || { echo "Working Python is required to resolve standalone thread state; repair python3 on PATH and retry." >&2; exit 2; }
   STATE_DIR="$STATE_HOME/cc-codex-triage/contexts/$CONTEXT_KEY/threads"
 fi
 $ROOT_ONLY && { printf '%s\n' "$ROOT"; exit 0; }

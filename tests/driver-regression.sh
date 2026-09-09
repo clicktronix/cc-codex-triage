@@ -799,17 +799,16 @@ bash "$IDXSH" | grep -q 'index probe' && ok "human table shows the topic" || bad
 [[ "$(bash "$IDXSH" --tsv | wc -l | tr -d ' ')" == "1" ]] && ok "one TSV record per thread" || bad "TSV record count wrong"
 rm -rf "$SD"
 
-echo "== detach: no setsid AND no python3 -> exit 8, ZERO state =="
+echo "== detach: missing required python3 -> exit 2, ZERO state =="
 rm -rf "$SD"
 mkdir -p "$T/isolbin" "$T/dtmp3"
-# Minimal PATH farm: everything the driver touches BEFORE the isolator
-# preflight, but neither setsid nor python3.
+# Minimal PATH farm for runtime preflight, without python3 or setsid.
 for tool in bash git cat rm ls mkdir sed grep sleep env xcrun dirname; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/isolbin/$tool"
 done
 TMPDIR="$T/dtmp3" PATH="$T/bin:$T/isolbin" run d3 --detach
-[[ "$RC" -eq 8 ]] && ok "no isolator -> exit 8" || bad "no-isolator rc=$RC err=$(cat "$T/err")"
-grep -q 'setsid' "$T/err" && grep -q 'python3' "$T/err" && ok "message names both isolators" || bad "exit-8 message wrong: $(cat "$T/err")"
+[[ "$RC" -eq 2 ]] && ok "missing Python -> exit 2" || bad "missing-runtime rc=$RC err=$(cat "$T/err")"
+grep -q 'Python 3.8+' "$T/err" && ok "message names the required runtime" || bad "runtime message wrong: $(cat "$T/err")"
 [[ ! -e "$SD" ]] && ok "zero state: no state dir" || bad "state dir created: $(ls -A "$SD" 2>/dev/null)"
 [[ -z "$(ls -A "$T/dtmp3" 2>/dev/null)" ]] && ok "zero state: no lease, no orphan tmpfiles" || bad "tmpfiles left: $(ls -A "$T/dtmp3")"
 
@@ -826,9 +825,8 @@ done
 # manager, which is not in this farm — the shim then exits 127 and the test
 # fails on the maintainer's own machine while the product path is fine.
 PY_REAL="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3 2>/dev/null || true)"
-# No python3 at all is a MISSING FIXTURE, not a product failure — the driver's
-# own message for that case is exit 8, which is correct behaviour. Reporting it
-# as a failure made a minimal Linux box (no python3 installed) look broken.
+# Without Python this fixture cannot exercise the fallback; the dependency
+# refusal itself is covered above.
 if [[ -z "$PY_REAL" ]]; then
   skip "python3 absent — the python-isolator path did NOT run"
   skip "python3 absent — its reply delivery did NOT run"

@@ -125,6 +125,115 @@ class ProductIntegrity(unittest.TestCase):
         self.assertFalse(marker.exists(),'callee grandchild survived cancellation')
         self.assertFalse((self.sd/'review.active').exists())
 
+    def test_unusable_python_fails_before_dispatch_or_state_changes(self):
+        self.approve()
+        self.env['TMPDIR'] = str(self.root)
+        before = {p.name: p.read_bytes() for p in self.sd.iterdir()}
+        (self.root/'calls').unlink()
+        interpreter = self.root/'bin/python3'
+        interpreter.write_text('#!/bin/sh\necho "broken interpreter" >&2\nexit 127\n')
+        interpreter.chmod(0o755)
+        for flags in [(), ('--new',), ('--oneshot',), ('--detach',)]:
+            with self.subTest(flags=flags):
+                p = self.dispatch(*flags)
+                self.assertEqual(p.returncode, 2, p.stderr)
+                self.assertIn('Python 3.8+', p.stderr)
+                self.assertNotIn('codex exec FAILED', p.stderr)
+                self.assertFalse((self.root/'calls').exists())
+                self.assertEqual({p.name: p.read_bytes() for p in self.sd.iterdir()}, before)
+        p = self.run_cmd(['bash', SCRIPTS/'codex-thread.sh', 'fresh'], 'hello')
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertEqual({p.name: p.read_bytes() for p in self.sd.iterdir()}, before)
+        # The long-call wrapper must not retry the same missing dependency.
+        self.env['PY_PROBES'] = str(self.root/'python-probes')
+        interpreter.write_text('#!/bin/sh\necho probe >> "$PY_PROBES"\nexit 127\n')
+        p = self.run_cmd(['bash', SCRIPTS/'dispatch.sh', 'review'], self.prompt)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertEqual((self.root/'python-probes').read_text().splitlines(), ['probe'])
+        self.assertEqual({p.name: p.read_bytes() for p in self.sd.iterdir()}, before)
+        # Git-local maintenance needs no reviewer runtime and remains available.
+        self.assertEqual(self.dispatch('--reset-only').returncode, 0)
+
+    def test_strict_rejection_records_incomplete_receipt_without_approval(self):
+        claim = self.begin()
+        (self.root/'bin/codex').write_text(FAKE.replace('sys.stdin.read()',
+            "sys.stdin.read()\npathlib.Path('subject.py').write_text('VALUE = 3\\n')"))
+        p = self.dispatch('--strict')
+        self.assertEqual(p.returncode, 5, p.stderr)
+        self.assertIn('status=started', (self.sd/'review.dispatch-receipt').read_text())
+        (self.repo/'subject.py').write_text('VALUE = 2\n')
+        p = self.gate('abort', 'review', 'dispatch-failure', claim)
+        self.assertEqual(p.returncode, 10, p.stderr)
+        self.assertIn('ROUND_COMPLETED', p.stderr)
+        p = self.gate('record', 'review', claim)
+        self.assertEqual(p.returncode, 11, p.stderr)
+        self.assertIn('dispatch_incomplete', p.stderr)
+        self.assertNotEqual(self.gate('check', 'review').returncode, 0)
+
+    def test_corrupt_claim_does_not_destroy_budget_and_saved_state_can_recover(self):
+        claim = self.begin()
+        candidate = self.sd/'review.candidate'
+        saved = candidate.read_text()
+        loop = (self.sd/'review.review-loop').read_bytes()
+        candidate.write_text(saved.replace(claim, 'not-a-valid-token'))
+        p = self.gate('record', 'review', claim)
+        self.assertEqual(p.returncode, 10, p.stderr)
+        self.assertIn('INVALID_CLAIM_STATE', p.stderr)
+        self.assertEqual((self.sd/'review.review-loop').read_bytes(), loop)
+        self.assertNotEqual(self.gate('check', 'review').returncode, 0)
+        # Restore a known intact snapshot, rather than inventing replacement fields.
+        candidate.write_text(saved)
+        self.assertEqual(self.dispatch('--strict').returncode, 0)
+        self.assertEqual(self.gate('record', 'review', claim).returncode, 0)
+        self.assertEqual(self.gate('check', 'review').returncode, 0)
+        self.assertEqual((self.sd/'review.review-loop').read_bytes(), loop)
+
+    def test_standalone_maintenance_reports_broken_python_without_touching_state(self):
+        context = self.root/'standalone'; context.mkdir()
+        self.env.update(CLAUDE_PROJECT_DIR=str(context), XDG_STATE_HOME=str(self.root/'state'))
+        self.assertEqual(self.dispatch().returncode, 0)
+        p = self.run_cmd(['bash', SCRIPTS/'state-dir.sh', '--read-only'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        state = Path(p.stdout.strip())
+        before = {p.name: p.read_bytes() for p in state.iterdir()}
+        (self.root/'calls').unlink()
+        interpreter = self.root/'bin/python3'
+        interpreter.write_text('#!/bin/sh\necho "broken interpreter" >&2\nexit 127\n')
+        interpreter.chmod(0o755)
+        for script, args in [('codex-thread.sh', ['review', '--reset-only']),
+                             ('status.sh', []), ('thread-index.sh', []),
+                             ('state-dir.sh', ['--read-only'])]:
+            with self.subTest(script=script):
+                p = self.run_cmd(['bash', SCRIPTS/script, *args])
+                self.assertEqual(p.returncode, 2, p.stderr)
+                self.assertIn('Python', p.stderr)
+                self.assertIn('standalone thread state', p.stderr)
+                self.assertFalse((self.root/'calls').exists())
+                self.assertEqual({p.name: p.read_bytes() for p in state.iterdir()}, before)
+                self.assertEqual(list(context.iterdir()), [])
+
+    def test_complete_receipt_for_another_claim_remains_mismatched(self):
+        claim = self.begin()
+        self.assertEqual(self.dispatch('--strict').returncode, 0)
+        receipt = self.sd/'review.dispatch-receipt'
+        receipt.write_text(receipt.read_text().replace(claim, '0'*len(claim)))
+        p = self.gate('record', 'review', claim)
+        self.assertEqual(p.returncode, 11, p.stderr)
+        self.assertIn('dispatch_candidate_mismatch', p.stderr)
+        self.assertNotEqual(self.gate('check', 'review').returncode, 0)
+
+    def test_status_reports_retained_archives_without_changing_them(self):
+        self.assertEqual(self.dispatch().returncode, 0)
+        self.assertEqual(self.dispatch('--reset-only').returncode, 0)
+        archives = list(self.sd.glob('review.archive.*'))
+        self.assertEqual(len(archives), 1)
+        before = {p.name: p.read_bytes() for p in self.sd.iterdir()}
+        p = self.run_cmd(['bash', SCRIPTS/'status.sh'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f'Archives: 1 file(s), {archives[0].stat().st_size} bytes', p.stdout)
+        self.assertIn(str(self.sd), p.stdout)
+        self.assertEqual({p.name: p.read_bytes() for p in self.sd.iterdir()}, before)
+
 
     def research_recipe(self):
         command=(SCRIPTS.parent/'commands/research.md').read_text()

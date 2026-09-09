@@ -64,12 +64,12 @@ if $ONESHOT; then
   exit $?
 fi
 
-# Detach. Anything other than a clean handshake (exit 8 = no isolator, and any
-# other failure) falls back to a direct call rather than losing the dispatch.
+# Detach. A missing runtime cannot be repaired by retrying in the foreground.
+# Other handshake failures retain the direct-call fallback.
 LAUNCH="$(printf '%s' "$PROMPT" | bash "$DRIVER" "$@" --detach 2>&1)"; rc=$?
 if [ "$rc" -ne 0 ] || ! printf '%s' "$LAUNCH" | grep -q '^DETACHED pid='; then
   printf '%s\n' "$LAUNCH" >&2
-  [ "$rc" -eq 8 ] && echo "dispatch.sh: no session isolator — running in the foreground, where a caller timeout can still kill this dispatch." >&2
+  [ "$rc" -eq 2 ] && exit "$rc"
   printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
   exit $?
 fi

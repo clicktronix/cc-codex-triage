@@ -143,9 +143,9 @@ write_loop_state() { # base spec cap start attempts
 assert_claim() {
   _provided="$1"; _expected="$(field "$CANDIDATE" claim_token)"
   case "$_expected" in
-    ''|*[!0-9a-f]*) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;;
+    ''|*[!0-9a-f]*) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;;
   esac
-  case "${#_expected}" in 40|64) ;; *) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;; esac
+  case "${#_expected}" in 40|64) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
   [ "$_provided" = "$_expected" ] || die 10 "CLAIM_MISMATCH: required-review round belongs to another invocation"
 }
 
@@ -195,7 +195,7 @@ case "$VERB" in
       PENDING) die 10 "PENDING: finish or abort the claimed review round before begin" ;;
       CAP_REACHED)
         [ -f "$CANDIDATE" ] \
-          && die 10 "$LAST_STATUS: reset the thread before starting another required review"
+          && die 10 "$LAST_STATUS: report missing approval and continue safe work; a new review budget needs user authorization, not a reset workaround"
         ;;
     esac
     if [ -f "$LOOP_STATE" ]; then
@@ -215,7 +215,7 @@ case "$VERB" in
       [ "$LOOP_BASE_SHA" = "$BASE_SHA" ] \
         && [ "$LOOP_SPEC_PATH" = "$SPEC_PATH" ] \
         && [ "$LOOP_CAP" = "$CAP" ] \
-        || die 10 "REVIEW_CONTRACT_CHANGED: reset the thread before changing required-review base, spec, or cap"
+        || die 10 "REVIEW_CONTRACT_CHANGED: restore the original base/spec/cap, or start a new lifecycle for an authorized contract change"
     else
       LOOP_START="$CURRENT_ROUND"
       ATTEMPTS=0
@@ -264,7 +264,7 @@ case "$VERB" in
     OFF="$(field "$CANDIDATE" log_bytes)"; OFF="${OFF:-0}"
     OLD_GEN="$(field "$CANDIDATE" log_gen)"; OLD_GEN="${OLD_GEN:-0}"
     valid_decimal "$OFF" 12 && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     NOW_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || NOW_GEN=""
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$OLD_GEN" = "$NOW_GEN" ] || OFF=0
@@ -305,15 +305,20 @@ case "$VERB" in
     elif [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ]; then STALE_REASON=round_counter_mismatch
     elif ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
       STALE_REASON=prompt_scope_mismatch
-    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" != complete ] \
-      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" != "$(field "$CANDIDATE" claim_token)" ] \
+    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" != complete ]; then
+      STALE_REASON=dispatch_incomplete
+    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" != "$(field "$CANDIDATE" claim_token)" ] \
       || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" head)" != "$C_HEAD" ] \
       || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" tree)" != "$C_TREE" ]; then
       STALE_REASON=dispatch_candidate_mismatch
     fi
     if [ -n "$STALE_REASON" ]; then
       write_state STALE "$VERDICT" false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
-      echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
+      if [ "$STALE_REASON" = dispatch_incomplete ]; then
+        echo "STALE ($STALE_REASON): no completed dispatch receipt; inspect the dispatch error before retrying within the remaining review budget" >&2
+      else
+        echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
+      fi
       exit 11
     fi
     case "$VERDICT" in
@@ -360,7 +365,7 @@ case "$VERB" in
     valid_decimal "$ROUND_BEFORE" 7 && valid_decimal "$CURRENT_ROUND" 7 \
       && valid_decimal "$OLD_BYTES" 12 && valid_decimal "$NOW_BYTES" 12 \
       && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
@@ -374,15 +379,15 @@ case "$VERB" in
     C_CAP="$(field "$CANDIDATE" cap)"
     C_START="$(field "$CANDIDATE" loop_start_round)"
     C_ATTEMPT="$(field "$CANDIDATE" attempt)"
-    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;; esac
+    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
     valid_decimal "$LOOP_START" 7 && valid_decimal "$C_START" 7 \
       && valid_decimal "$LOOP_ATTEMPTS" 7 && valid_decimal "$C_ATTEMPT" 7 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     [ "$LOOP_BASE_SHA" = "$C_BASE_SHA" ] && [ "$LOOP_SPEC_PATH" = "$C_SPEC_PATH" ] \
       && [ "$LOOP_CAP" = "$C_CAP" ] && [ "$LOOP_START" = "$C_START" ] \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && [ "$LOOP_ATTEMPTS" -gt 0 ] \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     # The unchanged round/log proof above establishes that no dispatch
     # completed. Return a reserved slot, if present, before publishing ABORTED.
     # A crash between these writes remains fail-closed: PENDING blocks begin,

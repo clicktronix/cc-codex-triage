@@ -3,8 +3,7 @@
 #
 # Sends a prompt to a NAMED Codex thread. First call creates the thread via
 # `codex exec` and persists the session UUID; subsequent calls resume the same
-# thread via `codex exec resume <UUID>` so Codex retains full conversation
-# memory across turns.
+# thread via `codex exec resume <UUID>` with Codex-managed conversation history.
 #
 # Usage:
 #   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]
@@ -75,14 +74,13 @@
 # Exit codes:
 #   0   success
 #   1   usage error
-#   2   codex CLI missing
+#   2   required runtime unavailable (codex CLI or working Python 3.8+)
 #   3   codex exec failed (initial or oneshot)
 #   4   codex exec resume failed (saved UUID preserved — re-run with --new)
 #   5   tracked-file mutation detected with --strict
 #   6   --require-existing set but no existing thread
 #   7   invalid context directory or unsafe/unavailable thread state
-#   8   --detach: no session isolator (neither `setsid` nor `python3` on
-#       PATH) — refused with ZERO state written
+#   8   reserved (legacy missing-isolator error; Python is now required)
 #   9   --detach: ready-handshake timed out on a still-ALIVE child (spawn
 #       killed, launcher-owned tmpfiles removed; check
 #       <thread>.detach-output / <thread>.detach-stderr). A child that
@@ -182,7 +180,7 @@ done
 
 [[ -z "$THREAD" ]] && {
   echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]" >&2
-  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 invalid context/state, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
+  echo "exit codes: 0 ok, 1 usage, 2 required runtime unavailable, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 invalid context/state, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
@@ -226,6 +224,10 @@ if ! $RESET_ONLY && ! command -v codex >/dev/null 2>&1; then
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
   exit 2
 fi
+if ! $RESET_ONLY && ! python3 -c 'import json, signal, subprocess, sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+  echo "Python 3.8+ is required for Codex dispatch; python3 on PATH is missing, unusable, or too old. Repair the interpreter before retrying." >&2
+  exit 2
+fi
 
 # ── anchor cwd ────────────────────────────────────────────────────────────
 # Resolve a Git worktree root or a standalone directory consistently across
@@ -247,12 +249,8 @@ DETACH_ISOLATOR=""
 if $DETACH; then
   if command -v setsid >/dev/null 2>&1; then
     DETACH_ISOLATOR="setsid"
-  elif command -v python3 >/dev/null 2>&1; then
-    DETACH_ISOLATOR="python3"
   else
-    echo "--detach needs a session isolator, but neither 'setsid' nor 'python3' is on PATH." >&2
-    echo "Install one of them, or dispatch without --detach (foreground, or the harness's run_in_background)." >&2
-    exit 8
+    DETACH_ISOLATOR="python3"  # Required runtime already checked above.
   fi
 fi
 
@@ -300,7 +298,7 @@ lease_busy_pid() {
 # ── detach launcher ───────────────────────────────────────────────────────
 # Re-execs this same script (same args minus --detach) in a NEW SESSION and
 # returns after a ready handshake. Lifecycle order is the contract:
-#   isolator preflight (above, exit 8 with zero state) → state directory
+#   runtime preflight (above, exit 2 with zero state) → state directory
 #   creation (the sidecar redirection below is performed by
 #   the shell BEFORE the isolator runs, so on a repo's first-ever detach the
 #   directory must already exist) → persist stdin + allocate READY → spawn →

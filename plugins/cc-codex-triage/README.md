@@ -62,7 +62,7 @@ preserve any useful legacy logs before choosing a new thread.
 
 Same-thread dispatches are serialized. A busy thread exits 10. Resume failure
 exits 4 and preserves the saved id;
-an owned idle advisory thread may be retired with `/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`.
+an owned idle advisory thread may be retired with `/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`. `/status` shows retained archive count, bytes and location; archives are not automatically deleted.
 Reviewers run in separate process groups; cancellation signals the entire reviewer process group
 without signalling the host terminal. Watcher timeout still hands off a live worker.
 
@@ -75,9 +75,9 @@ and owned thread maintenance may belong to an approved flow. Arbitrary `/thread`
 
 ## Prerequisites
 
-- `codex` CLI on `PATH`; parent `exec` options on resume are checked with CLI 0.153.4.
+- `codex` CLI on `PATH`. The CLI interface, including parent `exec` options on resume, was checked with 0.153.4; a minimum compatible version for this release has not been established. `/status` shows installed and reference versions without blocking calls.
 - `~/.codex/config.toml` configured for an authorized model.
-- Python 3.8+ for typed JSON events and process-group supervision.
+- Working Python 3.8+ for typed JSON events and process-group supervision. A local interpreter check rejects an unavailable runtime with exit 2 before dispatch changes thread state. Standalone status/list/reset also use Python to locate context state and report dependency failures with exit 2; Git-local maintenance does not require it.
 - `setsid` or the Python fallback handles long-dispatch handoff.
 
 Install:
@@ -113,7 +113,10 @@ The internal skill routes requests, preserves task ownership and conversation hi
 validates review findings, reuses current evidence, and defines handoff/recovery. An
 already-authorized owner may invoke ask/research/plan/review/reply/debate without another
 permission question for each call, within the task and call budget. It can use status/list
-and retire owned idle advisory threads with reset, retaining the archive. Active tasks
-and required-review decisions remain intact; reset cannot bypass a cap or approval.
+and retire owned idle advisory threads with reset, retaining the archive. Preserve threads
+needed by active tasks or required delivery. Reset clears the review lifecycle, including
+its attempt count and approval; it grants no approval. Policy forbids reset to evade the
+cap or unresolved findings. At the cap, continue safe work and report missing approval
+once; starting another review budget requires user authorization, reusing it if already given.
 Arbitrary `/thread` dispatch remains user-invoked. These invocation controls follow
 [Claude Code skill frontmatter](https://code.claude.com/docs/en/skills).
