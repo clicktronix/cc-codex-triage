@@ -260,6 +260,27 @@ class ProductIntegrity(unittest.TestCase):
         self.assertFalse((self.sd/(thread+'.approved')).exists())
         self.assertEqual(self.git('status','--porcelain').stdout,'')
 
+    def test_research_recipe_forwards_model_and_effort_only_when_supplied(self):
+        # The published recipe is the producer; the fake CLI's recorded argv is the checker.
+        # `${MODEL:+...}` must expand to nothing when unset and to the driver flags when set,
+        # on the initial call and on resume alike.
+        self.git('checkout','-qb','feature/controls')
+        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),PROMPT='Compare approaches.',
+                        VERDICT='Recommendation.')
+        p=self.run_cmd(['bash','-c',self.research_recipe()])
+        self.assertEqual(p.returncode,0,p.stderr)
+        args=json.loads((self.root/'calls').read_text())
+        self.assertNotIn('-m',args)
+        self.assertFalse(any(a.startswith('model_reasoning_effort=') for a in args))
+        self.env.update(MODEL='test-model',EFFORT='high')
+        p=self.run_cmd(['bash','-c',self.research_recipe()])
+        self.assertEqual(p.returncode,0,p.stderr)
+        args=json.loads((self.root/'calls').read_text())
+        self.assertEqual(args[args.index('-m')+1],'test-model')
+        self.assertEqual(args[args.index('-c',args.index('-m'))+1],'model_reasoning_effort=high')
+        self.assertIn('resume',args)
+        self.assertLess(args.index('-m'),args.index('resume'))
+
     def test_research_recipe_leaves_required_thread_approval_untouched(self):
         self.approve()
         prior=(self.root/'calls').read_bytes()

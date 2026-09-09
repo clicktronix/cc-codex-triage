@@ -45,10 +45,11 @@ APPROVE loop or delivery marker.
    ```bash
    THREAD="${THREAD:-$("${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh" research)}"
    "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --read-only --search <<< "$PROMPT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --read-only --search \
+     ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
-   Append `--model` / `--effort` only when supplied. Otherwise use Codex configuration;
+   `--model` / `--effort` are forwarded only when supplied. Otherwise use Codex configuration;
    report requested controls and observed usage without guessing dollar cost. One pass
    limits dispatch count, not tokens or elapsed time. For `--background`, use a
    Claude-managed background task. Exit 20 means watch the existing worker, not retry.

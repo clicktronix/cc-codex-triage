@@ -91,7 +91,8 @@ The plugin never edits Codex rollout files under `~/.codex/sessions`.
 
 ## Controls and evidence
 
-`review` and `plan` accept `--model` and `--effort`; explicit controls apply on
+Every command that dispatches to Codex — `ask`, `research`, `review`, `plan`, `reply`,
+`debate`, `thread` — accepts `--model` and `--effort`; explicit controls apply on
 resume too. `ask` applies the read-only sandbox on every call. Omitted model/effort
 use Codex configuration, not a promised model profile. `<thread>.last-usage.json`
 records requested controls and observed token usage; dollar cost stays unknown.

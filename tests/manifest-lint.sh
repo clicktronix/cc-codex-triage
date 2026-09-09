@@ -132,6 +132,26 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
   fi
 done
 
+echo "== every dispatching command exposes --model / --effort =="
+# The driver has parsed both flags on every path since 0.12.0 and applies them on resume.
+# A command that dispatches but hides them in its hint leaves the user with no way to pick
+# a cheaper model for a cheap question or a stronger one for a hard reply. status,
+# thread-list and thread-new never dispatch, so they are not in this list.
+for command in ask debate plan reply research review thread; do
+  file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
+  hint="$(awk 'NR>1 && /^---$/{exit} /^argument-hint:/{sub(/^argument-hint:[[:space:]]*/, ""); print; exit}' "$file")"
+  case "$hint" in
+    *'[--model <m>]'*'[--effort <e>]'*) ok ;;
+    *) bad "commands/$command.md: argument-hint must offer [--model <m>] [--effort <e>], got: $hint" ;;
+  esac
+  # Two spellings are accepted on purpose. A recipe the suite executes with `bash -c`
+  # (research, debate) must use the real shell form `${MODEL:+--model "$MODEL"}`; a recipe
+  # that is documentation pseudo-syntax alongside `[--topic "<text>"]` keeps the bracketed form.
+  grep -qE -- '(\[--model "\$MODEL"\] \[--effort "\$EFFORT"\]|\$\{MODEL:\+--model "\$MODEL"\} \$\{EFFORT:\+--effort "\$EFFORT"\})' "$file" \
+    && ok \
+    || bad "commands/$command.md: its dispatch recipe does not forward --model/--effort to the driver"
+done
+
 echo "== command routing boundaries =="
 for command in ask thread; do
   file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
@@ -179,9 +199,9 @@ else
 fi
 
 THREAD_COMMAND="$ROOT/plugins/cc-codex-triage/commands/thread.md"
-grep -q 'Parse leading `--oneshot` and `--topic <text>` flags, in either order' "$THREAD_COMMAND" \
+grep -q 'Parse leading `--oneshot`, `--topic <text>`, `--model <m>` and `--effort <e>` flags, in any' "$THREAD_COMMAND" \
   && ok \
-  || bad "commands/thread.md must parse both advertised leading flags"
+  || bad "commands/thread.md must parse all four advertised leading flags"
 THREAD_NEW="$ROOT/plugins/cc-codex-triage/commands/thread-new.md"
 if grep -q -- '--reset-only' "$THREAD_NEW" && ! grep -q -- ' --new ' "$THREAD_NEW"; then
   ok

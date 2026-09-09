@@ -50,10 +50,11 @@ choose a new explicit name instead of paying to resume unrelated history.
 3. Dispatch in the foreground:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" <<< "$PROMPT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
+     ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
-   Append `--model` / `--effort` only when explicitly supplied.
+   `--model` / `--effort` are forwarded only when explicitly supplied.
 
    For `--background`, run this call as a Claude-managed background task. Handle
    long-dispatch handoff as defined by skill `codex-triage`; do not add another
