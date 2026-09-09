@@ -25,7 +25,10 @@ Do not edit files. Search immediate sibling sites when one instance reveals a
 shared problem class. On follow-up, report changed or new findings instead of
 repeating resolved prose. End with exactly one bare final verdict line:
 APPROVE, REQUEST_CHANGES, or COMMENT. Use REQUEST_CHANGES only for a blocking
-finding. Honour AGENTS.md.
+finding. Honour applicable AGENTS.md/CLAUDE.md, their imports and scoped rules.
+Check the spec and affected consumers across file/repository boundaries; severity
+does not decide scope. Reuse supplied valid test evidence and identify missing proof
+before running costly checks. Do not create issues, edit, or delegate workers.
 ```
 
 ## Plan focus

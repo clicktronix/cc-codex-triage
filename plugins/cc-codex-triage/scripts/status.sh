@@ -5,14 +5,10 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/lib.sh"
 
-if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
-    || [ -z "$ROOT" ]; then
-  echo "Not inside a git repository — no thread state to report."
-  exit 0
-fi
+ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
-REQUIRED_CODEX="0.137.0"
+CLI_REFERENCE="0.153.4"
 
 field_value() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
@@ -21,24 +17,26 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 CHANGES="$(git status --porcelain -uall 2>/dev/null | grep -c . | tr -d ' ')"
 
 echo "cc-codex-triage status"
-echo "  repo branch : $BRANCH"
-echo "  working tree: ${CHANGES:-0} change(s)"
-echo "  state dir   : $STATE_DIR (current worktree)"
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "  repo branch : $BRANCH"
+  echo "  working tree: ${CHANGES:-0} change(s)"
+else
+  echo "  directory   : $ROOT (no Git repository)"
+
+fi
+echo "  state dir   : $STATE_DIR (current context)"
 
 if command -v codex >/dev/null 2>&1; then
   RAW="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' | head -1)"
-  CORE="${RAW%%-*}"
-  if [ -z "$CORE" ]; then
+  if [ -z "$RAW" ]; then
     echo "  codex CLI   : present (version unknown)"
-  elif [ "$(printf '%s\n%s\n' "$CORE" "$REQUIRED_CODEX" | sort -V | head -1)" = "$CORE" ] \
-      && [ "$CORE" != "$REQUIRED_CODEX" ]; then
-    echo "  codex CLI   : $RAW  WARNING below required >= $REQUIRED_CODEX"
   else
     echo "  codex CLI   : $RAW"
   fi
 else
   echo "  codex CLI   : NOT FOUND on PATH"
 fi
+echo "  CLI ref     : $CLI_REFERENCE (interface checked; no version gate)"
 
 echo
 echo "Threads:"
@@ -68,8 +66,19 @@ for STATE_FILE in "$STATE_DIR"/*.review-state; do
     "$NAME" "${STATUS:-?}" "${ELIGIBLE:-?}" "${VERDICT:--}"
   case "$STATUS" in
     APPROVED) echo "      authoritative check: review-state.sh check $NAME" ;;
-    CAP_REACHED) echo "      hard stop — reset only after a user decision" ;;
+    CAP_REACHED) echo "      review budget exhausted; continue safe work, renew the budget only with user authorization" ;;
     PENDING) echo "      one required-review round is claimed" ;;
   esac
 done
 [ "$ANY" = 1 ] || echo "  (none)"
+
+ARCHIVE_COUNT=0
+ARCHIVE_BYTES=0
+for ARCHIVE in "$STATE_DIR"/*.archive.*; do
+  [ -f "$ARCHIVE" ] && [ ! -L "$ARCHIVE" ] || continue
+  SIZE="$(wc -c < "$ARCHIVE" 2>/dev/null)" || { echo "cannot read archive: $ARCHIVE" >&2; continue; }
+  ARCHIVE_COUNT=$((ARCHIVE_COUNT + 1))
+  ARCHIVE_BYTES=$((ARCHIVE_BYTES + SIZE))
+done
+echo
+echo "Archives: $ARCHIVE_COUNT file(s), $ARCHIVE_BYTES bytes retained in $STATE_DIR"

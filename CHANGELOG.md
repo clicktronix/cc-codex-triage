@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.12.0] - 2026-09-09
+
+### Added
+- Source-backed `/research` with live search, read-only shell sandbox and a reusable
+  conversation. Repository context is optional.
+- Standalone directory contexts for research/debate and thread maintenance, with
+  state outside the working directory. Required review still needs Git.
+- Typed JSON usage records and Linux/macOS offline CI.
+- `/status` reports retained archive count, bytes and location without deleting history.
+
+### Fixed
+- Required review binds each dispatch to its claimed clean HEAD/tree at both
+  endpoints and requires its completion receipt. Later dispatches revoke earlier
+  approval; these endpoint checks do not prove immutability throughout the call.
+- Incomplete dispatch receipts have a distinct failure reason from receipts for a
+  different candidate. Strict mutation rejection cannot produce a complete receipt.
+- A working Python 3.8+ is checked before dispatch mutates thread state; missing or
+  unusable runtimes return exit 2 without a foreground retry. Legacy exit 8 is reserved.
+- Standalone status/list/reset report a failed Python context lookup as a dependency
+  error, preserving thread state. Damaged required claims have an explicit recovery
+  route without implicitly renewing the review budget.
+- Cancellation cleans up descendants in the reviewer's process group. Per-call
+  sandbox/model/effort/search controls are forwarded on resume.
+
+### Changed
+- Authorized workflows can use debate and owned idle thread maintenance. Reset
+  archives prior state, clears the review lifecycle and grants no approval. Reset
+  cannot be used by policy to evade a cap; the owner continues safe work while a
+  missing review-budget decision is pending.
+- CLI interface reference is 0.153.4. The old minimum-version warning is removed:
+  this release has no established compatibility floor or version gate.
+- Existing 0.11 sessions remain usable; prior approvals need a new claimed round
+  with a dispatch receipt. No migration of pre-0.11 state is added.
+
 ## [0.11.0] - 2026-08-28
 
 ### Breaking

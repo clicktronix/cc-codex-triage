@@ -27,9 +27,9 @@ VERB="${1:-}"; THREAD="${2:-}"
 [ -n "$VERB" ] && [ -n "$THREAD" ] || usage
 case "$THREAD" in *[!a-zA-Z0-9_.-]*|'') echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1 ;; esac
 
-if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
-  echo "not inside a git repository" >&2
-  exit 7
+ROOT="$(bash "$STATE_HELPER" --root)" || exit $?
+if ! git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
+  case "$VERB" in advisory-check|reset) ;; *) die 7 "required review needs a Git repository" ;; esac
 fi
 cd "$ROOT" || exit 7
 STATE_DIR="$(bash "$STATE_HELPER")" || exit $?
@@ -57,7 +57,7 @@ atomic_write() { # $1=path; body on stdin
   return 1
 }
 assert_state_files_safe() {
-  for _suffix in candidate review-state review-loop approved log rounds; do
+  for _suffix in candidate review-state review-loop approved log rounds dispatch-receipt; do
     _path="$STATE_DIR/$THREAD.$_suffix"
     [ ! -L "$_path" ] || { echo "refusing symlinked required-review state: $_path" >&2; exit 7; }
     [ ! -e "$_path" ] || [ -f "$_path" ] \
@@ -143,9 +143,9 @@ write_loop_state() { # base spec cap start attempts
 assert_claim() {
   _provided="$1"; _expected="$(field "$CANDIDATE" claim_token)"
   case "$_expected" in
-    ''|*[!0-9a-f]*) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;;
+    ''|*[!0-9a-f]*) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;;
   esac
-  case "${#_expected}" in 40|64) ;; *) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;; esac
+  case "${#_expected}" in 40|64) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
   [ "$_provided" = "$_expected" ] || die 10 "CLAIM_MISMATCH: required-review round belongs to another invocation"
 }
 
@@ -195,7 +195,7 @@ case "$VERB" in
       PENDING) die 10 "PENDING: finish or abort the claimed review round before begin" ;;
       CAP_REACHED)
         [ -f "$CANDIDATE" ] \
-          && die 10 "$LAST_STATUS: reset the thread before starting another required review"
+          && die 10 "$LAST_STATUS: report missing approval and continue safe work; a new review budget needs user authorization, not a reset workaround"
         ;;
     esac
     if [ -f "$LOOP_STATE" ]; then
@@ -215,7 +215,7 @@ case "$VERB" in
       [ "$LOOP_BASE_SHA" = "$BASE_SHA" ] \
         && [ "$LOOP_SPEC_PATH" = "$SPEC_PATH" ] \
         && [ "$LOOP_CAP" = "$CAP" ] \
-        || die 10 "REVIEW_CONTRACT_CHANGED: reset the thread before changing required-review base, spec, or cap"
+        || die 10 "REVIEW_CONTRACT_CHANGED: restore the original base/spec/cap, or start a new lifecycle for an authorized contract change"
     else
       LOOP_START="$CURRENT_ROUND"
       ATTEMPTS=0
@@ -264,7 +264,7 @@ case "$VERB" in
     OFF="$(field "$CANDIDATE" log_bytes)"; OFF="${OFF:-0}"
     OLD_GEN="$(field "$CANDIDATE" log_gen)"; OLD_GEN="${OLD_GEN:-0}"
     valid_decimal "$OFF" 12 && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     NOW_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || NOW_GEN=""
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$OLD_GEN" = "$NOW_GEN" ] || OFF=0
@@ -305,10 +305,20 @@ case "$VERB" in
     elif [ "$CURRENT_ROUND" -ne $((ROUND_BEFORE + 1)) ]; then STALE_REASON=round_counter_mismatch
     elif ! prompt_scope_exact "$RECORD_TMP" "$C_BASE" "$C_HEAD" "$C_SPEC"; then
       STALE_REASON=prompt_scope_mismatch
+    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" != complete ]; then
+      STALE_REASON=dispatch_incomplete
+    elif [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" != "$(field "$CANDIDATE" claim_token)" ] \
+      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" head)" != "$C_HEAD" ] \
+      || [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" tree)" != "$C_TREE" ]; then
+      STALE_REASON=dispatch_candidate_mismatch
     fi
     if [ -n "$STALE_REASON" ]; then
       write_state STALE "$VERDICT" false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
-      echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
+      if [ "$STALE_REASON" = dispatch_incomplete ]; then
+        echo "STALE ($STALE_REASON): no completed dispatch receipt; inspect the dispatch error before retrying within the remaining review budget" >&2
+      else
+        echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
+      fi
       exit 11
     fi
     case "$VERDICT" in
@@ -355,7 +365,7 @@ case "$VERB" in
     valid_decimal "$ROUND_BEFORE" 7 && valid_decimal "$CURRENT_ROUND" 7 \
       && valid_decimal "$OLD_BYTES" 12 && valid_decimal "$NOW_BYTES" 12 \
       && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
@@ -369,15 +379,15 @@ case "$VERB" in
     C_CAP="$(field "$CANDIDATE" cap)"
     C_START="$(field "$CANDIDATE" loop_start_round)"
     C_ATTEMPT="$(field "$CANDIDATE" attempt)"
-    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: reset the required-review thread" ;; esac
+    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
     valid_decimal "$LOOP_START" 7 && valid_decimal "$C_START" 7 \
       && valid_decimal "$LOOP_ATTEMPTS" 7 && valid_decimal "$C_ATTEMPT" 7 \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     [ "$LOOP_BASE_SHA" = "$C_BASE_SHA" ] && [ "$LOOP_SPEC_PATH" = "$C_SPEC_PATH" ] \
       && [ "$LOOP_CAP" = "$C_CAP" ] && [ "$LOOP_START" = "$C_START" ] \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && [ "$LOOP_ATTEMPTS" -gt 0 ] \
-      || die 10 "INVALID_CLAIM_STATE: reset the required-review thread"
+      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
     # The unchanged round/log proof above establishes that no dispatch
     # completed. Return a reserved slot, if present, before publishing ABORTED.
     # A crash between these writes remains fail-closed: PENDING blocks begin,
@@ -391,6 +401,7 @@ case "$VERB" in
 
   check)
     [ $# -eq 2 ] || usage
+    assert_no_live_dispatch
     [ -f "$CANDIDATE" ] && [ -f "$REVIEW_STATE" ] && [ -f "$APPROVED" ] \
       || { echo "NO_APPROVAL" >&2; exit 10; }
     # APPROVED is published in two renames: first the live review state, then
@@ -412,6 +423,10 @@ case "$VERB" in
       && [ "$(field "$APPROVED" base_sha)" = "$(field "$CANDIDATE" base_sha)" ] \
       && [ "$(field "$APPROVED" spec_path)" = "$(field "$CANDIDATE" spec_path)" ] \
       || { echo "NO_APPROVAL" >&2; exit 10; }
+    [ "$(round_now)" = "$(field "$APPROVED" round)" ] \
+      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" = complete ] \
+      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" = "$(field "$APPROVED" claim_token)" ] \
+      || die 10 "NO_APPROVAL: a newer dispatch or missing receipt requires review"
     clean_candidate || { echo "STALE: candidate is dirty" >&2; exit 11; }
     HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
     [ "$HEAD_SHA" = "$(field "$APPROVED" head)" ] \
@@ -423,7 +438,7 @@ case "$VERB" in
   reset)
     [ $# -eq 2 ] || usage
     assert_no_live_dispatch "${CC_CODEX_REVIEW_RESET_LEASE_PID:-}"
-    rm -f "$CANDIDATE" "$REVIEW_STATE" "$LOOP_STATE" "$APPROVED" \
+    rm -f "$CANDIDATE" "$REVIEW_STATE" "$LOOP_STATE" "$APPROVED" "$STATE_DIR/$THREAD.dispatch-receipt" \
       || die 7 "cannot reset required-review state"
     echo "RESET required-review state for $THREAD"
     ;;

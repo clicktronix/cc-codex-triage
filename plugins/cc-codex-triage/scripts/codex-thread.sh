@@ -3,11 +3,10 @@
 #
 # Sends a prompt to a NAMED Codex thread. First call creates the thread via
 # `codex exec` and persists the session UUID; subsequent calls resume the same
-# thread via `codex exec resume <UUID>` so Codex retains full conversation
-# memory across turns.
+# thread via `codex exec resume <UUID>` with Codex-managed conversation history.
 #
 # Usage:
-#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]
+#   codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]
 #       Reads prompt from stdin. Echoes the assistant's final message to stdout.
 #       --new               fresh persistent thread, discarding the existing one.
 #       --reset-only        atomically clear persistent thread state under the
@@ -20,8 +19,8 @@
 #       --topic <text>      one-line label for a NEW thread, ignored if the
 #                           thread already has one. Makes the thread findable
 #                           by subject rather than by name alone.
-#       --read-only         create initial/oneshot Codex sessions in the
-#                           read-only sandbox; ignored on resume.
+#       --read-only         apply read-only sandbox on new AND resumed calls.
+#       --search            request live web search on new AND resumed calls.
 #       --strict            exit 5 when tracked-file status changes.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
 #                           survives group-targeted kills (harness process
@@ -48,6 +47,8 @@
 #   <thread>.candidate        exact clean candidate captured by required /review.
 #   <thread>.review-state     latest machine-readable review/gate result.
 #   <thread>.approved         last gate-eligible exact-candidate APPROVE.
+#   <thread>.dispatch-receipt actual required candidate and completion status.
+#   <thread>.last-usage.json   requested controls and observed token usage (cost unknown).
 #   <thread>.active           PID lease held while a dispatch is in flight.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
@@ -62,7 +63,7 @@
 #                             .log marker contract above is unchanged.
 #   <thread>.detach-stderr    raw STDERR of the LATEST --detach child —
 #                             warnings a successful run emits (invalid saved
-#                             .id discarded, ignored resume overrides,
+#                             .id discarded,
 #                             porcelain guard notes) live here, split from
 #                             the reply so the watcher can deliver them.
 #   <thread>.detach-status    the LATEST detach child's real exit status
@@ -73,15 +74,13 @@
 # Exit codes:
 #   0   success
 #   1   usage error
-#   2   codex CLI missing
+#   2   required runtime unavailable (codex CLI or working Python 3.8+)
 #   3   codex exec failed (initial or oneshot)
 #   4   codex exec resume failed (saved UUID preserved — re-run with --new)
 #   5   tracked-file mutation detected with --strict
 #   6   --require-existing set but no existing thread
-#   7   persistent mode outside a git repository (state anchors to the repo
-#       root — cd into a repo, fix CLAUDE_PROJECT_DIR, or use --oneshot)
-#   8   --detach: no session isolator (neither `setsid` nor `python3` on
-#       PATH) — refused with ZERO state written
+#   7   invalid context directory or unsafe/unavailable thread state
+#   8   reserved (legacy missing-isolator error; Python is now required)
 #   9   --detach: ready-handshake timed out on a still-ALIVE child (spawn
 #       killed, launcher-owned tmpfiles removed; check
 #       <thread>.detach-output / <thread>.detach-stderr). A child that
@@ -102,6 +101,7 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
 . "$SELF_DIR/dir-lock.sh"
+. "$SELF_DIR/candidate-receipt.sh"
 
 # ── the detached-child role ───────────────────────────────────────────────
 # "You are the re-exec'd child of a --detach launcher": redirect the reply into
@@ -123,6 +123,7 @@ ONESHOT=false
 REQUIRE_EXISTING=false
 DETACH=false
 READ_ONLY=false
+LIVE_SEARCH=false
 STRICT=false
 THREAD=""
 MODEL=""
@@ -151,6 +152,7 @@ while (( $# )); do
     --reset-only) RESET_ONLY=true; shift ;;
     --detach) DETACH=true; shift ;;
     --read-only) READ_ONLY=true; shift ;;
+    --search) LIVE_SEARCH=true; shift ;;
     --strict) STRICT=true; shift ;;
     # INTERNAL, set only by this script's own detach launcher on the process it
     # spawns. Deliberately not in --help or any command file.
@@ -177,8 +179,8 @@ while (( $# )); do
 done
 
 [[ -z "$THREAD" ]] && {
-  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--strict]" >&2
-  echo "exit codes: 0 ok, 1 usage, 2 no codex CLI, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 not a git repo, 8 no --detach isolator, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
+  echo "usage: codex-thread.sh <thread-name> [--new | --oneshot | --reset-only] [--require-existing] [--detach] [--read-only] [--search] [--strict]" >&2
+  echo "exit codes: 0 ok, 1 usage, 2 required runtime unavailable, 3 exec failed, 4 resume failed, 5 tracked-file mutation (strict), 6 no existing thread, 7 invalid context/state, 9 --detach handshake timeout, 10 thread busy (lease or acquisition lock held by a live owner) — see --help" >&2
   exit 1
 }
 [[ "$THREAD" =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo "thread name must be [a-zA-Z0-9_.-]+" >&2; exit 1; }
@@ -201,7 +203,7 @@ if $FORCE_NEW && $REQUIRE_EXISTING; then
   echo "--new and --require-existing are mutually exclusive (--new would discard the thread --require-existing demands)." >&2
   exit 1
 fi
-if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH || $READ_ONLY || $STRICT \
+if $RESET_ONLY && { $FORCE_NEW || $ONESHOT || $REQUIRE_EXISTING || $DETACH || $READ_ONLY || $LIVE_SEARCH || $STRICT \
     || [ -n "$MODEL$EFFORT$SCHEMA$TOPIC$DETACH_READY_FILE" ]; }; then
   echo "--reset-only accepts only a persistent thread name" >&2
   exit 1
@@ -222,28 +224,19 @@ if ! $RESET_ONLY && ! command -v codex >/dev/null 2>&1; then
   echo "codex CLI not found on PATH. Install: npm install -g @openai/codex" >&2
   exit 2
 fi
+if ! $RESET_ONLY && ! python3 -c 'import json, signal, subprocess, sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+  echo "Python 3.8+ is required for Codex dispatch; python3 on PATH is missing, unusable, or too old. Repair the interpreter before retrying." >&2
+  exit 2
+fi
 
 # ── anchor cwd ────────────────────────────────────────────────────────────
-# State paths are repo-relative, but the Bash tool's cwd persists across calls
-# and can drift into subdirectories. Persistent modes anchor to the RESOLVED
-# repo root — the candidate (CLAUDE_PROJECT_DIR or PWD) is passed through
-# `git rev-parse --show-toplevel`, so a candidate inside a subdirectory
-# resolves UP to the root and driver/hook state can never split. A candidate
-# that is not inside a repo (or does not exist) is a hard error: writing state
-# to an arbitrary directory is exactly the incident this guards against.
-# --oneshot skips resolution entirely — it keeps no repo state.
-if ! $ONESHOT; then
-  # set -e-safe form: a bare ROOT=$(git ...) failure would exit 128 here,
-  # before any check could produce the diagnostic below.
-  if ! ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" || [ -z "$ROOT" ]; then
-    echo "not inside a git repository (candidate: ${CLAUDE_PROJECT_DIR:-$PWD})." >&2
-    echo "Persistent threads anchor their state to the current worktree Git directory. Fix one of:" >&2
-    echo "  - cd into the target repository," >&2
-    echo "  - point CLAUDE_PROJECT_DIR at (or inside) a git repository," >&2
-    echo "  - or use --oneshot for a state-less dispatch." >&2
-    exit 7
-  fi
-  cd "$ROOT"
+# Resolve a Git worktree root or a standalone directory consistently across
+# driver, watcher and inspection. Standalone state lives outside the directory.
+ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
+cd "$ROOT"
+GIT_ARGS=()
+if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+  GIT_ARGS+=( --skip-git-repo-check )
 fi
 
 # ── detach preflight: select the session isolator ─────────────────────────
@@ -256,12 +249,8 @@ DETACH_ISOLATOR=""
 if $DETACH; then
   if command -v setsid >/dev/null 2>&1; then
     DETACH_ISOLATOR="setsid"
-  elif command -v python3 >/dev/null 2>&1; then
-    DETACH_ISOLATOR="python3"
   else
-    echo "--detach needs a session isolator, but neither 'setsid' nor 'python3' is on PATH." >&2
-    echo "Install one of them, or dispatch without --detach (foreground, or the harness's run_in_background)." >&2
-    exit 8
+    DETACH_ISOLATOR="python3"  # Required runtime already checked above.
   fi
 fi
 
@@ -309,7 +298,7 @@ lease_busy_pid() {
 # ── detach launcher ───────────────────────────────────────────────────────
 # Re-execs this same script (same args minus --detach) in a NEW SESSION and
 # returns after a ready handshake. Lifecycle order is the contract:
-#   isolator preflight (above, exit 8 with zero state) → state directory
+#   runtime preflight (above, exit 2 with zero state) → state directory
 #   creation (the sidecar redirection below is performed by
 #   the shell BEFORE the isolator runs, so on a repo's first-ever detach the
 #   directory must already exist) → persist stdin + allocate READY → spawn →
@@ -565,7 +554,7 @@ abort_dispatch() { # $1=signal name
   if [[ -n "${CODEX_PID:-}" ]]; then
     kill -TERM "$CODEX_PID" 2>/dev/null || true
     local _i=0
-    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 30 ]]; do
+    while kill -0 "$CODEX_PID" 2>/dev/null && [[ $_i -lt 50 ]]; do
       sleep 0.1
       _i=$((_i+1))
     done
@@ -641,10 +630,10 @@ fail_with_diag() {
 SANDBOX_ARGS=()
 $READ_ONLY && SANDBOX_ARGS+=( -s read-only )
 
-# model/effort: initial/oneshot ONLY (kept stable across the thread; WARN if passed
-# on resume). schema: a per-MESSAGE output shape — `codex exec resume` accepts
-# --output-schema, so it applies on EVERY path (initial, oneshot, AND resume).
+# Explicit model/effort/sandbox apply to every dispatch; omitted controls use
+# Codex configuration. Schema is also per-message.
 OVERRIDES=()
+$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
 [[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
 [[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
 SCHEMA_ARGS=()
@@ -715,7 +704,7 @@ if ! $ONESHOT; then
   dir_lock_release_all
   # Detach child: canonical output boundary + status slate, established the
   # moment the lease is OURS — before ANY further preflight, so every later
-  # warning (invalid saved .id discarded, ignored resume overrides, porcelain
+  # warning (invalid saved .id discarded, porcelain
   # guard notes) lands in the canonical sidecars instead of the launcher's
   # discarded pre-lease tmpfile. stdout and stderr are SPLIT: the reply echo
   # goes to <thread>.detach-output, warnings/errors to <thread>.detach-stderr
@@ -733,6 +722,20 @@ fi
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW || $RESET_ONLY; then
+  # Preserve old state before an explicit new lifecycle, while owning the lease.
+  ARCHIVE=""
+  ARCHIVE_FILES=()
+  for suffix in id log log.1 rounds topic candidate review-state review-loop approved dispatch-receipt last-usage.json; do
+    source_file="$STATE_DIR/$THREAD.$suffix"
+    [[ ! -L "$source_file" ]] || { echo "refusing symlinked reset source: $source_file" >&2; exit 7; }
+    [[ -f "$source_file" ]] || continue
+    ARCHIVE_FILES+=("$THREAD.$suffix")
+  done
+  if (( ${#ARCHIVE_FILES[@]} )); then
+    ARCHIVE="$(mktemp "$STATE_DIR/$THREAD.archive.XXXXXX")" || exit 7
+    tar -cf "$ARCHIVE" -C "$STATE_DIR" "${ARCHIVE_FILES[@]}" || exit 7
+    echo "Previous thread state retained in tar archive $ARCHIVE" >&2
+  fi
   # Reset required-review state while holding the dispatch lease.
   # last-abort belongs to the incarnation being discarded.
   CC_CODEX_REVIEW_RESET_LEASE_PID="$$" \
@@ -807,7 +810,7 @@ run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by 
   # `<&0` is required: POSIX gives an async list's stdin /dev/null before any
   # explicit redirection, so the caller's herestring died at the `&` and codex
   # read an empty prompt.
-  "$@" <&0 &
+  python3 "$SELF_DIR/process-group.py" "$@" <&0 &
   CODEX_PID=$!
   local rc=0
   wait "$CODEX_PID" || rc=$?
@@ -815,14 +818,18 @@ run_codex() {  # "$@" = the full codex argv; stdin/stdout already redirected by 
   return "$rc"
 }
 
+# Capture actual required input, after the lease and before the paid call.
+REQUIRED_CLAIM=""
+if ! $ONESHOT; then required_dispatch_start || exit $?; fi
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 if $ONESHOT; then
   MODE="oneshot"
   # Throwaway: no thread tracking, no rollout persisted on the Codex side.
   # codex exec resume cannot continue an --ephemeral session — that is the point.
-  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  CWD_FOR_CODEX="$ROOT"
   if ! run_codex codex exec --json --ephemeral -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
-        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (oneshot)."
   fi
@@ -831,14 +838,9 @@ if $ONESHOT; then
   rm -f "$DIAG_FILE"
 elif [[ -n "$SID" ]]; then
   MODE="resume($SID)"
-  # No model/effort overrides on resume: -s (sandbox) and -C (cwd) are fixed at
-  # session creation and resume does not take them; -m/-c are accepted by newer
-  # codex CLIs but we deliberately omit them to keep the thread's model/config
-  # stable. --output-schema DOES apply here — it shapes this single message.
-  if [[ -n "$MODEL$EFFORT" ]]; then
-    echo "WARN: --model/--effort are ignored on resume (kept stable across the thread). Use --new to change them." >&2
-  fi
-  if ! run_codex codex exec resume --json "$SID" \
+  # Parent exec flags apply to resume too; explicit per-call controls win.
+  if ! run_codex codex exec --json -C "$ROOT" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} resume "$SID" \
         ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 4 \
@@ -846,14 +848,16 @@ elif [[ -n "$SID" ]]; then
       "Possible causes: session expired/deleted, codex CLI upgrade broke wire format, or model unavailable." \
       "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
   fi
+  python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
+    "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT" >/dev/null
   # last-error means the LAST error: a successful dispatch clears the diag.
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 else
   MODE="initial"
   # Pin cwd via -C so initial dispatch isn't sensitive to who launches the script.
-  CWD_FOR_CODEX="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  CWD_FOR_CODEX="$ROOT"
   if ! run_codex codex exec --json -C "$CWD_FOR_CODEX" ${SANDBOX_ARGS[@]+"${SANDBOX_ARGS[@]}"} \
-        ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
+        ${GIT_ARGS[@]+"${GIT_ARGS[@]}"} ${OVERRIDES[@]+"${OVERRIDES[@]}"} ${SCHEMA_ARGS[@]+"${SCHEMA_ARGS[@]}"} \
         -o "$OUT_FILE" - <<< "$PROMPT" > "$JSONL_FILE" 2>&1; then
     fail_with_diag 3 "codex exec FAILED (initial)."
   fi
@@ -862,21 +866,8 @@ else
   # diag write on a UUID-extraction failure below lands in a clean slot and is
   # never erased by its own dispatch.
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
-  # Extract the session UUID from the JSONL stream. First event carrying a
-  # thread_id / session_id / conversation_id wins. Two-step: match the whole
-  # key:value pair (whitespace-tolerant), then strip down to the value — no
-  # fixed substr offsets, so a formatting change in codex --json output (e.g.
-  # a space after the colon) cannot silently break thread persistence. The
-  # strict UUID shape check happens below in bash ($UUID_RE).
-  SID="$(awk '
-    match($0, /"(thread_id|session_id|conversation_id)"[ \t]*:[ \t]*"[0-9a-fA-F-]+"/) {
-      s = substr($0, RSTART, RLENGTH)
-      sub(/^.*"[ \t]*:[ \t]*"/, "", s)   # drop key, colon, opening quote
-      sub(/"$/, "", s)                   # drop closing quote
-      print s
-      exit
-    }
-  ' "$JSONL_FILE")"
+  SID="$(python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
+    "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT")"
   if [[ -n "$SID" && "$SID" =~ $UUID_RE ]]; then
     echo "$SID" > "$ID_FILE"
   else
@@ -896,7 +887,8 @@ STRICT_MUTATION_EXIT=false
 if [[ -n "$REPO_ROOT" ]]; then
   POST_PORCELAIN="$(porcelain)"
   if [[ "$PRE_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* || "$POST_PORCELAIN" == *__PORCELAIN_UNAVAILABLE__* ]]; then
-    echo "WARN: git status was unavailable for the mutation guard (pre or post) — skipping the comparison this round." >&2
+    echo "WARN: git status was unavailable for the mutation guard (pre or post)." >&2
+    $STRICT && STRICT_MUTATION_EXIT=true
   elif [[ "$PRE_PORCELAIN" != "$POST_PORCELAIN" ]]; then
     echo "WARN: tracked-file status changed during codex dispatch ($MODE)." >&2
     echo "Diff (pre vs post):" >&2
@@ -988,4 +980,5 @@ if $STRICT_MUTATION_EXIT; then
   exit 5
 fi
 
+required_dispatch_finish || exit $?
 cat "$OUT_FILE"

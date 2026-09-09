@@ -10,8 +10,8 @@
 # the user asking. Four suites and 487 tests were green throughout, because
 # every one of them tests behaviour and nothing read the manifests.
 #
-# The checks are deliberately structural. Paid commands remain user-only except
-# `/review`, whose model-invocable contract is intentional and tested here.
+# The checks are deliberately structural. Bounded workflow and maintenance commands
+# are model-invocable; arbitrary `/thread` remains user-invoked.
 # Every Bash grant is also limited to bundled plugin scripts.
 set -u
 
@@ -96,26 +96,27 @@ check_manifest() { # $1=file  $2..=required frontmatter keys
 }
 
 echo "== commands =="
-EXPECTED_COMMANDS="ask debate plan reply review status thread thread-list thread-new"
+EXPECTED_COMMANDS="ask debate plan reply research review status thread thread-list thread-new"
 ACTUAL_COMMANDS="$(for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do basename "$f" .md; done | sort | tr '\n' ' ' | sed 's/ $//')"
 [[ "$ACTUAL_COMMANDS" == "$EXPECTED_COMMANDS" ]] \
   && ok \
   || bad "command surface is '$ACTUAL_COMMANDS', expected '$EXPECTED_COMMANDS'"
 for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
-  if [[ "$(basename "$f")" == review.md ]]; then
+  command="$(basename "$f" .md)"
+  if [[ "$command" != thread ]]; then
     check_manifest "$f" description allowed-tools
     if awk 'NR>1 && /^---$/{exit} /^disable-model-invocation:/{found=1} END{exit found?0:1}' "$f"; then
-      bad "commands/review.md: must remain model-invocable (remove disable-model-invocation)"
+      bad "commands/$command.md: workflow entrypoint must remain model-invocable"
     else
       ok
     fi
     allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
     expected='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
-    [[ "$allowed" == "$expected" ]] \
-      && ok \
-      || bad "commands/review.md: model-invoked Bash grant is '$allowed', expected the three product-route scripts"
+    if [[ "$command" == review ]]; then
+      [[ "$allowed" == "$expected" ]] && ok || bad "review grants must stay scoped to its three product-route scripts"
+    fi
   else
-    # Every other command stays user-invoked; do not blanket-enable paid tools.
+    # Arbitrary writable conversation dispatch stays user-invoked.
     check_manifest "$f" description allowed-tools disable-model-invocation=true
   fi
   allowed="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$f")"
@@ -132,7 +133,7 @@ for f in "$ROOT"/plugins/cc-codex-triage/commands/*.md; do
 done
 
 echo "== command routing boundaries =="
-for command in ask reply thread; do
+for command in ask thread; do
   file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
   if grep -q 'scripts/codex-thread\.sh' "$file" && ! grep -q 'scripts/dispatch\.sh' "$file"; then
     ok
@@ -140,7 +141,7 @@ for command in ask reply thread; do
     bad "commands/$command.md must use the foreground driver directly"
   fi
 done
-for command in review plan debate; do
+for command in review plan research debate; do
   file="$ROOT/plugins/cc-codex-triage/commands/$command.md"
   grep -q 'scripts/dispatch\.sh' "$file" \
     && ok \
@@ -153,19 +154,22 @@ ASK_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:
   || bad "commands/ask.md must grant only the driver it executes"
 
 REPLY_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/reply.md")"
-EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)'
+EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
 [[ "$REPLY_ALLOWED" == "$EXPECTED_REPLY" ]] \
   && ok \
-  || bad "commands/reply.md must retain Read plus its three product-route scripts"
+  || bad "commands/reply.md must retain Read plus its advisory/required product-route scripts"
 
 REVIEW_COMMAND="$ROOT/plugins/cc-codex-triage/commands/review.md"
 grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md' "$REVIEW_COMMAND" \
   && ok \
   || bad "commands/review.md must resolve its lens reference from CLAUDE_PLUGIN_ROOT"
-grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict' "$REVIEW_COMMAND" \
+REQUIRED_PROTOCOL="$ROOT/plugins/cc-codex-triage/skills/codex-triage/references/required-review.md"
+grep -qF 'references/required-review.md' "$REVIEW_COMMAND" && ok || bad "review must route required mode to its protocol"
+grep -qF 'references/required-review.md' "$ROOT/plugins/cc-codex-triage/commands/reply.md" && ok || bad "reply must route required threads to the same protocol"
+grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict' "$REQUIRED_PROTOCOL" \
   && ok \
   || bad "commands/review.md must express strict mutation policy as a driver flag"
-grep -qF '"$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"' "$REVIEW_COMMAND" \
+grep -qF '"$THREAD" "$ABORT_REASON" "$CLAIM_TOKEN"' "$REQUIRED_PROTOCOL" \
   && ok \
   || bad "commands/review.md must show the complete abort signature so a failed round cannot remain pending"
 if grep -R -qE '(^|[[:space:]])\.\./skills/' "$ROOT/plugins/cc-codex-triage/commands"; then

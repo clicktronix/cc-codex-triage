@@ -14,16 +14,15 @@
 # (a failed first dispatch) is deliberately absent: there is nothing to resume.
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
-ROOT="$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
-  || { echo "Not inside a git repository."; exit 0; }
+ROOT="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --read-only)" || exit $?
 TSV=false
 [ "${1:-}" = "--tsv" ] && TSV=true
 
-[ -d "$STATE_DIR" ] || { $TSV || echo "No active threads in this repo."; exit 0; }
+[ -d "$STATE_DIR" ] || { $TSV || echo "No active threads in this context."; exit 0; }
 set -- "$STATE_DIR"/*.id
-[ -e "$1" ] || { $TSV || echo "No active threads in this repo."; exit 0; }
+[ -e "$1" ] || { $TSV || echo "No active threads in this context."; exit 0; }
 
 $TSV || printf '%-30s  %-7s  %-9s  %-16s  %s\n' THREAD ROUNDS LOG_SIZE LAST_ACTIVITY TOPIC
 

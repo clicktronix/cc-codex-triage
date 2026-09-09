@@ -2,7 +2,6 @@
 description: Stress-test a plan or architecture decision in a persistent Codex thread. Iterates to APPROVE by default; use --once for one pass.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or question>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
-disable-model-invocation: true
 ---
 
 # /plan
@@ -31,15 +30,16 @@ optional comments remain, or the round cap is reached.
      <<< "$PROMPT"
    ```
 
-   Initial-only model and effort flags are ignored with a warning on resume.
+   Explicit model and effort apply on resume too; omitted settings use Codex configuration.
    Handle long-dispatch handoff as defined by skill `codex-triage`. For
    `--background`, run this wrapper as a Claude-managed background task; do not
    add another detach layer.
 
-4. Show the reply verbatim. Validate objections before revising the plan. If a
+4. Show findings and the exact verdict; link the full log. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around
-   it. Stop at `APPROVE`, optional-only `COMMENT`, cap, or two rounds of new
-   blocking classes that show the design itself is unfinished.
+   it. Stop paid iteration at `APPROVE`, optional-only `COMMENT`, or the authorized cap.
+   New blocking classes call for systemic replanning, not an automatic user question.
+   In an owning workflow return findings and let it continue the task.
 
-5. Exit 4 means resume failed: ask before resetting the thread. Exit 5 means
+5. Exit 4 means resume failed: follow the skill's recovery rules. Exit 5 means
    Codex changed tracked files: show the diff and stop.

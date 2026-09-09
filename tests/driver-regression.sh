@@ -12,6 +12,7 @@ VERDICT="${DRIVER%codex-thread.sh}verdict.sh"
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/cc-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
+export XDG_STATE_HOME="$T/user-state"
 
 # ── stub codex ──────────────────────────────────────────────────────────────
 mkdir -p "$T/bin"
@@ -253,9 +254,9 @@ read_initial="$(tr '\0' '\n' < "$T/read-initial.argv")"
   || bad "initial --read-only was not forwarded: $read_initial"
 FAKE_CODEX_ARGV="$T/read-resume.argv" run tro --read-only
 read_resume="$(tr '\0' '\n' < "$T/read-resume.argv")"
-grep -qx -- '-s' <<<"$read_resume" \
-  && bad "--read-only leaked into codex exec resume" \
-  || ok "resume keeps the session sandbox without forwarding -s"
+[[ "$(next_after "$read_resume" '-s')" == read-only ]] \
+  && ok "resume explicitly reapplies the read-only sandbox" \
+  || bad "resume --read-only was not forwarded: $read_resume"
 FAKE_CODEX_ARGV="$T/read-oneshot.argv" run tro-shot --read-only --oneshot
 read_oneshot="$(tr '\0' '\n' < "$T/read-oneshot.argv")"
 [[ "$(next_after "$read_oneshot" '-s')" == read-only ]] \
@@ -275,16 +276,16 @@ argv="$(tr '\0' '\n' < "$T/argv")"
 grep -qx -- '--output-schema' <<<"$argv" && ok "--schema -> --output-schema" || bad "--schema not forwarded"
 [[ "$(next_after "$argv" '--output-schema')" == "$T/s.json" ]] && ok "schema path immediately follows --output-schema (initial)" || bad "schema path not adjacent to --output-schema (initial)"
 
-echo "== model/effort IGNORED + WARN on resume; schema IS forwarded on resume =="
+echo "== explicit model/effort/sandbox controls apply on resume =="
 rm -rf "$SD"; run t10                       # initial creates .id
 FAKE_CODEX_ARGV="$T/argv2" run t10 --model gpt-5.5
 argv2="$(tr '\0' '\n' < "$T/argv2")"
-grep -qx 'gpt-5.5' <<<"$argv2" && bad "model leaked into resume" || ok "model not forwarded on resume"
-grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for model" || bad "no resume WARN"
+grep -qx 'gpt-5.5' <<<"$argv2" && ok "model forwarded on resume" || bad "model missing on resume"
+grep -qi 'ignored on resume' "$T/err" && bad "model incorrectly ignored" || ok "model override honored"
 FAKE_CODEX_ARGV="$T/argv2b" run t10 --effort high
 argv2b="$(tr '\0' '\n' < "$T/argv2b")"
-grep -qx 'model_reasoning_effort=high' <<<"$argv2b" && bad "effort leaked into resume" || ok "effort not forwarded on resume"
-grep -qi 'ignored on resume' "$T/err" && ok "resume WARN emitted for effort" || bad "no resume WARN for effort"
+grep -qx 'model_reasoning_effort=high' <<<"$argv2b" && ok "effort forwarded on resume" || bad "effort missing on resume"
+grep -qi 'ignored on resume' "$T/err" && bad "effort incorrectly ignored" || ok "effort override honored"
 echo '{}' > "$T/s.json"
 FAKE_CODEX_ARGV="$T/argv3" run t10 --schema "$T/s.json"
 argv3="$(tr '\0' '\n' < "$T/argv3")"
@@ -293,21 +294,21 @@ grep -qx -- '--output-schema' <<<"$argv3" && ok "--schema forwarded on resume" |
 grep -qi 'ignored on resume' "$T/err" && bad "schema wrongly warned as ignored" || ok "no false resume WARN for schema"
 unset FAKE_CODEX_ARGV
 
-echo "== exit 7: persistent dispatch from a non-repo cwd, no env =="
+echo "== persistent dispatch from a standalone directory =="
 mkdir -p "$T/norepo"
 NOREPO="$(cd "$T/norepo" && pwd)"   # canonicalized: the driver reports bash's normalized $PWD
 cd "$NOREPO"
 run a1
-[[ "$RC" -eq 7 ]] && ok "non-repo cwd -> exit 7" || bad "non-repo cwd rc=$RC"
-grep -q "not inside a git repository" "$T/err" && grep -qF "$NOREPO" "$T/err" && ok "message names the candidate dir" || bad "exit-7 message wrong: $(cat "$T/err")"
+[[ "$RC" -eq 0 ]] && ok "non-repo cwd dispatches" || bad "non-repo cwd rc=$RC"
+[[ -d "$XDG_STATE_HOME/cc-codex-triage/contexts" ]] && ok "standalone state is outside the working directory" || bad "standalone state missing"
 [[ ! -e "$NOREPO/.claude" ]] && ok "no .claude created in non-repo dir" || bad ".claude created in non-repo dir"
 cd "$REPO"
 
-echo "== exit 7: CLAUDE_PROJECT_DIR -> existing NON-repo dir =="
+echo "== CLAUDE_PROJECT_DIR -> existing standalone directory =="
 export CLAUDE_PROJECT_DIR="$NOREPO"
 run a2
 unset CLAUDE_PROJECT_DIR
-[[ "$RC" -eq 7 ]] && ok "env candidate non-repo -> exit 7" || bad "env non-repo rc=$RC"
+[[ "$RC" -eq 0 ]] && ok "env candidate standalone dispatches" || bad "env standalone rc=$RC"
 [[ -z "$(ls -A "$NOREPO")" ]] && ok "nothing written to the candidate dir" || bad "candidate dir not empty: $(ls -A "$NOREPO")"
 
 echo "== exit 7: CLAUDE_PROJECT_DIR -> nonexistent path =="
@@ -798,17 +799,16 @@ bash "$IDXSH" | grep -q 'index probe' && ok "human table shows the topic" || bad
 [[ "$(bash "$IDXSH" --tsv | wc -l | tr -d ' ')" == "1" ]] && ok "one TSV record per thread" || bad "TSV record count wrong"
 rm -rf "$SD"
 
-echo "== detach: no setsid AND no python3 -> exit 8, ZERO state =="
+echo "== detach: missing required python3 -> exit 2, ZERO state =="
 rm -rf "$SD"
 mkdir -p "$T/isolbin" "$T/dtmp3"
-# Minimal PATH farm: everything the driver touches BEFORE the isolator
-# preflight, but neither setsid nor python3.
+# Minimal PATH farm for runtime preflight, without python3 or setsid.
 for tool in bash git cat rm ls mkdir sed grep sleep env xcrun dirname; do
   p="$(command -v "$tool" 2>/dev/null || true)"; [[ -n "$p" ]] && ln -sf "$p" "$T/isolbin/$tool"
 done
 TMPDIR="$T/dtmp3" PATH="$T/bin:$T/isolbin" run d3 --detach
-[[ "$RC" -eq 8 ]] && ok "no isolator -> exit 8" || bad "no-isolator rc=$RC err=$(cat "$T/err")"
-grep -q 'setsid' "$T/err" && grep -q 'python3' "$T/err" && ok "message names both isolators" || bad "exit-8 message wrong: $(cat "$T/err")"
+[[ "$RC" -eq 2 ]] && ok "missing Python -> exit 2" || bad "missing-runtime rc=$RC err=$(cat "$T/err")"
+grep -q 'Python 3.8+' "$T/err" && ok "message names the required runtime" || bad "runtime message wrong: $(cat "$T/err")"
 [[ ! -e "$SD" ]] && ok "zero state: no state dir" || bad "state dir created: $(ls -A "$SD" 2>/dev/null)"
 [[ -z "$(ls -A "$T/dtmp3" 2>/dev/null)" ]] && ok "zero state: no lease, no orphan tmpfiles" || bad "tmpfiles left: $(ls -A "$T/dtmp3")"
 
@@ -825,9 +825,8 @@ done
 # manager, which is not in this farm — the shim then exits 127 and the test
 # fails on the maintainer's own machine while the product path is fine.
 PY_REAL="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3 2>/dev/null || true)"
-# No python3 at all is a MISSING FIXTURE, not a product failure — the driver's
-# own message for that case is exit 8, which is correct behaviour. Reporting it
-# as a failure made a minimal Linux box (no python3 installed) look broken.
+# Without Python this fixture cannot exercise the fallback; the dependency
+# refusal itself is covered above.
 if [[ -z "$PY_REAL" ]]; then
   skip "python3 absent — the python-isolator path did NOT run"
   skip "python3 absent — its reply delivery did NOT run"
@@ -1284,10 +1283,10 @@ WOUT="$(bash "$WATCH" p3 "$DEADW" "$BASE" 2>&1)"; WRC=$?
 [[ "$WRC" -eq 4 ]] && grep -q 'UNKNOWN' <<<"$WOUT" \
   && ok "pid-mismatched status -> UNKNOWN, not the other launch's verdict" || bad "pid-mismatch rc=$WRC out=$WOUT"
 
-echo "== detach-watch: outside a git repo -> exit 7 =="
+echo "== detach-watch: standalone directory with no matching dispatch =="
 WNG="$T/watchnongit"; mkdir -p "$WNG"
-( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 1 ) >/dev/null 2>&1; WRC=$?
-[[ "$WRC" -eq 7 ]] && ok "watcher outside a repo -> exit 7" || bad "watcher non-git rc=$WRC"
+( cd "$WNG" && CLAUDE_PROJECT_DIR="$WNG" bash "$WATCH" x 99999999 ) >/dev/null 2>&1; WRC=$?
+[[ "$WRC" -eq 4 ]] && ok "standalone watcher reports unknown dispatch" || bad "watcher non-git rc=$WRC"
 
 echo "== detach-watch: INSTANT child (reply lands before the watcher starts) -> still DONE =="
 # B1 regression: log-offset is measured pre-spawn, so a reply appended before
