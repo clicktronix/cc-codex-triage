@@ -19,7 +19,7 @@
   ],
   "baseline_observed": {
     "date": "2026-06-14",
-    "method": "Production RED: a real /debate run (marqa repo, thread debate-product-functional-additions) leaked the anti-capitulation rules into Claude's own prose across rounds 2-3. GREEN: a fresh subagent given the updated rules + presentation format composed the same round-2 turn cleanly — framed per-speaker blocks, no rule-labels, no jargon, Codex verbatim.",
+    "method": "Production RED: a real /debate run in a private product repository (thread name withheld; the log is not public) leaked the anti-capitulation rules into Claude's own prose across rounds 2-3. GREEN: a fresh subagent given the updated rules + presentation format composed the same round-2 turn cleanly — framed per-speaker blocks, no rule-labels, no jargon, Codex verbatim.",
     "runs": [
       { "model": "production", "framing": "real debate", "red": true, "note": "Round 2 opened 'Уступаю с называнием доказательства:'; round 3 wrote 'Но из твоего же доказательства следует residual-решение, на котором не уступаю — SEQUENCING плацдарма'. Sound arguments, but the rulebook and English jargon flooded the user-facing output." },
       { "model": "default", "framing": "updated rules + format", "red": false, "note": "Produced framed Round 1/Round 2 blocks (--- rules, **Claude Code**/**Codex** labels), Codex verbatim, and made the same three moves (accept schema-exists, drop UTM core, hold evidence-layer center) as plain Russian argument with inline file:line — zero rule-labels, no residual/sequencing/wedge." }

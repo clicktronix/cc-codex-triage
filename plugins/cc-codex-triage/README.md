@@ -66,6 +66,21 @@ an owned idle advisory thread may be retired with `/thread-new`. Explicit resets
 Reviewers run in separate process groups; cancellation signals the entire reviewer process group
 without signalling the host terminal. Watcher timeout still hands off a live worker.
 
+## What works where
+
+| capability | Git repository | directory outside Git |
+|---|---|---|
+| `ask`, `research`, `debate`, `thread`, `reply` | yes | yes — state under `XDG_STATE_HOME` |
+| `review` (advisory) | yes | yes, without a candidate |
+| `review --required` (delivery gate) | yes | **no** — needs a clean HEAD/tree to bind to |
+| `--search` live web search | requested on every call; availability is the provider's | same |
+| `status`, `thread-list`, `thread-new` | yes | yes |
+
+Tested in CI on Linux and macOS. Windows is untested: `setsid` is absent there and the Python
+isolator path is the one that would run. GitHub is not assumed by this plugin; the merge boundary
+lives in the host plugin (`cc-tuner`), not here. Nothing above is a promise about model behaviour;
+offline tests cover transport and state.
+
 ## Permissions
 
 Command frontmatter scopes pre-approved Bash to this plugin's executable
