@@ -2,7 +2,7 @@
   "name": "cc-codex-triage",
   "displayName": "Codex Triage",
   "description": "Persistent worktree-local Codex CLI conversations for Claude Code, with bounded reviews and exact-candidate required approval.",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "author": {
     "name": "Clicktronix",
     "url": "https://github.com/clicktronix"

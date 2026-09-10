@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.13.1] - 2026-09-10
+
+### Fixed
+- Scenario files no longer cite private repositories, pull-request numbers or thread-log
+  paths as evidence. Dates, counts and outcomes stay; each source now says the log is
+  private and the run is recorded, not reproducible.
+- `/ask` treats a repository as optional context instead of framing every question as
+  "about the project".
+- `manifest-lint` refuses a private repository name or a home-directory path on commands,
+  the skill, the READMEs and the scenarios. `CHANGELOG.md` is history and stays outside
+  that set.
+
+### Changed
+- README gains a "What works where" table. The search row now says `research` and `debate`
+  request live search on every call while `ask`, `reply` and `thread` do not.
+
 ## [0.13.0] - 2026-09-09
 
 ### Added
