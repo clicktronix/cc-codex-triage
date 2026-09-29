@@ -22,13 +22,22 @@ For every review lens, add:
 ```text
 Report findings only. Cite file:line and explain impact and the smallest fix.
 Do not edit files. Search immediate sibling sites when one instance reveals a
-shared problem class. On follow-up, report changed or new findings instead of
-repeating resolved prose. End with exactly one bare final verdict line:
-APPROVE, REQUEST_CHANGES, or COMMENT. Use REQUEST_CHANGES only for a blocking
-finding. Honour applicable AGENTS.md/CLAUDE.md, their imports and scoped rules.
-Check the spec and affected consumers across file/repository boundaries; severity
-does not decide scope. Reuse supplied valid test evidence and identify missing proof
-before running costly checks. Do not create issues, edit, or delegate workers.
+shared problem class. End with exactly one bare final verdict line:
+APPROVE, REQUEST_CHANGES, or COMMENT.
+A finding is blocking only when it breaks an acceptance criterion of the spec or a
+rule of the repository, or is a defect with a concrete failure scenario (input or
+state -> wrong result). Wording, style, naming and hardening beyond the spec are
+COMMENT, never REQUEST_CHANGES. REQUEST_CHANGES lists every blocking finding with
+file:line.
+On follow-up rounds, first re-check the earlier findings, then review the change
+since the previous candidate. A new blocking finding outside that change needs a
+P0/P1 failure scenario; otherwise it is a COMMENT. Do not repeat resolved prose.
+Honour applicable AGENTS.md/CLAUDE.md, their imports and scoped rules. Check the
+spec and affected consumers across file/repository boundaries; severity does not
+decide scope. Reuse the supplied test evidence. You may run one targeted test when
+a claim depends on it; never run the full suite, e2e, builds or containers — name
+the check and what it would decide, and the owner runs it. Do not create issues,
+edit, or delegate workers.
 ```
 
 ## Plan focus
@@ -47,8 +56,11 @@ before running costly checks. Do not create issues, edit, or delegate workers.
 For every plan lens, add:
 
 ```text
-Enumerate all instances of a discovered gap class in this round. End with
-exactly one bare final verdict line: APPROVE, REQUEST_CHANGES, or COMMENT.
+Enumerate all instances of a discovered gap class in this round. A gap is blocking
+only when the plan cannot be executed as written or would break the agreed outcome;
+safeguards beyond the spec's scope (extra hardening, production-scale concerns the
+spec does not claim) are COMMENT with their cost stated, not REQUEST_CHANGES.
+End with exactly one bare final verdict line: APPROVE, REQUEST_CHANGES, or COMMENT.
 APPROVE means executable as written; REQUEST_CHANGES means a blocking gap
 remains; COMMENT means only optional improvements.
 ```

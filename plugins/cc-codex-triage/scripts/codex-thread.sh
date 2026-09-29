@@ -49,6 +49,8 @@
 #   <thread>.approved         last gate-eligible exact-candidate APPROVE.
 #   <thread>.dispatch-receipt actual required candidate and completion status.
 #   <thread>.last-usage.json   requested controls and observed token usage (cost unknown).
+#   <thread>.usage.jsonl       the same record appended for every completed round.
+#   <thread>.profile           model and effort the thread runs on (cleared by --new).
 #   <thread>.active           PID lease held while a dispatch is in flight.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
@@ -497,7 +499,7 @@ if $DETACH; then
       echo "--detach child exited early (status $SPAWN_RC) before reporting ready — propagating its exit status." >&2
       if [[ -s "$SPAWNOUT_TMPFILE" ]]; then
         echo "--- child output (pre-lease):" >&2
-        tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
+        tail -c 4096 "$SPAWNOUT_TMPFILE" | bash "$SELF_DIR/redact.sh" >&2
       fi
       if [[ -s "$STATE_DIR/${THREAD}.detach-stderr" ]]; then
         # UNATTRIBUTED: a pre-lease loser (exit 10) never truncated the
@@ -505,7 +507,7 @@ if $DETACH; then
         # a concurrent winner. Only a child that passed lease acquisition
         # owns it; label accordingly instead of implying ownership.
         echo "--- latest thread stderr (${THREAD}.detach-stderr — only this child's if it passed lease acquisition; otherwise a previous/concurrent launch's):" >&2
-        tail -c 4096 "$STATE_DIR/${THREAD}.detach-stderr" >&2
+        tail -c 4096 "$STATE_DIR/${THREAD}.detach-stderr" | bash "$SELF_DIR/redact.sh" >&2
       fi
       rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
       DETACH_DONE=true
@@ -519,7 +521,7 @@ if $DETACH; then
     echo "--detach handshake timed out after 5s: the child never reported ready (spawn killed)." >&2
     if [[ -s "$SPAWNOUT_TMPFILE" ]]; then
       echo "--- child output (pre-lease):" >&2
-      tail -c 4096 "$SPAWNOUT_TMPFILE" >&2
+      tail -c 4096 "$SPAWNOUT_TMPFILE" | bash "$SELF_DIR/redact.sh" >&2
     fi
     echo "If the child had passed lease acquisition, its stdout is in $DETACH_OUT and its stderr in ${DETACH_OUT%.detach-output}.detach-stderr" >&2
     rm -f "$READY_FILE" "$PROMPT_TMPFILE" "$SPAWNOUT_TMPFILE"
@@ -627,6 +629,33 @@ fail_with_diag() {
 # The driver exposes the supported Codex controls as typed flags. Keeping an
 # arbitrary shell-split environment escape hatch here made command permissions
 # depend on wrapper syntax and could not preserve values containing spaces.
+# Model and effort belong to the thread. The first dispatch that names them records them and a
+# resume without them reuses them, so a follow-up round cannot silently run on another model; a
+# different explicit value is allowed and said out loud. --new starts a fresh profile.
+PROFILE_FILE="$STATE_DIR/${THREAD}.profile"
+if ! $ONESHOT && ! $RESET_ONLY && ! $FORCE_NEW && [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]]; then
+  P_MODEL="$(sed -n 's/^model=//p' "$PROFILE_FILE" | head -1)"
+  P_EFFORT="$(sed -n 's/^effort=//p' "$PROFILE_FILE" | head -1)"
+  if [[ -z "$MODEL" ]]; then MODEL="$P_MODEL"
+  elif [[ -n "$P_MODEL" && "$MODEL" != "$P_MODEL" ]]; then
+    echo "codex-thread: thread '$THREAD' changes model from $P_MODEL to $MODEL" >&2
+  fi
+  if [[ -z "$EFFORT" ]]; then EFFORT="$P_EFFORT"
+  elif [[ -n "$P_EFFORT" && "$EFFORT" != "$P_EFFORT" ]]; then
+    echo "codex-thread: thread '$THREAD' changes effort from $P_EFFORT to $EFFORT" >&2
+  fi
+fi
+
+record_round_profile() {  # after a completed round: keep the profile and the per-round usage
+  $ONESHOT && return 0
+  if [[ -n "$MODEL$EFFORT" && ! -L "$PROFILE_FILE" ]]; then
+    printf 'model=%s\neffort=%s\n' "$MODEL" "$EFFORT" > "$PROFILE_FILE.tmp.$$" && mv "$PROFILE_FILE.tmp.$$" "$PROFILE_FILE"
+  fi
+  [[ -f "$STATE_DIR/$THREAD.last-usage.json" && ! -L "$STATE_DIR/$THREAD.usage.jsonl" ]] \
+    && cat "$STATE_DIR/$THREAD.last-usage.json" >> "$STATE_DIR/$THREAD.usage.jsonl"
+  return 0
+}
+
 SANDBOX_ARGS=()
 $READ_ONLY && SANDBOX_ARGS+=( -s read-only )
 
@@ -725,7 +754,7 @@ if $FORCE_NEW || $RESET_ONLY; then
   # Preserve old state before an explicit new lifecycle, while owning the lease.
   ARCHIVE=""
   ARCHIVE_FILES=()
-  for suffix in id log log.1 rounds topic candidate review-state review-loop approved dispatch-receipt last-usage.json; do
+  for suffix in id log log.1 rounds topic candidate review-state review-loop approved dispatch-receipt last-usage.json usage.jsonl profile; do
     source_file="$STATE_DIR/$THREAD.$suffix"
     [[ ! -L "$source_file" ]] || { echo "refusing symlinked reset source: $source_file" >&2; exit 7; }
     [[ -f "$source_file" ]] || continue
@@ -740,8 +769,11 @@ if $FORCE_NEW || $RESET_ONLY; then
   # last-abort belongs to the incarnation being discarded.
   CC_CODEX_REVIEW_RESET_LEASE_PID="$$" \
     bash "$SELF_DIR/review-state.sh" reset "$THREAD" >/dev/null || exit $?
+  # The profile and usage belong to the incarnation being retired: they are in the archive, and a
+  # new lifecycle starts from Codex configuration or the flags of its first dispatch.
   rm -f "$ID_FILE" "$ROUNDS_FILE" \
-        "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort"
+        "$STATE_DIR/${THREAD}.topic" "$STATE_DIR/${THREAD}.last-abort" \
+        "$PROFILE_FILE" "$STATE_DIR/${THREAD}.usage.jsonl" "$STATE_DIR/${THREAD}.last-usage.json"
   if $RESET_ONLY; then
     echo "RESET thread $THREAD"
     exit 0
@@ -850,6 +882,7 @@ elif [[ -n "$SID" ]]; then
   fi
   python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
     "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT" >/dev/null
+  record_round_profile
   # last-error means the LAST error: a successful dispatch clears the diag.
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
 else
@@ -868,6 +901,7 @@ else
   rm -f "$DIAG_FILE" "$STATE_DIR/${THREAD}.last-abort"
   SID="$(python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
     "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT")"
+  record_round_profile
   if [[ -n "$SID" && "$SID" =~ $UUID_RE ]]; then
     echo "$SID" > "$ID_FILE"
   else

@@ -59,6 +59,13 @@ done
 
 PROMPT="$(cat)"
 
+# While a required claim is live on this thread, the prompt is checked against it before anything is
+# paid for — whatever the prompt's first line says. Without a claim this is a no-op.
+if ! printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null; then
+  echo "dispatch.sh: nothing was dispatched; the claim is still live. Build the header with review-state.sh header $THREAD and dispatch again." >&2
+  exit 14
+fi
+
 if $ONESHOT; then
   printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
   exit $?

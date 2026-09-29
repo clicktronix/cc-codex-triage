@@ -24,8 +24,9 @@ for arg in "$@"; do
   prev="$arg"
 done
 cat >/dev/null
+[ -z "${FAKE_CODEX_CALLS:-}" ] || echo called >> "$FAKE_CODEX_CALLS"
 printf '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}\n'
-printf 'reviewed the exact candidate\n%s\n' "${FAKE_REVIEW_VERDICT:-APPROVE}" > "$out"
+printf '%s\n%s\n' "${FAKE_REVIEW_BODY:-reviewed the exact candidate; see app.txt:1}" "${FAKE_REVIEW_VERDICT:-APPROVE}" > "$out"
 STUB
 chmod +x "$T/bin/codex"
 export PATH="$T/bin:$PATH"
@@ -125,6 +126,174 @@ append_reply one-record-route APPROVE
   && ok "record has no parallel background/observed mode" \
   || bad "legacy record mode still accepted a verdict"
 "$STATE" reset one-record-route >/dev/null 2>&1
+
+echo "== the header is generated and checked before the paid call =="
+begin preflight-route 3
+PF_BASE="$(field "$SD/preflight-route.candidate" base_sha)"
+PF_HEAD="$(field "$SD/preflight-route.candidate" head)"
+HDR="$("$STATE" header preflight-route 2>"$T/err")"
+[[ "$HDR" == "REQUIRED_REVIEW"$'\n'"BASE_SHA: $PF_BASE"$'\n'"CANDIDATE_SHA: $PF_HEAD"$'\n'"SPEC_PATH: docs/spec.md" ]] \
+  && ok "header prints the claimed base, candidate and spec" \
+  || bad "header output: $HDR err=$(cat "$T/err")"
+: > "$T/calls"
+SHORT_PROMPT="REQUIRED_REVIEW
+BASE_SHA: $PF_BASE
+CANDIDATE_SHA: ${PF_HEAD:0:12}
+SPEC_PATH: docs/spec.md
+Review the candidate."
+FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$SHORT_PROMPT" >/dev/null 2>"$T/err"; RC=$?
+[[ "$RC" -eq 14 && ! -s "$T/calls" ]] \
+  && ok "a short candidate SHA is refused before Codex is called" \
+  || bad "short SHA rc=$RC calls=$(wc -l < "$T/calls") err=$(cat "$T/err")"
+grep -q "nothing was dispatched" "$T/err" \
+  && ok "the refusal says nothing was paid for" \
+  || bad "refusal text: $(cat "$T/err")"
+DUP_PROMPT="$HDR
+Review the candidate.
+CANDIDATE_SHA: $PF_HEAD"
+FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$DUP_PROMPT" >/dev/null 2>&1; RC=$?
+[[ "$RC" -eq 14 && ! -s "$T/calls" ]] \
+  && ok "a header line repeated in the body is refused before dispatch" \
+  || bad "duplicate header rc=$RC"
+PF_OUT="$(FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$HDR
+Review the candidate." 2>"$T/err")"; RC=$?
+[[ "$RC" -eq 0 && -s "$T/calls" && "$PF_OUT" == *APPROVE ]] \
+  && ok "the generated header dispatches and the round records" \
+  || bad "generated header rc=$RC out=$PF_OUT err=$(cat "$T/err")"
+"$STATE" record preflight-route "$CLAIM" >/dev/null 2>&1 \
+  && ok "the round dispatched with the generated header is recordable" \
+  || bad "generated-header round did not record"
+"$STATE" reset preflight-route >/dev/null 2>&1
+
+echo "== a blocking verdict without findings is not counted =="
+begin empty-findings 2
+FAKE_REVIEW_BODY="looks wrong somehow" append_reply empty-findings REQUEST_CHANGES
+EOUT="$("$STATE" record empty-findings "$CLAIM" 2>&1)"; ERC=$?
+[[ "$ERC" -eq 10 && "$EOUT" == *NO_FINDINGS* && "$(field "$SD/empty-findings.review-loop" attempts)" == 0 ]] \
+  && ok "REQUEST_CHANGES with no file:line finding returns its attempt" \
+  || bad "empty findings rc=$ERC out=$EOUT attempts=$(field "$SD/empty-findings.review-loop" attempts)"
+begin empty-findings 2
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/2"* ]] \
+  && ok "the next round starts at the same attempt" \
+  || bad "after empty findings: rc=$BRC out=$BOUT"
+append_reply empty-findings REQUEST_CHANGES
+"$STATE" record empty-findings "$CLAIM" >/dev/null 2>&1
+[[ "$(field "$SD/empty-findings.review-state" status)" == REQUEST_CHANGES ]] \
+  && ok "a blocking verdict with a located finding still counts" \
+  || bad "located finding status: $(field "$SD/empty-findings.review-state" status)"
+"$STATE" reset empty-findings >/dev/null 2>&1
+
+echo "== an integration round after an approval does not spend the cap =="
+git checkout -q -b integ-target
+printf 'target moved\n' > target.txt; git add target.txt; git commit -qm "target advances"
+git checkout -q main
+begin integ 2
+append_reply integ APPROVE
+"$STATE" record integ "$CLAIM" >/dev/null 2>&1
+APPROVED_HEAD="$(git rev-parse HEAD)"
+[[ "$(field "$SD/integ.review-loop" attempts)" == 1 ]] && ok "the approval used one attempt" || bad "attempts after approval: $(field "$SD/integ.review-loop" attempts)"
+BASE_FOR_INTEG="$(field "$SD/integ.candidate" base_sha)"
+BOUT="$("$STATE" begin integ --base "$BASE_FOR_INTEG" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+[[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "an integration round needs a merge of the approved candidate" \
+  || bad "non-merge integration rc=$BRC out=$BOUT"
+git merge -q --no-ff --no-edit integ-target
+BOUT="$("$STATE" begin integ --base "$BASE_FOR_INTEG" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/2"* && "$BOUT" == *"integration_of=$APPROVED_HEAD"* ]] \
+  && ok "the integration round keeps the attempt count" \
+  || bad "integration begin rc=$BRC out=$BOUT"
+append_reply integ APPROVE
+IOUT="$("$STATE" record integ "$CLAIM" 2>&1)"; IRC=$?
+[[ "$IRC" -eq 0 && "$IOUT" == "APPROVE head=$(git rev-parse HEAD)"* && "$(field "$SD/integ.review-loop" attempts)" == 1 ]] \
+  && ok "the integrated candidate is approved without spending the budget" \
+  || bad "integration record rc=$IRC out=$IOUT attempts=$(field "$SD/integ.review-loop" attempts)"
+"$STATE" reset integ >/dev/null 2>&1
+BOUT="$("$STATE" begin integ --base HEAD --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+[[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "an integration round without a prior approval is refused" \
+  || bad "no-approval integration rc=$BRC out=$BOUT"
+git reset -q --hard "$APPROVED_HEAD"
+
+echo "== an authorized budget renews the same thread =="
+begin renew-route 1
+append_reply renew-route REQUEST_CHANGES
+"$STATE" record renew-route "$CLAIM" >/dev/null 2>&1
+[[ "$(field "$SD/renew-route.review-state" status)" == CAP_REACHED ]] && ok "one attempt reaches the cap" || bad "renew setup status: $(field "$SD/renew-route.review-state" status)"
+"$STATE" renew renew-route >/dev/null 2>&1 && bad "renew without --by accepted" || ok "renew names who authorized it"
+ROUT="$("$STATE" renew renew-route --by owner 2>&1)"; RRC=$?
+[[ "$RRC" -eq 0 && "$ROUT" == RENEWED* && "$(field "$SD/renew-route.review-loop" renewals)" == 1 ]] \
+  && ok "renew records the new budget" || bad "renew rc=$RRC out=$ROUT"
+begin renew-route 1
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1"* && "$(field "$SD/renew-route.review-loop" renewals)" == 1 && "$(field "$SD/renew-route.review-loop" renewed_by)" == owner ]] \
+  && ok "the renewed thread claims again and keeps the renewal record" || bad "after renew rc=$BRC out=$BOUT"
+"$STATE" renew renew-route --by owner >/dev/null 2>&1 && bad "renew accepted outside CAP_REACHED" || ok "renew is refused while a round is pending"
+"$STATE" abort renew-route dispatch-failure "$CLAIM" >/dev/null 2>&1
+"$STATE" reset renew-route >/dev/null 2>&1
+
+echo "== a finding in a file without an extension is a finding =="
+begin extless 2
+FAKE_REVIEW_BODY="Dockerfile:3 copies a missing artifact and the build fails" append_reply extless REQUEST_CHANGES
+"$STATE" record extless "$CLAIM" >/dev/null 2>&1
+[[ "$(field "$SD/extless.review-state" status)" == REQUEST_CHANGES && "$(field "$SD/extless.review-loop" attempts)" == 1 ]] \
+  && ok "Dockerfile:3 counts as a located finding" || bad "extensionless status: $(field "$SD/extless.review-state" status)"
+"$STATE" reset extless >/dev/null 2>&1
+
+echo "== a live claim is checked even when the prompt drops its first line =="
+begin nomarker 2
+NM_HDR="$("$STATE" header nomarker)"
+: > "$T/calls"
+FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" nomarker <<< "$(printf '%s\n' "$NM_HDR" | tail -n +2)
+Review the candidate." >/dev/null 2>&1; RC=$?
+[[ "$RC" -eq 14 && ! -s "$T/calls" ]] \
+  && ok "a prompt without REQUIRED_REVIEW is refused before Codex while a claim is live" || bad "missing marker rc=$RC calls=$(wc -l < "$T/calls")"
+"$STATE" abort nomarker dispatch-failure "$CLAIM" >/dev/null 2>&1
+"$STATE" reset nomarker >/dev/null 2>&1
+
+echo "== a technically failed integration round can be retried outside the cap =="
+RETRY_BASE_HEAD="$(git rev-parse HEAD)"
+git checkout -q -b retry-target
+printf 'retry target\n' > retry.txt; git add retry.txt; git commit -qm "retry target advances"
+git checkout -q "$RETRY_BASE_HEAD" 2>/dev/null; git checkout -q -B retry-cand
+begin retry-integ 1
+append_reply retry-integ APPROVE
+"$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
+RB="$(field "$SD/retry-integ.candidate" base_sha)"
+git merge -q --no-ff --no-edit retry-target
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+"$STATE" abort retry-integ dispatch-failure "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1"* ]] \
+  && ok "an aborted integration claim is retried at the same attempt" || bad "retry after abort rc=$BRC out=$BOUT"
+FAKE_REVIEW_BODY="no location here" append_reply retry-integ REQUEST_CHANGES
+"$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+[[ "$BRC" -eq 0 ]] && ok "an integration round after NO_FINDINGS is retried too" || bad "retry after no findings rc=$BRC out=$BOUT"
+append_reply retry-integ REQUEST_CHANGES
+"$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
+[[ "$BRC" -ne 0 && ( "$BOUT" == *INTEGRATION_REFUSED* || "$BOUT" == *CAP_REACHED* ) && "$BOUT" != *attempt=* ]] \
+  && ok "a real REQUEST_CHANGES at the budget edge ends the loop instead of reopening the exception" || bad "after real RC rc=$BRC out=$BOUT"
+"$STATE" reset retry-integ >/dev/null 2>&1
+# With budget left, a real REQUEST_CHANGES in an integration round is refused as an integration.
+git reset -q --hard HEAD^1
+begin retry-integ2 2
+append_reply retry-integ2 APPROVE
+"$STATE" record retry-integ2 "$CLAIM" >/dev/null 2>&1
+RB2="$(field "$SD/retry-integ2.candidate" base_sha)"
+git merge -q --no-ff --no-edit retry-target
+BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --integration 2>&1)"
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+append_reply retry-integ2 REQUEST_CHANGES
+"$STATE" record retry-integ2 "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+[[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "a real REQUEST_CHANGES with budget left does not reopen the integration exception" || bad "after real RC with budget rc=$BRC out=$BOUT"
+"$STATE" reset retry-integ2 >/dev/null 2>&1
+git checkout -q main
 
 echo "== a claim with no completed dispatch record can be released =="
 begin abort-route 1

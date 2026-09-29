@@ -7,7 +7,8 @@ allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(
 # /review
 
 Send the intent and scope, not copied file contents. Codex can inspect the
-repository and run tests itself.
+repository itself; pass the owner's test evidence, and leave full suites, e2e and
+builds to the owner (who runs them through its own heavy-check queue).
 
 ## Options
 
