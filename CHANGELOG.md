@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.14.0] - 2026-09-29
+
+### Added
+- `review-state.sh header <thread>` prints the four required-prompt lines from the claimed
+  candidate. `dispatch.sh` checks them before every paid call and exits 14 when a pending
+  claim's header differs; nothing is dispatched and the claim stays live.
+- `begin --integration`: a merge of the target into an approved candidate (first parent =
+  that candidate) is reviewed without spending an attempt. A technical abort or `NO_FINDINGS`
+  on that round can be retried for the same merge.
+- `renew <thread> --by <who>` grants an authorized new budget from `CAP_REACHED` on the same
+  thread, keeping base, spec and the Codex conversation.
+- `<thread>.profile` pins model and effort across resumes (an explicit change is printed;
+  `--new` clears it). `<thread>.usage.jsonl` keeps every round's usage.
+- `redact.sh` masks API keys and tokens, escaped JSON included, in diagnostic tails.
+
+### Changed
+- `REQUEST_CHANGES` without a single `file:line` finding records `NO_FINDINGS` and refunds
+  the attempt; extensionless names such as `Dockerfile:3` count as findings.
+- Review lenses define a blocking finding (spec, repository rule, or a concrete failure
+  scenario), scope follow-up rounds to the change, and leave full suites, e2e and builds to
+  the owner. Plan hardening beyond the spec is `COMMENT`.
+
 ## [0.13.1] - 2026-09-10
 
 ### Fixed
