@@ -1427,4 +1427,51 @@ WOUT="$(bash "$WATCH" p8 "$P8DEAD" 0 2>&1)"; WRC=$?
 { [[ "$WRC" -eq 4 ]] && grep -q 'may not belong to pid' <<<"$WOUT"; } \
   && ok "UNKNOWN output disclaims sidecar attribution" || bad "no attribution note (rc=$WRC out=$WOUT)"
 
+echo "== model and effort stay with the thread =="
+FAKE_CODEX_ARGV="$T/prof1.argv" run prof --model m-first --effort high
+A1="$(tr '\0' '\n' < "$T/prof1.argv")"
+[[ "$RC" -eq 0 && "$(next_after "$A1" -m)" == m-first ]] && ok "first dispatch uses the named model" || bad "first model argv: $A1"
+grep -qx 'model=m-first' "$SD/prof.profile" 2>/dev/null && grep -qx 'effort=high' "$SD/prof.profile" \
+  && ok "the thread records its model and effort" || bad "profile: $(cat "$SD/prof.profile" 2>/dev/null)"
+FAKE_CODEX_ARGV="$T/prof2.argv" run prof
+A2="$(tr '\0' '\n' < "$T/prof2.argv")"
+[[ "$RC" -eq 0 && "$(next_after "$A2" -m)" == m-first && "$A2" == *"model_reasoning_effort=high"* ]] \
+  && ok "a resume without flags keeps the thread's model and effort" || bad "resume argv: $A2"
+FAKE_CODEX_ARGV="$T/prof3.argv" run prof --model m-second
+grep -q "changes model from m-first to m-second" "$T/err" \
+  && ok "an explicit model change is announced" || bad "no change notice: $(cat "$T/err")"
+[[ "$(wc -l < "$SD/prof.usage.jsonl" | tr -d ' ')" -eq 3 ]] \
+  && ok "every completed round is kept in the usage journal" || bad "usage journal lines: $(wc -l < "$SD/prof.usage.jsonl" 2>/dev/null)"
+FAKE_CODEX_ARGV="$T/prof4.argv" run prof --new
+A4="$(tr '\0' '\n' < "$T/prof4.argv")"
+[[ "$RC" -eq 0 && "$A4" != *m-second* && "$A4" != *m-first* ]] \
+  && ok "--new starts without the old profile" || bad "--new argv: $A4"
+
+echo "== diagnostic tails printed to the caller mask credentials =="
+RED_OUT="$(printf 'ERROR: 401 Incorrect API key provided: sk-svcacctABCDEFGHIJKLfvMA\nAuthorization: Bearer abcdefghijklmnop123\nkeep this line\n' | bash "$(dirname "$DRIVER")/redact.sh")"
+[[ "$RED_OUT" != *ABCDEFGHIJKL* && "$RED_OUT" != *abcdefghijklmnop123* && "$RED_OUT" == *"keep this line"* && "$RED_OUT" == *"sk-svcacc…[redacted]"* ]] \
+  && ok "keys and bearer tokens are masked, other lines kept" || bad "redaction: $RED_OUT"
+for f in codex-thread.sh detach-watch.sh; do
+  if grep -n 'tail -c 4096' "$(dirname "$DRIVER")/$f" | grep -qv 'redact.sh'; then
+    bad "$f prints an unredacted diagnostic tail"
+  else
+    ok "$f redacts every printed diagnostic tail"
+  fi
+done
+
+echo "== --new retires the thread's profile and usage for the next resume too =="
+FAKE_CODEX_ARGV="$T/pr1.argv" run prnew --model m-old --effort high
+FAKE_CODEX_ARGV="$T/pr2.argv" run prnew --new
+FAKE_CODEX_ARGV="$T/pr3.argv" run prnew
+A3="$(tr '\0' '\n' < "$T/pr3.argv")"
+[[ "$RC" -eq 0 && "$A3" != *m-old* && "$A3" != *model_reasoning_effort=high* ]] \
+  && ok "a resume after --new does not bring the old model back" || bad "resume after --new argv: $A3"
+[[ "$(wc -l < "$SD/prnew.usage.jsonl" | tr -d ' ')" -eq 2 ]] \
+  && ok "the new lifecycle's usage journal starts fresh" || bad "usage lines after --new: $(wc -l < "$SD/prnew.usage.jsonl" 2>/dev/null)"
+
+echo "== credentials inside serialized JSON diagnostics are masked =="
+ESC_OUT="$(printf '{"type":"error","message":"{\\"error\\":{\\"api_key\\":\\"SYNTHETIC_CREDENTIAL_123456789\\",\\"token\\": \\"another-secret-value-99\\"}}"}\n' | bash "$(dirname "$DRIVER")/redact.sh")"
+[[ "$ESC_OUT" != *SYNTHETIC_CREDENTIAL* && "$ESC_OUT" != *another-secret-value* && "$ESC_OUT" == *'\"api_key\":\"[redacted]'* ]] \
+  && ok "escaped api_key and token values are masked" || bad "escaped redaction: $ESC_OUT"
+
 summary

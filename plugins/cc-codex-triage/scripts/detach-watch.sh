@@ -40,7 +40,8 @@ case "$OFFSET" in *[!0-9]*) echo "log-offset must be numeric" >&2; exit 2 ;; esa
 
 # Same resolved-root rule as the driver; hard-fail — watching the wrong dir
 # would report "no log" for a thread that is running fine at the real root.
-ROOT="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --root)" || exit $?
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 7
 STATE_DIR="$(bash "$(cd "$(dirname "$0")" && pwd)/state-dir.sh" --read-only)" || exit $?
 LOG="$STATE_DIR/$THREAD.log"
@@ -105,21 +106,21 @@ print_delta() { # the log bytes this dispatch appended (rotation-aware)
 print_warnings() { # a successful run's stderr — warnings worth surfacing
   if [ -s "$ERRS" ]; then
     echo "--- worker warnings ($ERRS):"
-    tail -c 4096 "$ERRS" 2>/dev/null
+    tail -c 4096 "$ERRS" 2>/dev/null | bash "$SELF_DIR/redact.sh"
   fi
 }
 print_diags() {
   if [ -s "$DIAG" ]; then
     echo "--- last-error tail ($DIAG):"
-    tail -c 4096 "$DIAG" 2>/dev/null
+    tail -c 4096 "$DIAG" 2>/dev/null | bash "$SELF_DIR/redact.sh"
   fi
   if [ -s "$ERRS" ]; then
     echo "--- worker stderr tail ($ERRS):"
-    tail -c 4096 "$ERRS" 2>/dev/null
+    tail -c 4096 "$ERRS" 2>/dev/null | bash "$SELF_DIR/redact.sh"
   fi
   if [ -s "$SIDE" ]; then
     echo "--- raw child stdout tail ($SIDE):"
-    tail -c 4096 "$SIDE" 2>/dev/null
+    tail -c 4096 "$SIDE" 2>/dev/null | bash "$SELF_DIR/redact.sh"
   fi
 }
 
