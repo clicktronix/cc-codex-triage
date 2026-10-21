@@ -1,7 +1,10 @@
 # Review and plan lenses
 
+Contents: [Review focus](#review-focus) · [Plan focus](#plan-focus)
+
 Read this file only for `/review` or `/plan`. Pick one focus line and append the
-matching output contract. Codex gathers repository context itself.
+matching output contract. Codex gathers repository context itself. A required review
+replaces the contract's verdict line as required-review.md says.
 
 ## Review focus
 
@@ -15,7 +18,9 @@ matching output contract. Codex gathers repository context itself.
   test seams, and consistency with the repository's documented design.
 - `ux`: review loading, empty and error states, responsive layout, keyboard and
   focus behavior, accessibility, validation feedback, and hydration issues.
-- `quick`: report only obvious blockers visible in a short smoke review.
+- `quick`: report only obvious blockers visible in a short smoke review, each with
+  file:line. It is exempt from the contract's sibling-site search and from its
+  completeness demand ("every blocking finding"); say that the review was not exhaustive.
 
 For every review lens, add:
 
@@ -31,7 +36,7 @@ COMMENT, never REQUEST_CHANGES. REQUEST_CHANGES lists every blocking finding wit
 file:line.
 On follow-up rounds, first re-check the earlier findings, then review the change
 since the previous candidate. A new blocking finding outside that change needs a
-P0/P1 failure scenario; otherwise it is a COMMENT. Do not repeat resolved prose.
+concrete failure scenario; otherwise it is a COMMENT. Do not repeat resolved prose.
 Honour applicable AGENTS.md/CLAUDE.md, their imports and scoped rules. Check the
 spec and affected consumers across file/repository boundaries; severity does not
 decide scope. Reuse the supplied test evidence. You may run one targeted test when

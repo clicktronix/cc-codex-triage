@@ -1,5 +1,5 @@
 ---
-description: Research a question with Codex using current primary sources and optional local context. Use for comparing approaches, checking documentation and investigating unfamiliar systems before deciding or implementing.
+description: Researches a question with Codex using live web search, library documentation and optional local context, and returns cited conclusions. Use for current external evidence, checking documentation, or a sourced comparison of approaches before deciding. For a question answerable from the repository alone use /ask; for contested positions use /debate.
 argument-hint: '[--thread <name>] [--model <m>] [--effort <e>] [--background] <question or decision>'
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
@@ -49,10 +49,8 @@ APPROVE loop or delivery marker.
      ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
-   `--model` / `--effort` are forwarded only when supplied. Otherwise use Codex configuration;
-   report requested controls and observed usage without guessing dollar cost. One pass
-   limits dispatch count, not tokens or elapsed time. For `--background`, use a
-   Claude-managed background task. Exit 20 means watch the existing worker, not retry.
+   `--model` / `--effort` are forwarded only when supplied. Report requested controls and
+   observed usage. One pass limits dispatch count, not tokens or elapsed time. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
 
 4. Check consequential claims and citations before relying on them. Present a concise
    synthesis with supporting links and remaining uncertainty; retain the full thread

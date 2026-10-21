@@ -1,5 +1,5 @@
 ---
-description: Show the current context's Codex threads, retained archives, required-review state, working tree, and Codex CLI version. Read-only.
+description: Shows the current context's Codex threads, retained archives, required-review state, working tree, and Codex CLI version. Read-only. Use to check state before relying on or retiring a thread.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/status.sh *)
 ---
 

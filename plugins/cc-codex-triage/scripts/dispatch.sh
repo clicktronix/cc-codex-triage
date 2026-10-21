@@ -88,7 +88,7 @@ OFF="$(printf '%s' "$LAUNCH" | sed -n 's/.*log-offset=\([0-9][0-9]*\).*/\1/p' | 
 CC_WATCH_PORCELAIN=1 CC_DETACH_WATCH_TIMEOUT="$WAIT" bash "$WATCHER" "$THREAD" "$PID" "$OFF"; wrc=$?
 if [ "$wrc" -eq 20 ]; then
   echo "dispatch.sh: still running after ${WAIT}s — the worker is UNAFFECTED. Deliver it with:" >&2
-  printf '  "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" --watch %s %s %s     (as a background task)\n' \
-    "$THREAD" "$PID" "$OFF" >&2
+  printf '  "%s/dispatch.sh" --watch %s %s %s     (as a background task)\n' \
+    "$SELF_DIR" "$THREAD" "$PID" "$OFF" >&2
 fi
 exit "$wrc"

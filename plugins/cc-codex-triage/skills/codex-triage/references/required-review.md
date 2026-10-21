@@ -1,7 +1,13 @@
-## Required review
+# Required review
+
+Contents: [Steps](#steps) · [Outcomes](#outcomes) · [At the cap](#at-the-cap) ·
+[Candidate stability](#candidate-stability) · [Recovery](#recovery)
 
 A required round only approves the clean HEAD/tree captured before dispatch.
-The first round pins base, spec, and cap until `/thread-new` resets the thread.
+The first round pins base, spec, and cap for the life of the thread; `renew` keeps them,
+and only `/thread-new` starts a new contract.
+
+## Steps
 
 1. Claim the round before the paid dispatch:
 
@@ -32,10 +38,13 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    Then include the intent, full base-to-candidate scope, chosen lens, and:
 
    ```text
-   End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES. Do not return COMMENT.
+   End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES.
    ```
 
-   Repeat the exact-verdict instruction on every resumed round.
+   This line replaces the verdict line of the lens contract (which also allows `COMMENT`);
+   required review accepts only the two. Findings the lens would label `COMMENT` go in the
+   body, and the verdict is `APPROVE` when no blocking finding remains. Repeat the
+   instruction on every resumed round.
 
 3. Dispatch with mutation detection enabled:
 
@@ -43,7 +52,7 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --strict <<< "$PROMPT"
    ```
 
-   Append `--model` / `--effort` only when explicitly supplied.
+   Append `--model` / `--effort` only when supplied.
 
    If the dispatch failed before writing a completed record, release the claim:
 
@@ -54,7 +63,7 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    ```
 
    If `abort` reports `ROUND_COMPLETED`, use `record` instead.
-   For `INVALID_CLAIM_STATE`, follow [state recovery](../../../commands/thread-new.md#recovery).
+   For `INVALID_CLAIM_STATE`, follow [Recovery](#recovery).
    `STALE (dispatch_incomplete)` means the completion receipt is absent: inspect the
    dispatch error, including any strict mutation warning. It does not by itself mean
    the candidate changed. Reconcile the failure and retry only within the review budget.
@@ -75,25 +84,34 @@ The first round pins base, spec, and cap until `/thread-new` resets the thread.
    CC_CODEX_REQUIRED_REVIEW APPROVE thread=<thread> head=<sha> tree=<sha> base_sha=<sha> spec_path=<path>
    ```
 
-`NO_FINDINGS` means Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
-attempt was returned. Begin again and ask for the findings with their locations.
+## Outcomes
 
-On `REQUEST_CHANGES`, return the validated findings to the owning workflow.
-Do not edit, commit, or invent an approval inside this command. A refuted finding or a user-authorized
-waiver may be explained on the same candidate, but a fresh round must earn `APPROVE`.
-Tracking an issue does not resolve a defect. The owner decides whether independent future
-work belongs elsewhere. At the cap, return terminal review state; the owner continues safe repairs
-and reports the missing approval once. Another review budget needs user authorization; once given,
-renew it on the same thread, which keeps base, spec and the Codex conversation and records who
-authorized it:
+- `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
+  attempt was returned. Begin again and ask for the findings with their locations.
+- `NO_DECISION`: the final line was neither `APPROVE` nor `REQUEST_CHANGES` (`COMMENT`
+  included). The attempt is spent. Begin again with the exact-verdict instruction.
+- `REQUEST_CHANGES`: return the validated findings to the owning workflow. This command
+  edits nothing, commits nothing and invents no approval. A refuted finding or a
+  user-authorized waiver may be explained on the same candidate, but a fresh round must
+  earn `APPROVE`. Tracking an issue does not resolve a defect; the owner decides whether
+  independent future work belongs elsewhere.
+
+## At the cap
+
+`CAP_REACHED` stops paid attempts and delivery. Return the terminal review state to the
+owner, report the missing approval once, and continue safe repairs. Another review budget
+needs user authorization; once given, renew it on the same thread. That keeps base, spec and
+the Codex conversation and records who authorized it:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "<who>"
 ```
 
-Reuse a decision already given. Never reset or rename a thread merely to seek a favourable verdict.
-The thread's model and effort are fixed by its first dispatch that names them; a later explicit
-change is allowed and printed.
+Reuse a decision already given. Resetting or renaming the thread to get a budget loses the
+pinned contract and the budget history; `/thread-new` is for a user-authorized change of
+base, spec or cap, or for the Recovery below.
+
+## Candidate stability
 
 The driver checks the actual clean HEAD/tree before and after the call and records a
 completion receipt. These are endpoint checks, not proof of an immutable filesystem
@@ -103,3 +121,14 @@ A later reply or failed dispatch revokes earlier delivery permission.
 Keep the initial literal base SHA when the target branch advances: integrate the target
 in the owning workflow, refresh affected evidence, and review the new candidate in this
 thread. An intentional change to base/spec/cap is a new contract, not an implicit reset.
+
+## Recovery
+
+On `INVALID_CLAIM_STATE`, inspect the claim, loop, logs and receipts: a malformed
+claim does not necessarily invalidate the budget in `.review-loop`. Restore an intact
+matching snapshot if available, writing only fields the snapshot records. If
+state cannot be restored, archive and reset your owned idle thread with `/thread-new`.
+Carry unresolved findings forward and limit the next lifecycle to confirmed remaining
+authorized attempts, counting completed or unresolved claims as spent. If that budget is
+exhausted or cannot be established, treat it as [At the cap](#at-the-cap). Corruption itself
+grants no extra budget.

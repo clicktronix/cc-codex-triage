@@ -410,6 +410,12 @@ append_reply capped REQUEST_CHANGES
 "$STATE" begin capped --base HEAD --spec docs/spec.md --cap 1 >/dev/null 2>&1 \
   && bad "a capped thread restarted without reset" \
   || ok "a capped thread requires an explicit reset"
+CAPMSG="$("$STATE" begin capped --base HEAD --spec docs/spec.md --cap 1 2>&1 >/dev/null)"
+[[ "$CAPMSG" == *"At the cap"* && "$CAPMSG" == *required-review.md* && "$CAPMSG" != *"reset workaround"* ]] \
+  && ok "the CAP_REACHED refusal points at the owner of the cap rules" || bad "cap refusal: $CAPMSG"
+RESMSG="$("$STATE" advisory-check capped 2>&1 >/dev/null)"; RESRC=$?
+[[ "$RESMSG" == *REQUIRED_THREAD_RESERVED* && "$RESMSG" != *thread-new* ]] \
+  && ok "a reserved thread tells the advisory caller to use another --thread, not to discard state" || bad "reserved refusal: $RESMSG"
 "$STATE" reset capped >/dev/null 2>"$T/err" \
   && ok "reset clears the hard stop" \
   || bad "reset failed: $(cat "$T/err")"

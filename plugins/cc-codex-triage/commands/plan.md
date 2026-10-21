@@ -1,7 +1,7 @@
 ---
-description: Stress-test a plan or architecture decision in a persistent Codex thread. Iterates to APPROVE by default; use --once for one pass.
+description: Stress-tests one plan or architecture decision in a persistent Codex thread, iterating until APPROVE (or one pass with --once). Use to find gaps, risks and sequencing problems in a plan before executing it. For code that already exists use /review; for choosing among several competing options use /debate or --lens alternatives.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or question>"
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
 # /plan
@@ -13,11 +13,10 @@ optional comments remain, or the round cap is reached.
 
 1. Parse leading flags. The default thread comes from
    `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh plan`; default lens is
-   `stress-test`; default cap is 5. `--once`, `--oneshot`, and `--background`
-   are single-pass. A clearly different artifact needs a new thread.
+   `stress-test`; default cap is 5. Iteration, `--once`, `--oneshot` and `--background`
+   follow the skill's owner-call rules. A clearly different artifact needs a new thread.
 
-2. Resolve state with `state-dir.sh`. On the initial dispatch, read the selected
-   plan focus and output contract from
+2. On the initial dispatch, read the selected plan focus and output contract from
    `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` and
    append the plan text or repo path. On resume, send only what changed and ask
    Codex to re-check its previous objections before finding new ones.
@@ -25,15 +24,11 @@ optional comments remain, or the round cap is reached.
 3. Dispatch:
 
    ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
      [--topic "$TOPIC"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] \
      <<< "$PROMPT"
    ```
-
-   Explicit model and effort apply on resume too; omitted settings use Codex configuration.
-   Handle long-dispatch handoff as defined by skill `codex-triage`. For
-   `--background`, run this wrapper as a Claude-managed background task; do not
-   add another detach layer.
 
 4. Show findings and the exact verdict; link the full log. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around
@@ -41,5 +36,4 @@ optional comments remain, or the round cap is reached.
    New blocking classes call for systemic replanning, not an automatic user question.
    In an owning workflow return findings and let it continue the task.
 
-5. Exit 4 means resume failed: follow the skill's recovery rules. Exit 5 means
-   Codex changed tracked files: show the diff and stop.
+5. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

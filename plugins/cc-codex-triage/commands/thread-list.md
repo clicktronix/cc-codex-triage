@@ -1,5 +1,5 @@
 ---
-description: List active named Codex threads in the current context with rounds, log size, last activity, topic, and a busy marker for a thread with a dispatch in flight.
+description: Lists active named Codex threads in the current context with rounds, log size, last activity, topic, and a busy marker for a thread with a dispatch in flight. Use to pick a thread to reuse or retire.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh *)
 ---
 

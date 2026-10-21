@@ -182,12 +182,12 @@ for command in review plan research debate; do
 done
 
 ASK_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/ask.md")"
-[[ "$ASK_ALLOWED" == 'Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)' ]] \
+[[ "$ASK_ALLOWED" == 'Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)' ]] \
   && ok \
-  || bad "commands/ask.md must grant only the driver it executes"
+  || bad "commands/ask.md must grant only the driver and the advisory-check it executes"
 
 REPLY_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/reply.md")"
-EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
+EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
 [[ "$REPLY_ALLOWED" == "$EXPECTED_REPLY" ]] \
   && ok \
   || bad "commands/reply.md must retain Read plus its advisory/required product-route scripts"
