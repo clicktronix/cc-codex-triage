@@ -1507,4 +1507,48 @@ ESC_OUT="$(printf '{"type":"error","message":"{\\"error\\":{\\"api_key\\":\\"SYN
 [[ "$ESC_OUT" != *SYNTHETIC_CREDENTIAL* && "$ESC_OUT" != *another-secret-value* && "$ESC_OUT" == *'\"api_key\":\"[redacted]'* ]] \
   && ok "escaped api_key and token values are masked" || bad "escaped redaction: $ESC_OUT"
 
+echo "== a resume reads the thread profile under the lease, not before it =="
+# Resumer B reaches its stdin read (a cat shim signals it) and waits. Meanwhile A recreates the same
+# thread with --new --read-only. B must then resume the NEW incarnation read-only: a profile read
+# before the lease would still say `sandbox=configured` and B would drop -s read-only and write it back.
+rm -rf "$SD"; mkdir -p "$T/racebin"
+cat > "$T/racebin/cat" <<'SHIM'
+#!/bin/bash
+if [ "$#" -eq 0 ]; then : > "$RACE_READY"; fi
+exec /bin/cat "$@"
+SHIM
+chmod +x "$T/racebin/cat"
+run race
+rm -f "$T/race.ready" "$T/race.done"
+RACE_READY="$T/race.ready" FAKE_CODEX_ARGV="$T/race-b.argv" PATH="$T/racebin:$PATH" \
+  bash "$DRIVER" race < <(while [[ ! -e "$T/race.done" ]]; do sleep 0.05; done; echo reply) >/dev/null 2>"$T/race-b.err" &
+RACE_B=$!
+for _ in $(seq 200); do [[ -e "$T/race.ready" ]] && break; sleep 0.05; done
+[[ -e "$T/race.ready" ]] && ok "resumer reached its prompt read" || bad "resumer never reached its prompt read"
+run race --new --read-only
+: > "$T/race.done"
+wait "$RACE_B"; RACE_RC=$?
+race_argv="$(tr '\0' '\n' < "$T/race-b.argv")"
+[[ "$RACE_RC" -eq 0 && "$(next_after "$race_argv" '-s')" == read-only ]] \
+  && ok "the resume of a concurrently recreated read-only thread keeps -s read-only" \
+  || bad "raced resume argv (rc=$RACE_RC): $race_argv"
+grep -qx 'sandbox=read-only' "$SD/race.profile" \
+  && ok "the raced resume does not write the stale sandbox back" || bad "profile after race: $(cat "$SD/race.profile")"
+
+echo "== --oneshot skips the advisory guard of ask/plan and leaves a reserved thread untouched =="
+ROOT_PLUGIN="${DRIVER%/scripts/codex-thread.sh}"
+for cmd in ask plan; do
+  guard="$(grep -m1 'advisory-check' "$ROOT_PLUGIN/commands/$cmd.md" | sed 's/^ *//; s/<THREAD>/"$THREAD"/')"
+  rm -rf "$SD"; mkdir -p "$SD"; : > "$SD/rsv.candidate"
+  before="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
+  CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=false bash -c "$guard" >/dev/null 2>&1; RC_PERSIST=$?
+  [[ "$RC_PERSIST" -eq 10 ]] && ok "$cmd: a persistent call on a required thread is still refused (exit 10)" || bad "$cmd persistent guard rc=$RC_PERSIST"
+  CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=true bash -c "$guard" >/dev/null 2>&1; RC_ONE=$?
+  run rsv --oneshot --read-only
+  after="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
+  [[ "$RC_ONE" -eq 0 && "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" && "$before" == "$after" ]] \
+    && ok "$cmd: --oneshot passes the guard, answers, and leaves required-review state untouched" \
+    || bad "$cmd oneshot guard rc=$RC_ONE driver rc=$RC state: [$before] -> [$after]"
+done
+
 summary

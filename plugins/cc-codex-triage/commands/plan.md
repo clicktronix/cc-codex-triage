@@ -14,7 +14,7 @@ optional comments remain, or the round cap is reached.
 1. Parse leading flags. The default thread comes from
    `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh plan`; default lens is
    `stress-test`; default cap is 5. Iteration, `--once`, `--oneshot` and `--background`
-   follow the skill's owner-call rules. A clearly different artifact needs a new thread.
+   follow the skill's owner-call rules. Set `ONESHOT=true` when `--oneshot` was parsed, else `ONESHOT=false`; the advisory guard below is skipped for an ephemeral call. A clearly different artifact needs a new thread.
 
 2. On the initial dispatch, read the selected plan focus and output contract from
    `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` and
@@ -24,7 +24,7 @@ optional comments remain, or the round cap is reached.
 3. Dispatch:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
      [--topic "$TOPIC"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] \
      <<< "$PROMPT"

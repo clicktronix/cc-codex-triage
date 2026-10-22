@@ -636,22 +636,6 @@ fail_with_diag() {
 # resume without them reuses them, so a follow-up round cannot silently run on another model; a
 # different explicit value is allowed and said out loud. --new starts a fresh profile.
 PROFILE_FILE="$STATE_DIR/${THREAD}.profile"
-P_SANDBOX=""
-if ! $ONESHOT && ! $RESET_ONLY && ! $FORCE_NEW && [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]]; then
-  P_MODEL="$(sed -n 's/^model=//p' "$PROFILE_FILE" | head -1)"
-  P_EFFORT="$(sed -n 's/^effort=//p' "$PROFILE_FILE" | head -1)"
-  P_SANDBOX="$(sed -n 's/^sandbox=//p' "$PROFILE_FILE" | head -1)"
-  case "$P_SANDBOX" in read-only|configured) ;; *) P_SANDBOX="" ;; esac
-  if [[ -z "$MODEL" ]]; then MODEL="$P_MODEL"
-  elif [[ -n "$P_MODEL" && "$MODEL" != "$P_MODEL" ]]; then
-    echo "codex-thread: thread '$THREAD' changes model from $P_MODEL to $MODEL" >&2
-  fi
-  if [[ -z "$EFFORT" ]]; then EFFORT="$P_EFFORT"
-  elif [[ -n "$P_EFFORT" && "$EFFORT" != "$P_EFFORT" ]]; then
-    echo "codex-thread: thread '$THREAD' changes effort from $P_EFFORT to $EFFORT" >&2
-  fi
-fi
-
 record_round_profile() {  # after a completed round: keep the profile and the per-round usage
   $ONESHOT && return 0
   if [[ -n "$MODEL$EFFORT$SANDBOX_STORE" && ! -L "$PROFILE_FILE" ]]; then
@@ -667,10 +651,6 @@ record_round_profile() {  # after a completed round: keep the profile and the pe
 # Explicit model/effort/--read-only apply to the dispatch that passes them. An omitted
 # model/effort reuses the thread profile above, else Codex configuration. The sandbox is
 # resolved once the saved session is known (see "resolve thread"). Schema is also per-message.
-OVERRIDES=()
-$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
-[[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
-[[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
 SCHEMA_ARGS=()
 [[ -n "$SCHEMA" ]] && SCHEMA_ARGS+=( --output-schema "$SCHEMA" )
 
@@ -754,6 +734,33 @@ if ! $ONESHOT; then
     DETACH_CHILD=true
   fi
 fi
+
+# ── thread profile, read under the lease ─────────────────────────────────
+# The profile (model, effort, sandbox) belongs to the incarnation the lease protects. Read before
+# the lease, a concurrent --new --read-only could recreate the thread between this read and the
+# resume, and the stale `sandbox=configured` would resume the NEW session without -s read-only
+# (Codex then upgrades its persisted policy to the current config) and be written back.
+P_SANDBOX=""
+if ! $ONESHOT && ! $RESET_ONLY && ! $FORCE_NEW && [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]]; then
+  P_MODEL="$(sed -n 's/^model=//p' "$PROFILE_FILE" | head -1)"
+  P_EFFORT="$(sed -n 's/^effort=//p' "$PROFILE_FILE" | head -1)"
+  P_SANDBOX="$(sed -n 's/^sandbox=//p' "$PROFILE_FILE" | head -1)"
+  case "$P_SANDBOX" in read-only|configured) ;; *) P_SANDBOX="" ;; esac
+  if [[ -z "$MODEL" ]]; then MODEL="$P_MODEL"
+  elif [[ -n "$P_MODEL" && "$MODEL" != "$P_MODEL" ]]; then
+    echo "codex-thread: thread '$THREAD' changes model from $P_MODEL to $MODEL" >&2
+  fi
+  if [[ -z "$EFFORT" ]]; then EFFORT="$P_EFFORT"
+  elif [[ -n "$P_EFFORT" && "$EFFORT" != "$P_EFFORT" ]]; then
+    echo "codex-thread: thread '$THREAD' changes effort from $P_EFFORT to $EFFORT" >&2
+  fi
+fi
+
+
+OVERRIDES=()
+$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
+[[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
+[[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
 
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW || $RESET_ONLY; then
