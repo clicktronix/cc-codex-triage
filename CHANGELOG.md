@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Skill `codex-triage` owns the rules the commands used to restate: the owner-call defaults
+  (review and plan iterate to `APPROVE` within the cap; `--once` forces one pass; `--background`
+  only changes where the call runs), terms, model/effort persistence, sandbox, the
+  advisory-check and its exceptions, dollar cost, long dispatches and the exit-code table.
+  Required-review cap, `renew`, missing-approval reporting and recovery rules live only in
+  `required-review.md`; scripts print a pointer to it.
+- A thread records the sandbox it was created with (`sandbox=` in `<thread>.profile`) and a
+  resume without `--read-only` reuses it, so `/reply` follows the thread's origin: `ask`,
+  `research` and `debate` threads stay read-only, `review`, `plan` and `thread` threads keep
+  Codex's configured sandbox. A saved thread with no recorded sandbox resumes read-only.
+  `/reply` no longer forces `--read-only`, and sends through `dispatch.sh` so a long reply is handed
+  off like any other dispatch. The profile and overrides are read under the dispatch lease.
+- `/ask` and `/plan` run `advisory-check` before dispatching (skipped for `--oneshot`, which keeps
+  no thread state); `/review` runs it in the same preamble form.
+- The `quick` review lens is exempt from the shared contract's sibling search and completeness
+  demand.
+- Command descriptions say which neighbouring command to use instead.
+
+### Fixed
+- `dispatch.sh` runs a `--oneshot` call before the required-review preflight, so it neither reads nor
+  is refused by a claim on the thread name it borrows.
+- `dispatch.sh` handoff prints a resolved `dispatch.sh --watch` path instead of a literal
+  `${CLAUDE_PLUGIN_ROOT}`.
+- Exit-4 diagnostic names `/thread-new` instead of the unexposed `--new`; the `REQUIRED_THREAD_RESERVED`
+  refusal says to use another `--thread`, and `CAP_REACHED` points at `required-review.md`.
+- `/plan` and `/thread` no longer describe exit 5, which only `--strict` produces.
+- `status.sh` no longer prints a hard-coded Codex CLI reference version.
+
 ## [0.14.0] - 2026-09-29
 
 ### Added

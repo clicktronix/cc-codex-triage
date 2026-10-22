@@ -59,16 +59,18 @@ done
 
 PROMPT="$(cat)"
 
+# A oneshot call keeps no thread, so it can neither use nor satisfy a claim on the name it borrows;
+# the driver skips the claim for it too. It runs before preflight and in the foreground.
+if $ONESHOT; then
+  printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
+  exit $?
+fi
+
 # While a required claim is live on this thread, the prompt is checked against it before anything is
 # paid for — whatever the prompt's first line says. Without a claim this is a no-op.
 if ! printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null; then
   echo "dispatch.sh: nothing was dispatched; the claim is still live. Build the header with review-state.sh header $THREAD and dispatch again." >&2
   exit 14
-fi
-
-if $ONESHOT; then
-  printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
-  exit $?
 fi
 
 # Detach. A missing runtime cannot be repaired by retrying in the foreground.
@@ -88,7 +90,7 @@ OFF="$(printf '%s' "$LAUNCH" | sed -n 's/.*log-offset=\([0-9][0-9]*\).*/\1/p' | 
 CC_WATCH_PORCELAIN=1 CC_DETACH_WATCH_TIMEOUT="$WAIT" bash "$WATCHER" "$THREAD" "$PID" "$OFF"; wrc=$?
 if [ "$wrc" -eq 20 ]; then
   echo "dispatch.sh: still running after ${WAIT}s — the worker is UNAFFECTED. Deliver it with:" >&2
-  printf '  "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" --watch %s %s %s     (as a background task)\n' \
-    "$THREAD" "$PID" "$OFF" >&2
+  printf '  "%s/dispatch.sh" --watch %s %s %s     (as a background task)\n' \
+    "$SELF_DIR" "$THREAD" "$PID" "$OFF" >&2
 fi
 exit "$wrc"

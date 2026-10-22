@@ -17,6 +17,8 @@ VERDICT_HELPER="$SELF_DIR/verdict.sh"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
 . "$SELF_DIR/dir-lock.sh"
 
+readonly INVALID_CLAIM_MSG="INVALID_CLAIM_STATE: inspect saved state; follow the Recovery section of references/required-review.md before resetting this thread"
+
 usage() {
   echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> --cap N [--integration] | header <thread> | preflight <thread> (prompt on stdin) | advisory-check <thread> | record <thread> <claim-token> | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | renew <thread> --by <who> | reset <thread>" >&2
   exit 1
@@ -32,7 +34,7 @@ if ! git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
   case "$VERB" in advisory-check|reset|preflight) ;; *) die 7 "required review needs a Git repository" ;; esac
 fi
 cd "$ROOT" || exit 7
-# preflight runs before every dispatch, including --oneshot, which must leave no state behind.
+# preflight runs before every persistent dispatch and only reads: no claim must leave no state behind.
 if [ "$VERB" = preflight ]; then STATE_DIR="$(bash "$STATE_HELPER" --read-only)" || exit $?
 else STATE_DIR="$(bash "$STATE_HELPER")" || exit $?; fi
 CANDIDATE="$STATE_DIR/$THREAD.candidate"
@@ -146,9 +148,9 @@ write_loop_state() { # base spec cap start attempts — renewals recorded by `re
 assert_claim() {
   _provided="$1"; _expected="$(field "$CANDIDATE" claim_token)"
   case "$_expected" in
-    ''|*[!0-9a-f]*) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;;
+    ''|*[!0-9a-f]*) die 10 "$INVALID_CLAIM_MSG" ;;
   esac
-  case "${#_expected}" in 40|64) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
+  case "${#_expected}" in 40|64) ;; *) die 10 "$INVALID_CLAIM_MSG" ;; esac
   [ "$_provided" = "$_expected" ] || die 10 "CLAIM_MISMATCH: required-review round belongs to another invocation"
 }
 
@@ -163,8 +165,8 @@ case "$VERB" in
     # compares a prompt with them BEFORE the paid dispatch: a short SHA or a wrong spec path used
     # to surface only after the call, as STALE (prompt_scope_mismatch), with the round spent.
     [ $# -eq 2 ] || usage
-    # preflight runs before every dispatch: with no live required claim there is nothing to check,
-    # and a prompt cannot switch the check off by leaving out its own first line.
+    # preflight runs before every persistent dispatch: with no live required claim there is nothing
+    # to check, and a prompt cannot switch the check off by leaving out its own first line.
     if [ "$VERB" = preflight ] && [ "$(field "$REVIEW_STATE" status 2>/dev/null)" != PENDING ]; then
       cat >/dev/null; echo "NO_REQUIRED_CLAIM"; exit 0
     fi
@@ -188,7 +190,7 @@ $HEADER"
     [ $# -eq 2 ] || usage
     assert_no_live_dispatch
     [ ! -f "$CANDIDATE" ] \
-      || die 10 "REQUIRED_THREAD_RESERVED: use a different --thread for advisory review, or /thread-new to discard the required-review state"
+      || die 10 "REQUIRED_THREAD_RESERVED: this thread holds required-review state; use a different --thread for advisory work"
     echo "ADVISORY_READY thread=$THREAD"
     ;;
 
@@ -227,7 +229,7 @@ $HEADER"
       PENDING) die 10 "PENDING: finish or abort the claimed review round before begin" ;;
       CAP_REACHED)
         [ -f "$CANDIDATE" ] \
-          && die 10 "$LAST_STATUS: report missing approval and continue safe work; a new review budget needs user authorization, not a reset workaround"
+          && die 10 "$LAST_STATUS: see 'At the cap' in references/required-review.md"
         ;;
     esac
     if [ -f "$LOOP_STATE" ]; then
@@ -327,7 +329,7 @@ $HEADER"
     OFF="$(field "$CANDIDATE" log_bytes)"; OFF="${OFF:-0}"
     OLD_GEN="$(field "$CANDIDATE" log_gen)"; OLD_GEN="${OLD_GEN:-0}"
     valid_decimal "$OFF" 12 && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
+      || die 10 "$INVALID_CLAIM_MSG"
     NOW_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || NOW_GEN=""
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$OLD_GEN" = "$NOW_GEN" ] || OFF=0
@@ -440,7 +442,7 @@ $HEADER"
     valid_decimal "$ROUND_BEFORE" 7 && valid_decimal "$CURRENT_ROUND" 7 \
       && valid_decimal "$OLD_BYTES" 12 && valid_decimal "$NOW_BYTES" 12 \
       && valid_decimal "$OLD_GEN" 9 \
-      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
+      || die 10 "$INVALID_CLAIM_MSG"
     valid_decimal "$NOW_GEN" 9 || NOW_GEN=0
     [ "$CURRENT_ROUND" = "$ROUND_BEFORE" ] && [ "$NOW_BYTES" = "$OLD_BYTES" ] && [ "$NOW_GEN" = "$OLD_GEN" ] \
       || die 10 "ROUND_COMPLETED: record the finished dispatch instead of aborting its claim"
@@ -454,16 +456,16 @@ $HEADER"
     C_CAP="$(field "$CANDIDATE" cap)"
     C_START="$(field "$CANDIDATE" loop_start_round)"
     C_ATTEMPT="$(field "$CANDIDATE" attempt)"
-    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread" ;; esac
+    case "$LOOP_CAP:$C_CAP" in [1-5]:[1-5]) ;; *) die 10 "$INVALID_CLAIM_MSG" ;; esac
     valid_decimal "$LOOP_START" 7 && valid_decimal "$C_START" 7 \
       && valid_decimal "$LOOP_ATTEMPTS" 7 && valid_decimal "$C_ATTEMPT" 7 \
-      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
+      || die 10 "$INVALID_CLAIM_MSG"
     [ "$LOOP_BASE_SHA" = "$C_BASE_SHA" ] && [ "$LOOP_SPEC_PATH" = "$C_SPEC_PATH" ] \
       && [ "$LOOP_CAP" = "$C_CAP" ] && [ "$LOOP_START" = "$C_START" ] \
-      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
+      || die 10 "$INVALID_CLAIM_MSG"
     C_INTEGRATION="$(field "$CANDIDATE" integration_of)"
     [ "$LOOP_ATTEMPTS" = "$C_ATTEMPT" ] && { [ "$LOOP_ATTEMPTS" -gt 0 ] || [ -n "$C_INTEGRATION" ]; } \
-      || die 10 "INVALID_CLAIM_STATE: inspect saved state; follow /thread-new Recovery before resetting this thread"
+      || die 10 "$INVALID_CLAIM_MSG"
     # The unchanged round/log proof above establishes that no dispatch
     # completed. Return a reserved slot, if present, before publishing ABORTED.
     # A crash between these writes remains fail-closed: PENDING blocks begin,

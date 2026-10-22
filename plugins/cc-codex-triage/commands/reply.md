@@ -1,7 +1,7 @@
 ---
-description: Compose a reply from Claude Code back into an active Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback.
+description: Sends a reply from Claude Code into an existing Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback. Continues a conversation that already exists; to start a new one use /ask, /review or /plan.
 argument-hint: "[thread-name] [--model <m>] [--effort <e>] <directive or position>"
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
 # /reply
@@ -10,7 +10,7 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
 
 ## Steps
 
-1. Resolve `STATE_DIR` with `state-dir.sh`. If the first token names an existing thread (`$STATE_DIR/<token>.id`), use it. Otherwise use `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`. If that thread does not exist, stop and ask the user to start one with `/ask`, `/review`, or `/plan`; never fall back to unrelated legacy state.
+1. Resolve `STATE_DIR` with `state-dir.sh`. If the first token names an existing thread (`$STATE_DIR/<token>.id`), use it. Otherwise use `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`. If that thread does not exist, stop and ask the user to start one with `/ask`, `/review`, or `/plan`.
 
 2. If `$STATE_DIR/<thread>.candidate` exists, read its canonical base/spec/cap and
    follow `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`
@@ -26,15 +26,17 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
    - **Options A/B/C** → state the user's choice (from the directive) with a one-line reason; ask Codex to detail it.
    - **Finding you disagree with** → push back with file:line evidence.
 
-5. Compose the reply (≤500 words) and pipe to the driver. `--model` / `--effort`, when supplied,
-   apply to this resumed call only; omitted, the thread continues on Codex's configuration:
+5. Compose a concise reply that answers what Codex asked, with the evidence, and send it through
+   the dispatch wrapper, which survives long Codex runs. The thread keeps the sandbox it was
+   created with, so the reply passes no sandbox flag (see the skill's Sandbox paragraph).
+   `--model` / `--effort` are forwarded when supplied:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --require-existing \
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> --require-existing \
      [--model "$MODEL"] [--effort "$EFFORT"] <<< "$REPLY_TEXT"
    ```
 
-6. Show the updated findings/verdict and link the full log. Handle exit code 4 (resume failed) per the skill's ownership/recovery rules. Exit code 6 means no such thread — see step 1.
+6. Show the updated findings/verdict and link the full log. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
 
 ## Notes
 

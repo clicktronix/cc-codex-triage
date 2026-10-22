@@ -19,7 +19,9 @@
 #       --topic <text>      one-line label for a NEW thread, ignored if the
 #                           thread already has one. Makes the thread findable
 #                           by subject rather than by name alone.
-#       --read-only         apply read-only sandbox on new AND resumed calls.
+#       --read-only         apply read-only sandbox on new AND resumed calls. A new thread
+#                           records its sandbox mode; a resume without the flag reuses it
+#                           (a thread with no recorded mode resumes read-only).
 #       --search            request live web search on new AND resumed calls.
 #       --strict            exit 5 when tracked-file status changes.
 #       --detach            re-exec this dispatch in its OWN SESSION so it
@@ -50,7 +52,8 @@
 #   <thread>.dispatch-receipt actual required candidate and completion status.
 #   <thread>.last-usage.json   requested controls and observed token usage (cost unknown).
 #   <thread>.usage.jsonl       the same record appended for every completed round.
-#   <thread>.profile           model and effort the thread runs on (cleared by --new).
+#   <thread>.profile           model, effort and the sandbox mode the thread was created with
+#                              (cleared by --new).
 #   <thread>.active           PID lease held while a dispatch is in flight.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
@@ -78,7 +81,7 @@
 #   1   usage error
 #   2   required runtime unavailable (codex CLI or working Python 3.8+)
 #   3   codex exec failed (initial or oneshot)
-#   4   codex exec resume failed (saved UUID preserved — re-run with --new)
+#   4   codex exec resume failed (saved UUID preserved; /thread-new <thread> starts fresh)
 #   5   tracked-file mutation detected with --strict
 #   6   --require-existing set but no existing thread
 #   7   invalid context directory or unsafe/unavailable thread state
@@ -633,38 +636,21 @@ fail_with_diag() {
 # resume without them reuses them, so a follow-up round cannot silently run on another model; a
 # different explicit value is allowed and said out loud. --new starts a fresh profile.
 PROFILE_FILE="$STATE_DIR/${THREAD}.profile"
-if ! $ONESHOT && ! $RESET_ONLY && ! $FORCE_NEW && [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]]; then
-  P_MODEL="$(sed -n 's/^model=//p' "$PROFILE_FILE" | head -1)"
-  P_EFFORT="$(sed -n 's/^effort=//p' "$PROFILE_FILE" | head -1)"
-  if [[ -z "$MODEL" ]]; then MODEL="$P_MODEL"
-  elif [[ -n "$P_MODEL" && "$MODEL" != "$P_MODEL" ]]; then
-    echo "codex-thread: thread '$THREAD' changes model from $P_MODEL to $MODEL" >&2
-  fi
-  if [[ -z "$EFFORT" ]]; then EFFORT="$P_EFFORT"
-  elif [[ -n "$P_EFFORT" && "$EFFORT" != "$P_EFFORT" ]]; then
-    echo "codex-thread: thread '$THREAD' changes effort from $P_EFFORT to $EFFORT" >&2
-  fi
-fi
-
 record_round_profile() {  # after a completed round: keep the profile and the per-round usage
   $ONESHOT && return 0
-  if [[ -n "$MODEL$EFFORT" && ! -L "$PROFILE_FILE" ]]; then
-    printf 'model=%s\neffort=%s\n' "$MODEL" "$EFFORT" > "$PROFILE_FILE.tmp.$$" && mv "$PROFILE_FILE.tmp.$$" "$PROFILE_FILE"
+  if [[ -n "$MODEL$EFFORT$SANDBOX_STORE" && ! -L "$PROFILE_FILE" ]]; then
+    { printf 'model=%s\neffort=%s\n' "$MODEL" "$EFFORT"
+      [[ -z "$SANDBOX_STORE" ]] || printf 'sandbox=%s\n' "$SANDBOX_STORE"
+    } > "$PROFILE_FILE.tmp.$$" && mv "$PROFILE_FILE.tmp.$$" "$PROFILE_FILE"
   fi
   [[ -f "$STATE_DIR/$THREAD.last-usage.json" && ! -L "$STATE_DIR/$THREAD.usage.jsonl" ]] \
     && cat "$STATE_DIR/$THREAD.last-usage.json" >> "$STATE_DIR/$THREAD.usage.jsonl"
   return 0
 }
 
-SANDBOX_ARGS=()
-$READ_ONLY && SANDBOX_ARGS+=( -s read-only )
-
-# Explicit model/effort/sandbox apply to every dispatch; omitted controls use
-# Codex configuration. Schema is also per-message.
-OVERRIDES=()
-$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
-[[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
-[[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
+# Explicit model/effort/--read-only apply to the dispatch that passes them. An omitted
+# model/effort reuses the thread profile above, else Codex configuration. The sandbox is
+# resolved once the saved session is known (see "resolve thread"). Schema is also per-message.
 SCHEMA_ARGS=()
 [[ -n "$SCHEMA" ]] && SCHEMA_ARGS+=( --output-schema "$SCHEMA" )
 
@@ -749,6 +735,33 @@ if ! $ONESHOT; then
   fi
 fi
 
+# ── thread profile, read under the lease ─────────────────────────────────
+# The profile (model, effort, sandbox) belongs to the incarnation the lease protects. Read before
+# the lease, a concurrent --new --read-only could recreate the thread between this read and the
+# resume, and the stale `sandbox=configured` would resume the NEW session without -s read-only
+# (Codex then upgrades its persisted policy to the current config) and be written back.
+P_SANDBOX=""
+if ! $ONESHOT && ! $RESET_ONLY && ! $FORCE_NEW && [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]]; then
+  P_MODEL="$(sed -n 's/^model=//p' "$PROFILE_FILE" | head -1)"
+  P_EFFORT="$(sed -n 's/^effort=//p' "$PROFILE_FILE" | head -1)"
+  P_SANDBOX="$(sed -n 's/^sandbox=//p' "$PROFILE_FILE" | head -1)"
+  case "$P_SANDBOX" in read-only|configured) ;; *) P_SANDBOX="" ;; esac
+  if [[ -z "$MODEL" ]]; then MODEL="$P_MODEL"
+  elif [[ -n "$P_MODEL" && "$MODEL" != "$P_MODEL" ]]; then
+    echo "codex-thread: thread '$THREAD' changes model from $P_MODEL to $MODEL" >&2
+  fi
+  if [[ -z "$EFFORT" ]]; then EFFORT="$P_EFFORT"
+  elif [[ -n "$P_EFFORT" && "$EFFORT" != "$P_EFFORT" ]]; then
+    echo "codex-thread: thread '$THREAD' changes effort from $P_EFFORT to $EFFORT" >&2
+  fi
+fi
+
+
+OVERRIDES=()
+$LIVE_SEARCH && OVERRIDES+=( -c 'web_search="live"' )
+[[ -n "$MODEL"  ]] && OVERRIDES+=( -m "$MODEL" )
+[[ -n "$EFFORT" ]] && OVERRIDES+=( -c "model_reasoning_effort=$EFFORT" )
+
 # ── force-new ─────────────────────────────────────────────────────────────
 if $FORCE_NEW || $RESET_ONLY; then
   # Preserve old state before an explicit new lifecycle, while owning the lease.
@@ -820,6 +833,27 @@ if $REQUIRE_EXISTING && [[ -z "$SID" ]]; then
   exit 6
 fi
 
+# Sandbox follows the thread's origin. A thread records the mode it was created with
+# (`sandbox=read-only` when created with --read-only, else `sandbox=configured`, meaning
+# Codex's own configuration); a resume without --read-only reuses it, and an explicit
+# --read-only applies to that dispatch only. A saved thread with no recorded mode (created
+# before this was stored) falls back to read-only, the safe side, and stays unrecorded.
+SANDBOX_MODE=configured
+SANDBOX_STORE=""
+if $READ_ONLY; then SANDBOX_MODE=read-only; fi
+if ! $ONESHOT; then
+  if [[ -n "$P_SANDBOX" ]]; then
+    SANDBOX_STORE="$P_SANDBOX"
+    $READ_ONLY || SANDBOX_MODE="$P_SANDBOX"
+  elif [[ -z "$SID" ]]; then
+    SANDBOX_STORE="$SANDBOX_MODE"
+  elif ! $READ_ONLY; then
+    SANDBOX_MODE=read-only
+  fi
+fi
+SANDBOX_ARGS=()
+[[ "$SANDBOX_MODE" != read-only ]] || SANDBOX_ARGS+=( -s read-only )
+
 # ── detach handshake (child side) ─────────────────────────────────────────
 # A --detach launcher handed us --detach-child and is polling that file for our
 # PID. Written only AFTER the lease is held (acquired above, before any
@@ -878,7 +912,7 @@ elif [[ -n "$SID" ]]; then
     fail_with_diag 4 \
       "codex exec resume FAILED for thread '$THREAD' (session=$SID)." \
       "Possible causes: session expired/deleted, codex CLI upgrade broke wire format, or model unavailable." \
-      "The saved UUID has NOT been cleared — re-run with --new to start a fresh thread (loses memory)."
+      "The saved UUID has NOT been cleared. If recovery needs a fresh session, run /thread-new $THREAD (loses memory; the archive is kept)."
   fi
   python3 "$SELF_DIR/codex-events.py" "$JSONL_FILE" \
     "$STATE_DIR/$THREAD.last-usage.json" "$MODEL" "$EFFORT" >/dev/null

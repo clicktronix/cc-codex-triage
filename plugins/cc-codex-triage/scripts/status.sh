@@ -8,7 +8,6 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(bash "$SELF_DIR/state-dir.sh" --root)" || exit $?
 cd "$ROOT" || exit 0
 STATE_DIR="$(bash "$SELF_DIR/state-dir.sh" --read-only)" || exit $?
-CLI_REFERENCE="0.153.4"
 
 field_value() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
@@ -36,7 +35,6 @@ if command -v codex >/dev/null 2>&1; then
 else
   echo "  codex CLI   : NOT FOUND on PATH"
 fi
-echo "  CLI ref     : $CLI_REFERENCE (interface checked; no version gate)"
 
 echo
 echo "Threads:"
@@ -66,7 +64,7 @@ for STATE_FILE in "$STATE_DIR"/*.review-state; do
     "$NAME" "${STATUS:-?}" "${ELIGIBLE:-?}" "${VERDICT:--}"
   case "$STATUS" in
     APPROVED) echo "      authoritative check: review-state.sh check $NAME" ;;
-    CAP_REACHED) echo "      review budget exhausted; continue safe work, renew the budget only with user authorization" ;;
+    CAP_REACHED) echo "      review budget exhausted; see \"At the cap\" in references/required-review.md" ;;
     PENDING) echo "      one required-review round is claimed" ;;
   esac
 done

@@ -1,5 +1,5 @@
 ---
-description: Compare defensible positions through a bounded debate between Claude Code and Codex, then synthesize the evidence and remaining disagreement. Available to an owning agent during an authorized task.
+description: Runs a bounded multi-round debate between Claude Code and Codex over two or more defensible positions, then synthesizes the evidence and the remaining disagreement. Use when a decision has competing options worth contesting, such as a design choice with real trade-offs. For a factual or sourced answer use /research; for one plan to stress-test use /plan. Available to an owning agent during an authorized task.
 argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] [--model <m>] [--effort <e>] <question or decision>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
@@ -29,8 +29,7 @@ permission question. Repository context is optional.
      ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$OPENING"
    ```
 
-   Use the same route for rebuttals. Follow the shared long-dispatch handoff; never
-   repeat an in-flight turn. Check claims, add evidence and reconsider your position
+   Use the same route for rebuttals. Check claims, add evidence and reconsider your position
    when warranted. Stop when a round adds no useful evidence or the question is settled.
 4. Synthesize agreement, remaining disagreement, what changed either position, and a
    recommendation. If another Codex synthesis call would exceed the ceiling, synthesize
@@ -42,6 +41,5 @@ For an agent-initiated debate, show the reason for it and the useful conclusion;
 retain the complete exchange in the thread log. Show labelled exchanges in full when
 the user requests to watch the debate. Avoid flooding the main run with repeated arguments.
 
-Each dispatch uses the supplied `--model` / `--effort`, else Codex's configured ones, and
-may incur cost; the ceiling bounds calls, not dollars. Use available usage/pricing evidence and state an unknown price as
-unknown. Honor an already-authorized budget; request expansion only when necessary.
+Each dispatch may incur cost; the ceiling bounds calls, not dollars. Honor an
+already-authorized budget; request expansion only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

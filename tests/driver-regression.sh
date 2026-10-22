@@ -263,6 +263,29 @@ read_oneshot="$(tr '\0' '\n' < "$T/read-oneshot.argv")"
   && ok "--read-only also reaches a one-shot dispatch" \
   || bad "oneshot --read-only was not forwarded: $read_oneshot"
 
+echo "== a resume uses the sandbox the thread was created with =="
+rm -rf "$SD"
+has_s() { grep -qx -- '-s' <<<"$1"; }
+sb_argv() { FAKE_CODEX_ARGV="$T/sb.argv" run "$@"; tr '\0' '\n' < "$T/sb.argv"; }
+sb_argv sb-ask --read-only >/dev/null
+A="$(sb_argv sb-ask)"
+[[ "$(next_after "$A" '-s')" == read-only ]] \
+  && ok "a thread created read-only (ask/research) replies read-only without the flag" || bad "ask-thread reply argv: $A"
+sb_argv sb-rev >/dev/null
+A="$(sb_argv sb-rev)"
+! has_s "$A" \
+  && ok "a thread created with the configured sandbox (review/plan/thread) replies in it" || bad "review-thread reply argv: $A"
+A="$(sb_argv sb-rev --read-only)"; A2="$(sb_argv sb-rev)"
+[[ "$(next_after "$A" '-s')" == read-only ]] && ! has_s "$A2" \
+  && ok "an explicit --read-only applies to that dispatch only" || bad "explicit override argv: $A / $A2"
+sb_argv sb-old --read-only >/dev/null
+sed -i.bak '/^sandbox=/d' "$SD/sb-old.profile" 2>/dev/null; rm -f "$SD/sb-old.profile.bak"
+A="$(sb_argv sb-old)"
+[[ "$(next_after "$A" '-s')" == read-only ]] \
+  && ok "a saved thread with no recorded sandbox resumes read-only" || bad "legacy thread argv: $A"
+sb_argv sb-ask --new >/dev/null; A="$(sb_argv sb-ask)"
+! has_s "$A" && ok "--new records the new thread's own mode" || bad "--new argv: $A"
+
 echo "== invalid --effort rejected (exit 1) =="
 run t7 --effort turbo; [[ "$RC" -eq 1 ]] && ok "bad effort -> exit 1" || bad "bad effort rc=$RC"
 
@@ -556,6 +579,12 @@ rm -rf "$SD"
 printf 'seed' | bash "$DISPATCH" d-fail >/dev/null 2>&1          # create the thread
 FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail <<< "hi" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 4 ]] && ok "a resume failure reaches the caller as 4, not 1" || bad "resume failure collapsed to rc=$rc"
+FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail <<< "hi" 2>&1 >/dev/null | grep -q '/thread-new d-fail' \
+  && ok "the exit-4 diagnostic names /thread-new, a command that exists" || bad "exit-4 diagnostic does not name /thread-new"
+FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail <<< "hi" 2>&1 >/dev/null | grep -q -- '--new' \
+  && bad "exit-4 diagnostic still recommends --new" || ok "and no longer recommends the unexposed --new flag"
+bash "$DISPATCH" d-absent --require-existing <<< "hi" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 6 ]] && ok "dispatch.sh forwards --require-existing: a missing thread exits 6" || bad "dispatch --require-existing rc=$rc"
 rm -rf "$SD"
 FAKE_CODEX_EXIT=1 bash "$DISPATCH" d-fail2 <<< "hi" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 3 ]] && ok "an exec failure reaches the caller as 3" || bad "exec failure became rc=$rc"
@@ -590,6 +619,10 @@ grep -q 'dispatch\.sh" --watch' "$T/derr" \
   && ! grep -q 'bash .*detach-watch.sh' "$T/derr" \
   && ok "and hands off through the already-granted dispatch route" \
   || bad "handoff bypassed dispatch.sh permissions: $(cat "$T/derr")"
+grep -qF "\"$(dirname "$DISPATCH")/dispatch.sh\" --watch" "$T/derr" \
+  && ! grep -q 'CLAUDE_PLUGIN_ROOT' "$T/derr" \
+  && ok "and prints a resolved path, not an unexpanded variable" \
+  || bad "handoff command is not runnable as printed: $(cat "$T/derr")"
 W="$(pgrep -f "$SLOWBIN2/codex" | head -1)"
 [[ -n "$W" ]] && kill -0 "$W" 2>/dev/null && ok "the worker is UNAFFECTED by the handoff" || bad "worker died with the wait window"
 pkill -f "$SLOWBIN2/codex" 2>/dev/null
@@ -1473,5 +1506,54 @@ echo "== credentials inside serialized JSON diagnostics are masked =="
 ESC_OUT="$(printf '{"type":"error","message":"{\\"error\\":{\\"api_key\\":\\"SYNTHETIC_CREDENTIAL_123456789\\",\\"token\\": \\"another-secret-value-99\\"}}"}\n' | bash "$(dirname "$DRIVER")/redact.sh")"
 [[ "$ESC_OUT" != *SYNTHETIC_CREDENTIAL* && "$ESC_OUT" != *another-secret-value* && "$ESC_OUT" == *'\"api_key\":\"[redacted]'* ]] \
   && ok "escaped api_key and token values are masked" || bad "escaped redaction: $ESC_OUT"
+
+echo "== a resume reads the thread profile under the lease, not before it =="
+# Resumer B reaches its stdin read (a cat shim signals it) and waits. Meanwhile A recreates the same
+# thread with --new --read-only. B must then resume the NEW incarnation read-only: a profile read
+# before the lease would still say `sandbox=configured` and B would drop -s read-only and write it back.
+rm -rf "$SD"; mkdir -p "$T/racebin"
+cat > "$T/racebin/cat" <<'SHIM'
+#!/bin/bash
+if [ "$#" -eq 0 ]; then : > "$RACE_READY"; fi
+exec /bin/cat "$@"
+SHIM
+chmod +x "$T/racebin/cat"
+run race
+rm -f "$T/race.ready" "$T/race.done"
+RACE_READY="$T/race.ready" FAKE_CODEX_ARGV="$T/race-b.argv" PATH="$T/racebin:$PATH" \
+  bash "$DRIVER" race < <(while [[ ! -e "$T/race.done" ]]; do sleep 0.05; done; echo reply) >/dev/null 2>"$T/race-b.err" &
+RACE_B=$!
+for _ in $(seq 200); do [[ -e "$T/race.ready" ]] && break; sleep 0.05; done
+[[ -e "$T/race.ready" ]] && ok "resumer reached its prompt read" || bad "resumer never reached its prompt read"
+run race --new --read-only
+: > "$T/race.done"
+wait "$RACE_B"; RACE_RC=$?
+race_argv="$(tr '\0' '\n' < "$T/race-b.argv")"
+[[ "$RACE_RC" -eq 0 && "$(next_after "$race_argv" '-s')" == read-only ]] \
+  && ok "the resume of a concurrently recreated read-only thread keeps -s read-only" \
+  || bad "raced resume argv (rc=$RACE_RC): $race_argv"
+grep -qx 'sandbox=read-only' "$SD/race.profile" \
+  && ok "the raced resume does not write the stale sandbox back" || bad "profile after race: $(cat "$SD/race.profile")"
+
+echo "== --oneshot skips the advisory guard of ask/plan and leaves a reserved thread untouched =="
+# Each command is driven through the script its own dispatch line names (ask calls the driver,
+# plan calls dispatch.sh), against a pending claim that dispatch.sh's preflight would refuse.
+ROOT_PLUGIN="${DRIVER%/scripts/codex-thread.sh}"
+for cmd in ask plan; do
+  guard="$(grep -m1 'advisory-check' "$ROOT_PLUGIN/commands/$cmd.md" | sed 's/^ *//; s/<THREAD>/"$THREAD"/')"
+  route="$(grep -A1 'advisory-check' "$ROOT_PLUGIN/commands/$cmd.md" | grep -o 'scripts/[a-z-]*\.sh' | grep -v review-state | head -1)"
+  rm -rf "$SD"; mkdir -p "$SD"
+  printf 'base_sha=%s\nhead=%s\nspec_path=docs/spec.md\n' "$(printf 'a%.0s' {1..40})" "$(printf 'b%.0s' {1..40})" > "$SD/rsv.candidate"
+  echo 'status=PENDING' > "$SD/rsv.review-state"
+  before="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
+  CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=false bash -c "$guard" >/dev/null 2>&1; RC_PERSIST=$?
+  [[ "$RC_PERSIST" -eq 10 ]] && ok "$cmd: a persistent call on a required thread is still refused (exit 10)" || bad "$cmd persistent guard rc=$RC_PERSIST"
+  CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=true bash -c "$guard" >/dev/null 2>&1; RC_ONE=$?
+  OUT="$(cd "$REPO" && printf 'q' | bash "$ROOT_PLUGIN/$route" rsv --oneshot --read-only 2>"$T/err")"; RC=$?
+  after="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
+  [[ "$RC_ONE" -eq 0 && "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" && "$before" == "$after" ]] \
+    && ok "$cmd: --oneshot passes the guard, answers, and leaves required-review state untouched" \
+    || bad "$cmd oneshot via $route: guard rc=$RC_ONE dispatch rc=$RC err=$(cat "$T/err") state: [$before] -> [$after]"
+done
 
 summary
