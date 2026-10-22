@@ -1536,19 +1536,24 @@ grep -qx 'sandbox=read-only' "$SD/race.profile" \
   && ok "the raced resume does not write the stale sandbox back" || bad "profile after race: $(cat "$SD/race.profile")"
 
 echo "== --oneshot skips the advisory guard of ask/plan and leaves a reserved thread untouched =="
+# Each command is driven through the script its own dispatch line names (ask calls the driver,
+# plan calls dispatch.sh), against a pending claim that dispatch.sh's preflight would refuse.
 ROOT_PLUGIN="${DRIVER%/scripts/codex-thread.sh}"
 for cmd in ask plan; do
   guard="$(grep -m1 'advisory-check' "$ROOT_PLUGIN/commands/$cmd.md" | sed 's/^ *//; s/<THREAD>/"$THREAD"/')"
-  rm -rf "$SD"; mkdir -p "$SD"; : > "$SD/rsv.candidate"
+  route="$(grep -A1 'advisory-check' "$ROOT_PLUGIN/commands/$cmd.md" | grep -o 'scripts/[a-z-]*\.sh' | grep -v review-state | head -1)"
+  rm -rf "$SD"; mkdir -p "$SD"
+  printf 'base_sha=%s\nhead=%s\nspec_path=docs/spec.md\n' "$(printf 'a%.0s' {1..40})" "$(printf 'b%.0s' {1..40})" > "$SD/rsv.candidate"
+  echo 'status=PENDING' > "$SD/rsv.review-state"
   before="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
   CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=false bash -c "$guard" >/dev/null 2>&1; RC_PERSIST=$?
   [[ "$RC_PERSIST" -eq 10 ]] && ok "$cmd: a persistent call on a required thread is still refused (exit 10)" || bad "$cmd persistent guard rc=$RC_PERSIST"
   CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT=true bash -c "$guard" >/dev/null 2>&1; RC_ONE=$?
-  run rsv --oneshot --read-only
+  OUT="$(cd "$REPO" && printf 'q' | bash "$ROOT_PLUGIN/$route" rsv --oneshot --read-only 2>"$T/err")"; RC=$?
   after="$(cd "$SD" && ls -A | sort | tr '\n' ' ')"
   [[ "$RC_ONE" -eq 0 && "$RC" -eq 0 && "$OUT" == "FAKE_REPLY" && "$before" == "$after" ]] \
     && ok "$cmd: --oneshot passes the guard, answers, and leaves required-review state untouched" \
-    || bad "$cmd oneshot guard rc=$RC_ONE driver rc=$RC state: [$before] -> [$after]"
+    || bad "$cmd oneshot via $route: guard rc=$RC_ONE dispatch rc=$RC err=$(cat "$T/err") state: [$before] -> [$after]"
 done
 
 summary

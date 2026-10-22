@@ -34,7 +34,7 @@ if ! git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
   case "$VERB" in advisory-check|reset|preflight) ;; *) die 7 "required review needs a Git repository" ;; esac
 fi
 cd "$ROOT" || exit 7
-# preflight runs before every dispatch, including --oneshot, which must leave no state behind.
+# preflight runs before every persistent dispatch and only reads: no claim must leave no state behind.
 if [ "$VERB" = preflight ]; then STATE_DIR="$(bash "$STATE_HELPER" --read-only)" || exit $?
 else STATE_DIR="$(bash "$STATE_HELPER")" || exit $?; fi
 CANDIDATE="$STATE_DIR/$THREAD.candidate"

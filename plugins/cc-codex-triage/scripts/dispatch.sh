@@ -59,16 +59,18 @@ done
 
 PROMPT="$(cat)"
 
+# A oneshot call keeps no thread, so it can neither use nor satisfy a claim on the name it borrows;
+# the driver skips the claim for it too. It runs before preflight and in the foreground.
+if $ONESHOT; then
+  printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
+  exit $?
+fi
+
 # While a required claim is live on this thread, the prompt is checked against it before anything is
 # paid for — whatever the prompt's first line says. Without a claim this is a no-op.
 if ! printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null; then
   echo "dispatch.sh: nothing was dispatched; the claim is still live. Build the header with review-state.sh header $THREAD and dispatch again." >&2
   exit 14
-fi
-
-if $ONESHOT; then
-  printf '%s' "$PROMPT" | bash "$DRIVER" "$@"
-  exit $?
 fi
 
 # Detach. A missing runtime cannot be repaired by retrying in the foreground.
