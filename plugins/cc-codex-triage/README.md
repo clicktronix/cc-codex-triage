@@ -113,7 +113,7 @@ silently run on another model; an explicit change is allowed and printed. Withou
 configuration applies. A thread also records the sandbox it was created with, and `/reply` and
 every later call use it: `ask`, `research` and `debate` threads stay read-only; `review`, `plan`
 and `thread` threads keep Codex's configured sandbox. A saved thread with no recorded sandbox
-resumes read-only. Their prompts leave full
+resumes read-only. Prompts leave full
 suites, e2e and builds to the owner. `<thread>.last-usage.json` records the latest round's
 requested controls and observed token usage, and `<thread>.usage.jsonl` keeps every round;
 dollar cost stays unknown. Diagnostic tails printed to the caller mask API keys and tokens.

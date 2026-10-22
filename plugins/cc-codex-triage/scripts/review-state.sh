@@ -165,8 +165,8 @@ case "$VERB" in
     # compares a prompt with them BEFORE the paid dispatch: a short SHA or a wrong spec path used
     # to surface only after the call, as STALE (prompt_scope_mismatch), with the round spent.
     [ $# -eq 2 ] || usage
-    # preflight runs before every dispatch: with no live required claim there is nothing to check,
-    # and a prompt cannot switch the check off by leaving out its own first line.
+    # preflight runs before every persistent dispatch: with no live required claim there is nothing
+    # to check, and a prompt cannot switch the check off by leaving out its own first line.
     if [ "$VERB" = preflight ] && [ "$(field "$REVIEW_STATE" status 2>/dev/null)" != PENDING ]; then
       cat >/dev/null; echo "NO_REQUIRED_CLAIM"; exit 0
     fi

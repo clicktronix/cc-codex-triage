@@ -15,14 +15,17 @@ All notable changes to this project are documented in this file.
   resume without `--read-only` reuses it, so `/reply` follows the thread's origin: `ask`,
   `research` and `debate` threads stay read-only, `review`, `plan` and `thread` threads keep
   Codex's configured sandbox. A saved thread with no recorded sandbox resumes read-only.
-  `/reply` no longer forces `--read-only`.
-- `/ask` and `/plan` run `advisory-check` before dispatching; `/review` runs it in the same
-  preamble form.
+  `/reply` no longer forces `--read-only`, and sends through `dispatch.sh` so a long reply is handed
+  off like any other dispatch. The profile and overrides are read under the dispatch lease.
+- `/ask` and `/plan` run `advisory-check` before dispatching (skipped for `--oneshot`, which keeps
+  no thread state); `/review` runs it in the same preamble form.
 - The `quick` review lens is exempt from the shared contract's sibling search and completeness
   demand.
 - Command descriptions say which neighbouring command to use instead.
 
 ### Fixed
+- `dispatch.sh` runs a `--oneshot` call before the required-review preflight, so it neither reads nor
+  is refused by a claim on the thread name it borrows.
 - `dispatch.sh` handoff prints a resolved `dispatch.sh --watch` path instead of a literal
   `${CLAUDE_PLUGIN_ROOT}`.
 - Exit-4 diagnostic names `/thread-new` instead of the unexposed `--new`; the `REQUIRED_THREAD_RESERVED`
