@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.15.0] - 2026-10-22
 
 ### Changed
 - Skill `codex-triage` owns the rules the commands used to restate: the owner-call defaults
