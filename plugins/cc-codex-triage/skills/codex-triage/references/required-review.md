@@ -41,10 +41,9 @@ and only `/thread-new` starts a new contract.
    End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES.
    ```
 
-   This line replaces the verdict line of the lens contract (which also allows `COMMENT`);
-   required review accepts only the two. Findings the lens would label `COMMENT` go in the
-   body, and the verdict is `APPROVE` when no blocking finding remains. Repeat the
-   instruction on every resumed round.
+   Required review accepts only `APPROVE` or `REQUEST_CHANGES`: findings the lens would
+   label `COMMENT` go in the body, and the verdict is `APPROVE` when no blocking finding
+   remains. Repeat the instruction on every resumed round.
 
 3. Dispatch with mutation detection enabled:
 
@@ -64,9 +63,9 @@ and only `/thread-new` starts a new contract.
 
    If `abort` reports `ROUND_COMPLETED`, use `record` instead.
    For `INVALID_CLAIM_STATE`, follow [Recovery](#recovery).
-   `STALE (dispatch_incomplete)` means the completion receipt is absent: inspect the
-   dispatch error, including any strict mutation warning. It does not by itself mean
-   the candidate changed. Reconcile the failure and retry only within the review budget.
+   `STALE (dispatch_incomplete)`: no completion receipt. Read the dispatch error
+   (including any strict mutation warning); the candidate may be unchanged. Retry only
+   within the review budget.
 
    During a long-dispatch handoff the claim stays live; wait for its watcher
    before recording.
@@ -91,10 +90,9 @@ and only `/thread-new` starts a new contract.
 - `NO_DECISION`: the final line was neither `APPROVE` nor `REQUEST_CHANGES` (`COMMENT`
   included). The attempt is spent. Begin again with the exact-verdict instruction.
 - `REQUEST_CHANGES`: return the validated findings to the owning workflow. This command
-  edits nothing, commits nothing and invents no approval. A refuted finding or a
-  user-authorized waiver may be explained on the same candidate, but a fresh round must
-  earn `APPROVE`. Tracking an issue does not resolve a defect; the owner decides whether
-  independent future work belongs elsewhere.
+  edits nothing, commits nothing and invents no approval. Explain a refuted finding or
+  a user-authorized waiver, but only a fresh round can return `APPROVE`. Tracking an issue
+  does not resolve a defect.
 
 ## At the cap
 
@@ -107,9 +105,9 @@ the Codex conversation and records who authorized it:
 "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "<who>"
 ```
 
-Reuse a decision already given. Resetting or renaming the thread to get a budget loses the
-pinned contract and the budget history; `/thread-new` is for a user-authorized change of
-base, spec or cap, or for the Recovery below.
+Reuse a decision already given. Resetting or renaming a thread to get a budget loses the
+pinned contract; `/thread-new` is for a user-authorized change of base, spec or cap, or
+for the Recovery below.
 
 ## Candidate stability
 
@@ -120,15 +118,17 @@ A later reply or failed dispatch revokes earlier delivery permission.
 
 Keep the initial literal base SHA when the target branch advances: integrate the target
 in the owning workflow, refresh affected evidence, and review the new candidate in this
-thread. An intentional change to base/spec/cap is a new contract, not an implicit reset.
+thread.
 
 ## Recovery
 
-On `INVALID_CLAIM_STATE`, inspect the claim, loop, logs and receipts: a malformed
-claim does not necessarily invalidate the budget in `.review-loop`. Restore an intact
-matching snapshot if available, writing only fields the snapshot records. If
-state cannot be restored, archive and reset your owned idle thread with `/thread-new`.
-Carry unresolved findings forward and limit the next lifecycle to confirmed remaining
-authorized attempts, counting completed or unresolved claims as spent. If that budget is
-exhausted or cannot be established, treat it as [At the cap](#at-the-cap). Corruption itself
-grants no extra budget.
+On `INVALID_CLAIM_STATE`:
+
+1. Inspect the claim, loop, logs and receipts; a malformed claim does not necessarily
+   invalidate the budget in `.review-loop`.
+2. Restore an intact matching snapshot if available, writing only fields it records.
+3. Otherwise archive and reset your owned idle thread with `/thread-new`, carry unresolved
+   findings forward, and limit the next lifecycle to the confirmed remaining authorized
+   attempts, counting completed or unresolved claims as spent.
+4. If that budget is exhausted or cannot be established, treat it as
+   [At the cap](#at-the-cap). Corruption itself grants no extra budget.

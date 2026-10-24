@@ -14,7 +14,7 @@ optional comments remain, or the round cap is reached.
 1. Parse leading flags. The default thread comes from
    `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh plan`; default lens is
    `stress-test`; default cap is 5. Iteration, `--once`, `--oneshot` and `--background`
-   follow the skill's owner-call rules. Set `ONESHOT=true` when `--oneshot` was parsed, else `ONESHOT=false`; the advisory guard below is skipped for an ephemeral call. A clearly different artifact needs a new thread.
+   follow the skill's owner-call rules. Set `ONESHOT=true` if `--oneshot` was passed (it skips the advisory guard below), else `ONESHOT=false`. A clearly different artifact needs a new thread.
 
 2. On the initial dispatch, read the selected plan focus and output contract from
    `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` and
@@ -32,8 +32,6 @@ optional comments remain, or the round cap is reached.
 
 4. Show findings and the exact verdict; link the full log. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around
-   it. Stop paid iteration at `APPROVE`, optional-only `COMMENT`, or the authorized cap.
-   New blocking classes call for systemic replanning, not an automatic user question.
-   In an owning workflow return findings and let it continue the task.
+   it. In an owning workflow return findings and let it continue the task.
 
 5. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
