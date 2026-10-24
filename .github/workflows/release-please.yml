@@ -1,0 +1,82 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+# The action maintains the release PR with GITHUB_TOKEN. Because that PR may not trigger ordinary CI,
+# this workflow validates its exact head SHA and publishes an explicit commit status itself.
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Resolve release PR head
+        id: release-pr
+        # The action sets prs_created when a release PR is created or updated.
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          number="$(printf '%s' "$RELEASE_PR" | jq -er '.number')"
+          sha="$(printf '%s' "$RELEASE_PR" | jq -er '.sha // empty' || true)"
+          if [ -z "$sha" ]; then
+            sha="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          fi
+          printf 'number=%s\nsha=%s\n' "$number" "$sha" >> "$GITHUB_OUTPUT"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            -f state=pending \
+            -f context=release-pr/validate \
+            -f description='Validating generated release changes'
+
+      - name: Check out release PR head
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release-pr.outputs.sha }}
+          persist-credentials: false
+
+      - name: Validate release PR
+        id: validate-release
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        continue-on-error: true
+        run: bash tests/run.sh
+
+      - name: Publish release PR validation
+        if: ${{ always() && steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.validate-release.outcome }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+          SHA: ${{ steps.release-pr.outputs.sha }}
+        run: |
+          if [ -z "$SHA" ]; then
+            number="$(printf '%s' "$RELEASE_PR" | jq -er '.number')"
+            SHA="$(printf '%s' "$RELEASE_PR" | jq -er '.sha // empty' || true)"
+            if [ -z "$SHA" ]; then
+              SHA="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+            fi
+          fi
+          state=success
+          description='Generated release changes passed validation'
+          if [ "$OUTCOME" != success ]; then
+            state=failure
+            description='Generated release changes failed validation'
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" \
+            -f context=release-pr/validate \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          [ "$state" = success ]
