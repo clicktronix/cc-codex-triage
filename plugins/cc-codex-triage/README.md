@@ -21,18 +21,17 @@ Code built-ins, so use their namespaced forms.
 
 One internal routing skill, `codex-triage`, supplies ownership, evidence and thread
 conventions. It is loaded when relevant; use the commands above for actions.
-`ask`, `research`, `plan`, `review`, `reply` and `debate` may be called by an already-authorized workflow.
-The owner retains tasks, fixes and delivery; the bridge does not create backlog items.
+An already-authorized workflow may call every command except `/thread`, which stays
+user-invoked. The owner retains tasks, fixes and delivery; the bridge does not create
+backlog items. Details: [SKILL.md](skills/codex-triage/SKILL.md).
 
 ## Required review
 
-Required review captures a clean candidate's canonical base, tracked spec,
-HEAD, and tree before dispatch. It accepts only one bare final `APPROVE` from
-the claimed round with a completed driver receipt. The driver checks actual clean
-HEAD/tree before and after the call. Wrong prompt scope, missing receipts or decisions,
-cap exhaustion and detected candidate movement refuse approval. A later reply or failed
-dispatch revokes the previous approval. Endpoint checks do not prove the filesystem
-was immutable throughout the call; the owner must keep the review candidate stable.
+Required review binds one exact clean candidate (base, tracked spec, HEAD, tree) to a
+claimed round and accepts only a bare final `APPROVE` with a completed driver receipt.
+Endpoint checks do not prove the filesystem was immutable during the call, so the owner
+must keep the candidate stable. The full protocol is in
+[required-review.md](skills/codex-triage/references/required-review.md).
 
 The only delivery marker is:
 
@@ -54,17 +53,14 @@ directory:
 
 Outside Git, state lives in `${XDG_STATE_HOME:-$HOME/.local/state}/cc-codex-triage/contexts/<sha256-of-physical-directory>/threads/`. No Git initialization or files in the working directory are needed. Use the same directory to continue, list or reset these conversations. Only required review needs a Git candidate.
 
-Session ids are context-local by policy; the driver passes this checkout on resume
-too. Keep it until delivery and archive needed history before removing it. Upgrading
-0.11 to 0.12 preserves sessions, but old approvals need a fresh claimed round to acquire
-a dispatch receipt. Earlier `.claude/codex-threads` and common-Git state are not migrated;
-preserve any useful legacy logs before choosing a new thread.
+Keep a thread until delivery and archive needed history before removing it. Explicit
+resets archive prior state to `<thread>.archive.*`; `/status` reports archives and
+nothing deletes them.
 
-Same-thread dispatches are serialized. A busy thread exits 10. Resume failure
-exits 4 and preserves the saved id;
-an owned idle advisory thread may be retired with `/thread-new`. Explicit resets preserve prior plugin state in a tar file at `<thread>.archive.*`. `/status` shows retained archive count, bytes and location; archives are not automatically deleted.
-Reviewers run in separate process groups; cancellation signals the entire reviewer process group
-without signalling the host terminal. Watcher timeout still hands off a live worker.
+`--model` and `--effort` are accepted by every dispatching command and, like the sandbox,
+are recorded per thread (see the skill's Threads section).
+`<thread>.last-usage.json` and `<thread>.usage.jsonl` hold requested controls and token
+usage; dollar cost stays unknown. Diagnostic tails mask API keys and tokens.
 
 ## What works where
 
@@ -73,26 +69,23 @@ without signalling the host terminal. Watcher timeout still hands off a live wor
 | `ask`, `research`, `debate`, `thread`, `reply` | yes | yes — state under `XDG_STATE_HOME` |
 | `review` (advisory) | yes | yes, without a candidate |
 | `review --required` (delivery gate) | yes | **no** — needs a clean HEAD/tree to bind to |
-| `--search` live web search | `research` and `debate` request it on every call, initial and resumed; `ask`, `reply` and `thread` do not; availability is the provider's | same |
+| `--search` live web search | `research` and `debate` request it on every call, initial and resumed; `ask`, `reply` and `thread` do not; availability is the provider's, per Codex's [web search configuration](https://developers.openai.com/codex/config-basic/#web-search) | same |
 | `status`, `thread-list`, `thread-new` | yes | yes |
 
-Tested in CI on Linux and macOS. Windows is untested: `setsid` is absent there and the Python
-isolator path is the one that would run. GitHub is not assumed by this plugin; the merge boundary
-lives in the host plugin (`cc-tuner`), not here. Nothing above is a promise about model behaviour;
-offline tests cover transport and state.
+Tested in CI on Linux and macOS. Windows is untested (no `setsid`; the Python fallback would run).
+The merge boundary lives in the host plugin (`cc-tuner`), not here.
 
 ## Permissions
 
-Command frontmatter scopes pre-approved Bash to this plugin's executable
-scripts through `${CLAUDE_PLUGIN_ROOT}`. It does not grant arbitrary Bash for
-the turn. These grants do not remove other host tools. Bounded ask/research/plan/review/reply/debate
-and owned thread maintenance may belong to an approved flow. Arbitrary `/thread` remains user-invoked.
+Command frontmatter scopes pre-approved Bash to this plugin's executable scripts through
+`${CLAUDE_PLUGIN_ROOT}`. It does not grant arbitrary Bash for the turn. These invocation
+controls follow [Claude Code skill frontmatter](https://code.claude.com/docs/en/skills).
 
 ## Prerequisites
 
-- `codex` CLI on `PATH`. A minimum compatible version for this release has not been established; `/status` shows the installed version without blocking calls.
+- `codex` CLI on `PATH`. `/status` shows its version.
 - `~/.codex/config.toml` configured for an authorized model.
-- Working Python 3.8+ for typed JSON events and process-group supervision. A local interpreter check rejects an unavailable runtime with exit 2 before dispatch changes thread state. Standalone status/list/reset also use Python to locate context state and report dependency failures with exit 2; Git-local maintenance does not require it.
+- Python 3.8+ (typed JSON events, process-group supervision); a missing interpreter exits 2 before dispatch.
 - `setsid` or the Python fallback handles long-dispatch handoff.
 
 Install:
@@ -103,43 +96,3 @@ Install:
 ```
 
 The plugin never edits Codex rollout files under `~/.codex/sessions`.
-
-## Controls and evidence
-
-Every command that dispatches to Codex — `ask`, `research`, `review`, `plan`, `reply`,
-`debate`, `thread` — accepts `--model` and `--effort`. The first dispatch of a thread that names
-them records them in `<thread>.profile`, and later rounds reuse them, so a follow-up cannot
-silently run on another model; an explicit change is allowed and printed. Without any, Codex
-configuration applies. A thread also records the sandbox it was created with, and `/reply` and
-every later call use it: `ask`, `research` and `debate` threads stay read-only; `review`, `plan`
-and `thread` threads keep Codex's configured sandbox. A saved thread with no recorded sandbox
-resumes read-only. Prompts leave full
-suites, e2e and builds to the owner. `<thread>.last-usage.json` records the latest round's
-requested controls and observed token usage, and `<thread>.usage.jsonl` keeps every round;
-dollar cost stays unknown. Diagnostic tails printed to the caller mask API keys and tokens.
-A failed paid call may consume tokens even when its required-review slot is refunded.
-
-Required mechanics live in [required-review.md](skills/codex-triage/references/required-review.md).
-The header of a required prompt is generated by `review-state.sh header` and checked by
-`dispatch.sh` before the paid call (exit 14 when it differs). A `REQUEST_CHANGES` without a
-single `file:line` finding is `NO_FINDINGS` and does not spend an attempt; neither does an
-`--integration` round after merging the target into an approved candidate.
-The cap and divergence rules are in "At the cap" of that file. Existing valid test
-evidence can be reused until its inputs change. No live model eval is implied by offline CI.
-
-`research` accepts `--thread`, `--model`, `--effort`, and `--background`. It requests
-live web search on each call using Codex's [web search configuration](https://developers.openai.com/codex/config-basic/#web-search),
-uses the read-only shell sandbox, and returns cited conclusions with explicit limits.
-Provider/tool availability is checked through actual research, not inferred from a flag.
-The owner can supply missing evidence or write the requested report; research never
-produces a required-review approval. Continue a study with the same research thread.
-
-The internal skill routes requests, preserves task ownership and conversation history,
-validates review findings, reuses current evidence, and defines handoff/recovery. An
-already-authorized owner may invoke ask/research/plan/review/reply/debate without another
-permission question for each call, within the task and call budget. It can use status/list
-and retire owned idle advisory threads with reset, retaining the archive. Reset clears the review lifecycle, including
-its attempt count and approval; it grants no approval. Cap handling is owned by
-[required-review.md](skills/codex-triage/references/required-review.md).
-Arbitrary `/thread` dispatch remains user-invoked. These invocation controls follow
-[Claude Code skill frontmatter](https://code.claude.com/docs/en/skills).

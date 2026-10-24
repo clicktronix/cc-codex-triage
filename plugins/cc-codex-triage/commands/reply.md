@@ -37,8 +37,3 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
    ```
 
 6. Show the updated findings/verdict and link the full log. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
-
-## Notes
-
-- `/reply` only makes sense for a thread that already exists. If none does, you probably want `/ask`, `/review`, or `/plan` to start one.
-- Thread state is local to the current context.

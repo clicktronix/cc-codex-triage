@@ -6,9 +6,7 @@ allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 
 # /thread-new
 
-Drops the saved session UUID for the named thread so the next dispatch starts fresh. The Codex-side rollout file in `~/.codex/sessions/` is kept (Codex CLI manages those) — the context's plugin state is archived before its current session/approval is cleared.
-
-The reset also clears the thread's **required-review** state — `.candidate`, `.review-state`, `.review-loop`, and `.approved` — and starts a new lifecycle, discarding a recorded approval: the candidate must earn a fresh one.
+Retires the named thread's session so the next dispatch starts fresh. Plugin state is archived first; required-review state and any recorded approval are cleared, so the candidate must earn a fresh one. Codex rollout files in `~/.codex/sessions/` stay.
 
 ## Steps
 
@@ -17,9 +15,6 @@ The reset also clears the thread's **required-review** state — `.candidate`, `
 2. Inspect the thread's topic, log and task state first, and reset one thread at a time. Run:
 
    ```bash
-   # The driver holds the same active lease used by dispatch for the complete
-   # reset. A concurrent dispatch therefore wins or loses before any sidecar is
-   # removed; there is no reset-review-state, then delete-pointer TOCTOU gap.
    "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --reset-only </dev/null || exit $?
    echo "Thread '$THREAD' reset. The next command targeting it starts fresh."
    ```
