@@ -6,9 +6,7 @@ allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(
 
 # /review
 
-Send the intent and scope, not copied file contents. Codex can inspect the
-repository itself; pass the owner's test evidence, and leave full suites, e2e and
-builds to the owner (who runs them through its own heavy-check queue).
+Send intent, scope and test evidence per the skill's Prompt boundary.
 
 ## Options
 
@@ -21,17 +19,11 @@ builds to the owner (who runs them through its own heavy-check queue).
 - `--once`: one advisory pass. Without it, address validated blocking findings
   and resume until `APPROVE` or the cap.
 - `--model <m>`, `--effort <e>`: forwarded when supplied; the skill defines how a thread keeps them.
-- `--cap N`: maximum claimed review attempts, default 5. Required review
-  accepts only 1–5. `abort` returns an unrecorded claim's slot; a process loss
-  during claim publication stays fail-closed and may require `/thread-new`.
-  A refunded dispatch may still have incurred Codex cost; `--cap` does not
-  bound those calls.
+- `--cap N`: maximum claimed review attempts, default 5 (1–5 for `--required`).
+  `--cap` bounds claims, not Codex calls: a refunded dispatch may still have cost tokens.
 - `--background`: see the skill's Long dispatches; never gate-eligible.
 - `--required --base <ref> --spec <path>`: one foreground delivery-gate round.
   It cannot combine with `--once` or `--background`.
-
-Use one task per thread. If an existing thread is clearly about another task,
-choose a new explicit name instead of paying to resume unrelated history.
 
 ## Advisory review
 
@@ -53,9 +45,8 @@ choose a new explicit name instead of paying to resume unrelated history.
    valid findings. Push back with file:line evidence when a claim is wrong.
    Follow the shared skill's ownership contract for fixes, missing decisions and evidence.
 
-4. Iterate within the authorized budget. New problem classes call for systemic
-   replanning by the owner. At the cap, return outstanding findings and continue safe
-   repairs; a required review follows the cap rules in required-review.md.
+4. Iterate within the authorized budget. At the cap, return outstanding findings and
+   continue safe repairs; a required review follows "At the cap" in required-review.md.
 
 ## Required review
 

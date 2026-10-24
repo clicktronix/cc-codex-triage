@@ -18,8 +18,6 @@ Sends an informational question to a persistent Codex thread — the context-loc
    The rest is the question. See **Thread choice** below for which thread to target.
 
 2. Compose `$QUESTION`: prepend this framing to the user's question so Codex answers rather than acts.
-   A repository is optional context, not a precondition — a general question outside Git gets the
-   same framing and no project assumptions:
 
    ```
    Answer this question. When a repository is part of the context, you may read
@@ -38,8 +36,6 @@ Sends an informational question to a persistent Codex thread — the context-loc
      [--topic "<text>"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] <<< "$QUESTION"
    ```
 
-   `/ask` is a short foreground question; `/review`, `/plan` and `/debate` handle long runs.
-
 4. Answer with Codex's evidence and uncertainty; link the full log when summarizing.
 
 5. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
@@ -50,6 +46,5 @@ The default `ask` thread is context-wide — right for "is there already a helpe
 
 ## Notes
 
-- Thread state is local to the current context; default thread: `ask`.
 - A tracked-file status change reported by the driver may come from external worktree movement; attribute it to Codex only with evidence.
 - Writes are the owning workflow's job: this command only answers.

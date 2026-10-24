@@ -26,11 +26,11 @@ authorized owner.
 The invoking workflow owns implementation, native tasks, verification and delivery. Return
 validated findings to it; do not create issues/tasks per finding, waive acceptance, or run a
 second lifecycle. Standalone advisory commands may fix confirmed defects within the user's
-request. Scope follows the agreed outcome and defect causality, not file location, severity
-or finding count. Include regressions and dependencies needed to meet acceptance.
+request. Fix what the agreed outcome and the defect's cause require, wherever the file is and
+however many findings there are, including regressions and dependencies acceptance needs.
 
 Ask only for a missing product decision, access or waiver. Group related questions and continue
-available work. Routine architecture fixes and gathering missing evidence need no new permission.
+available work.
 Reuse applicable test evidence; request a new check only for a concrete gap or changed inputs.
 Coordinate heavy checks with the owner; do not spawn nested reviewers or workers by default.
 
@@ -39,13 +39,11 @@ authorization covers the bounded calls below without a question per invocation:
 
 - `/ask`, `/research`, `/reply`: one dispatch per call.
 - `/review`, `/plan`: iterate until `APPROVE` (for `/plan`, until only optional comments remain)
-  or the `--cap` (default 5). `--once` forces a single pass; a `--oneshot` call leaves no thread
-  to resume, so it is one pass too. `--background` changes where a call runs (see Long
-  dispatches), never how many passes follow.
+  or the `--cap` (default 5); `--once` and `--oneshot` each force one pass (see Terms).
 - `/debate`: its own `--rounds` ceiling.
 
 The agent may inspect `/status` and `/thread-list`, and retire its own idle obsolete
-threads with `/thread-new`. `/thread` is the user's.
+threads with `/thread-new`.
 
 ## Terms
 
@@ -53,7 +51,8 @@ threads with `/thread-new`. `/thread` is the user's.
 - **attempt**: a claimed required-review round that counts against its cap.
 - `--once`: the command makes a single pass instead of iterating. `--oneshot`: the driver
   runs an ephemeral Codex session with no thread state, for a question with no follow-up.
-  They are independent and may be combined.
+  They are independent and may be combined. `--background` changes where a call runs (see
+  Long dispatches), never how many passes follow.
 
 ## Threads
 
@@ -74,29 +73,25 @@ Dollar cost is unknown unless usage evidence shows it; report an unknown price a
 **Sandbox.** A thread keeps the sandbox it was created with, in its profile: `--read-only`
 at creation (`/ask`, `/research`, `/debate`) makes every later call on it read-only, including
 `/reply`; a thread created without it (`/review`, `/plan`, `/thread`) keeps running in Codex's
-configured sandbox. A call that passes `--read-only` applies it to that call only. A saved
-thread with no recorded sandbox (created by an older version) resumes read-only; retire it with
-`/thread-new` to choose again.
+configured sandbox. A call that passes `--read-only` applies it to that call only. A thread
+with no recorded sandbox resumes read-only.
 
 **Required-review threads.** Any dispatch to a thread that holds required-review state
-revokes its recorded approval. Each advisory command therefore runs
-`review-state.sh advisory-check "$THREAD" || exit $?` before dispatching, except for
-`--oneshot` (no thread state) and the two commands that handle the case themselves: `/reply`
-follows [required-review.md](references/required-review.md) for such a thread, and `/thread`
-is the user's, who accepts the revocation. On `REQUIRED_THREAD_RESERVED` (exit 10) the caller
+revokes its recorded approval, so advisory commands run
+`review-state.sh advisory-check "$THREAD" || exit $?` first. Skip it for `--oneshot` (no
+thread state), `/reply` (follows [required-review.md](references/required-review.md) for such
+a thread) and `/thread` (the user accepts the revocation). On `REQUIRED_THREAD_RESERVED` (exit 10) the caller
 targets a different `--thread`.
 
 **Recovery.** If resume exits 4, read the diagnostic and recover within existing
 authorization. When recovery needs a fresh session, retire an owned advisory thread with
 `/thread-new` (the archive is retained). For required review, reconcile the pending claim
 first, using the Recovery section of required-review.md. A busy thread (exit 10) is waited
-for. Another active task's thread and unresolved findings stay as they are. Report routine
-cleanup briefly; ask only when ownership or an outstanding user decision is unclear.
+for. Leave other tasks' threads and unresolved findings untouched.
 
 ## Exit codes
 
-On a non-zero exit, act per this table; the maintainer-level list is the header of
-`scripts/codex-thread.sh`.
+On a non-zero exit, act per this table.
 
 | Code | Meaning | Action |
 |---|---|---|
@@ -131,8 +126,7 @@ and tests when a repository is part of the task. Send only what it cannot infer:
 
 For research, return cited conclusions and uncertainty. For review, show findings
 and the exact final verdict; after fixes, summarize the delta and link
-the full thread log. Show the full answer when requested. Report tool failures instead
-of predicting output. Never rewrite REQUEST_CHANGES into APPROVE.
+the full thread log. Never rewrite REQUEST_CHANGES into APPROVE.
 
 ## Reviews
 
@@ -167,8 +161,5 @@ disagreement that remains.
 
 ## Done
 
-- The selected command matches the user's intent.
-- The answer or failure is shown without fabrication.
-- Review findings are verified before any fix.
 - Required approval is claimed only through `/review --required` and its exact
   machine marker, never inferred from prose or `/status`.

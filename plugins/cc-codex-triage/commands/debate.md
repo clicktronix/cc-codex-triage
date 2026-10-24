@@ -34,12 +34,8 @@ permission question. Repository context is optional.
 4. Synthesize agreement, remaining disagreement, what changed either position, and a
    recommendation. If another Codex synthesis call would exceed the ceiling, synthesize
    locally from the existing exchange. Never manufacture consensus or an approval marker.
-   The owner resolves routine technical choices and continues the task; ask the user
-   only for a missing product decision, access or waiver.
 
-For an agent-initiated debate, show the reason for it and the useful conclusion;
-retain the complete exchange in the thread log. Show labelled exchanges in full when
-the user requests to watch the debate. Avoid flooding the main run with repeated arguments.
+For an agent-initiated debate, show the reason and the conclusion; keep the full
+exchange in the thread log and show it in full only when the user asks to watch.
 
-Each dispatch may incur cost; the ceiling bounds calls, not dollars. Honor an
-already-authorized budget; request expansion only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
+Honor an already-authorized budget; request expansion only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

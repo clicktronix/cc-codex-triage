@@ -37,10 +37,8 @@ APPROVE loop or delivery marker.
    Do not invent citations, browsing, test results or a review approval.
    ```
 
-3. Dispatch using the existing wrapper. The live-search setting is requested explicitly
-   on initial and resumed calls; actual tool availability still depends on the provider.
-   If external tools are unavailable, return the evidence you could verify with that limit;
-   the owner can gather the missing sources with its own tools.
+3. Dispatch using the existing wrapper. The recipe requests live search on every call;
+   the provider decides tool availability.
 
    ```bash
    THREAD="${THREAD:-$("${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh" research)}"
@@ -50,7 +48,7 @@ APPROVE loop or delivery marker.
    ```
 
    `--model` / `--effort` are forwarded only when supplied. Report requested controls and
-   observed usage. One pass limits dispatch count, not tokens or elapsed time. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
+   observed usage. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
 
 4. Check consequential claims and citations before relying on them. Present a concise
    synthesis with supporting links and remaining uncertainty; retain the full thread

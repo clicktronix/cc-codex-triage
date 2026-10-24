@@ -32,10 +32,3 @@ Arbitrary named-thread variant of `/review` and `/plan` — a plain passthrough 
    ```
 
 5. Show Codex's reply verbatim. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
-
-## Notes
-
-- Thread state is local to the current worktree.
-- A thread keeps the sandbox it was created with; a dispatch to a thread that holds required-review state revokes its recorded approval (skill: Threads).
-- `/thread-list` shows all active named threads.
-- `/thread-new <name>` forces a fresh exec (loses prior memory).
