@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.15.1] - 2026-10-25
+
+### Changed
+- The README, `codex-triage/SKILL.md` and `references/required-review.md` state each rule once, at
+  its owner, and point there instead of restating it; the README no longer retells model, sandbox
+  and required-review mechanics. No command, flag or check changed (#13).
+
 ## [0.15.0] - 2026-10-22
 
 ### Changed
