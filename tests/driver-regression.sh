@@ -1170,13 +1170,14 @@ mkdir -p "$T/dtmp9" "$T/delayisol"
 # could never recreate the file and the assertion below could not fail.
 cat > "$T/delayisol/setsid" <<S
 #!/usr/bin/env bash
-echo \$\$ > "$T/sleeper.pid"
 ready=""; prev=""
 for a in "\$@"; do
   [[ "\$prev" == "--detach-child" ]] && { ready="\$a"; break; }
   prev="\$a"
 done
+# The test polls for the PID and then reads the ready path, so the path is written first.
 printf '%s' "\$ready" > "$T/d9.readypath"
+echo \$\$ > "$T/sleeper.pid"
 sleep 2
 printf '%s' "\$\$" > "\$ready"
 sleep 30
