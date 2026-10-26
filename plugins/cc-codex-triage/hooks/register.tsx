@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ReviewRow, Snapshot, ThreadRow } from '../types'
-import { ago, elapsed, fields, lastEvent, leasePid, rounds, splitStateName } from './parse'
+import { ago, clip, elapsed, fields, lastEvent, leasePid, rounds, splitStateName } from './parse'
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
@@ -17,12 +17,23 @@ const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, n
 
 type Files = Map<string, Map<Suffix, number>>
 
-async function readText($: EngineInterface, path: string): Promise<string> {
+async function readRaw($: EngineInterface, path: string): Promise<string> {
   try {
-    return (await $.fs.read(path)).trim()
+    return await $.fs.read(path)
   } catch {
     return ''
   }
+}
+
+async function readText($: EngineInterface, path: string): Promise<string> {
+  return (await readRaw($, path)).trim()
+}
+
+// The lease as the driver and thread-index.sh read it: `$(cat)` drops trailing
+// newlines and nothing else, so leasePid sees any other whitespace and refuses it.
+async function livePid($: EngineInterface, dir: string, name: string): Promise<string | null> {
+  const pid = leasePid((await readRaw($, `${dir}/${name}.active`)).replace(/\n+$/, ''))
+  return pid && (await isAlive($, pid)) ? pid : null
 }
 
 async function isAlive($: EngineInterface, pid: string): Promise<boolean> {
@@ -40,23 +51,30 @@ async function streamEvent($: EngineInterface, dir: string, thread: string, pid:
     stdin: event,
     timeoutMs: 5000,
   })
-  return redacted.exitCode === 0 ? redacted.stdout.trim() : null
+  return redacted.exitCode === 0 ? clip(redacted.stdout.trim(), 120) : null
 }
 
-async function threadRow($: EngineInterface, dir: string, name: string, files: Map<Suffix, number>) {
-  const lastActivityMs = files.get('log') ?? files.get('id') ?? 0
+function lastActivityMs(files: Map<Suffix, number>): number {
+  return files.get('log') ?? files.get('id') ?? 0
+}
+
+async function threadRow(
+  $: EngineInterface,
+  dir: string,
+  name: string,
+  files: Map<Suffix, number>,
+  pid: string | null,
+) {
   const row: ThreadRow = {
     name,
     topic: (await readText($, `${dir}/${name}.topic`)).split('\n')[0] ?? '',
     rounds: Number((await readText($, `${dir}/${name}.rounds`)).replace(/\D/g, '')) || 0,
-    lastActivityMs,
+    lastActivityMs: lastActivityMs(files),
     isBusy: false,
     startedAtMs: null,
     event: null,
   }
-  if (!files.has('active')) return row
-  const pid = leasePid(await readText($, `${dir}/${name}.active`))
-  if (!pid || !(await isAlive($, pid))) return row
+  if (!pid) return row
 
   return {
     ...row,
@@ -79,12 +97,25 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
     files.set(parsed.thread, own)
   }
 
+  // Liveness before the row cap: stale leases a SIGKILL left behind must not
+  // crowd a live dispatch out of the list.
+  const live = new Map<string, string>()
+  await Promise.all(
+    [...files]
+      .filter(([, own]) => own.has('active'))
+      .map(async ([name]) => {
+        const pid = await livePid($, dir, name)
+        if (pid) live.set(name, pid)
+      }),
+  )
   const recent = [...files]
     // A first dispatch has a lease but no .id until it completes.
-    .filter(([, own]) => own.has('id') || own.has('active'))
-    .sort(([, a], [, b]) => Number(b.has('active')) - Number(a.has('active')) || (b.get('log') ?? 0) - (a.get('log') ?? 0))
+    .filter(([name, own]) => own.has('id') || live.has(name))
+    .sort(([an, a], [bn, b]) => Number(live.has(bn)) - Number(live.has(an)) || lastActivityMs(b) - lastActivityMs(a))
     .slice(0, DETAILED)
-  const threads = await Promise.all(recent.map(([name, own]) => threadRow($, dir, name, own)))
+  const threads = await Promise.all(
+    recent.map(([name, own]) => threadRow($, dir, name, own, live.get(name) ?? null)),
+  )
 
   const reviews: ReviewRow[] = []
   for (const [name, own] of files) {
@@ -101,7 +132,9 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
   return { ...empty, threads: threads.sort((a, b) => Number(b.isBusy) - Number(a.isBusy)), reviews }
 }
 
-function finishedLine(thread: ThreadRow, reviews: ReviewRow[]): string {
+function finishedLine(name: string, thread: ThreadRow | undefined, reviews: ReviewRow[]): string {
+  // A first dispatch that fails leaves no .id, so its thread drops out of the scan.
+  if (!thread) return `Codex ${name}: dispatch ended without a saved round`
   const review = reviews.find(r => r.name === thread.name)
   const verdict = review && review.verdict !== '-' ? ` · ${review.verdict}` : ''
   return `Codex ${thread.name}: round ${thread.rounds} finished${verdict}`
@@ -146,7 +179,7 @@ async function tick($: EngineInterface, isForced = false) {
     }
     for (const before of previous?.threads ?? []) {
       const after = next.threads.find(t => t.name === before.name)
-      if (before.isBusy && after && !after.isBusy) $.ui.toast(finishedLine(after, next.reviews), { timeoutMs: 8000 })
+      if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
     }
     await update($, snapshot, () => next)
   } finally {
@@ -180,9 +213,15 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // Open the fast window before the call runs: a foreground dispatch holds this
+    // call for its whole length, and its lease lives only inside it.
+    const isTriage = e.command.includes('cc-codex-triage')
+    if (isTriage) {
+      hotUntilMs = (await $.clock.now()) + HOT_MS
+      void tick($, true)
+    }
     const ran = await next(e)
-    const command = e.command
-    if (command.includes('cc-codex-triage')) {
+    if (isTriage) {
       hotUntilMs = (await $.clock.now()) + HOT_MS
       void tick($, true)
     }

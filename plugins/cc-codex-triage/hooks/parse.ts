@@ -36,9 +36,14 @@ export function fields(text: string): Record<string, string> {
   return out
 }
 
-function oneLine(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+// Shortens a line that is already redacted: cutting first could leave a credential
+// shorter than redact.sh's patterns match, and so visible.
+export function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
 function shellCommand(command: string): string {
@@ -56,8 +61,8 @@ type CodexItem = {
   changes?: { path?: string }[]
 }
 
-// One line for the latest Codex event in a `codex exec --json` tail. Command
-// output is never shown: only what Codex runs, edits, searches or says.
+// One unshortened line for the latest Codex event in a `codex exec --json` tail.
+// Command output is never shown: only what Codex runs, edits, searches or says.
 export function lastEvent(jsonl: string): string | null {
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -75,17 +80,17 @@ export function lastEvent(jsonl: string): string | null {
     const done = event.type === 'item.completed'
     switch (item.type) {
       case 'command_execution':
-        return `${done ? 'ran' : 'runs'}: ${oneLine(shellCommand(item.command ?? ''), 80)}`
+        return `${done ? 'ran' : 'runs'}: ${oneLine(shellCommand(item.command ?? ''))}`
       case 'file_change':
         return `edits ${item.changes?.map(c => c.path).filter(Boolean).join(', ') || 'files'}`
       case 'mcp_tool_call':
         return `calls ${item.server ?? '?'}.${item.tool ?? '?'}`
       case 'web_search':
-        return `searches: ${oneLine(item.query ?? '', 60)}`
+        return `searches: ${oneLine(item.query ?? '')}`
       case 'reasoning':
         return 'thinking'
       case 'agent_message':
-        return done ? `says: ${oneLine(item.text ?? '', 80)}` : 'writing a reply'
+        return done ? `says: ${oneLine(item.text ?? '')}` : 'writing a reply'
       case 'todo_list':
         return 'updates its plan'
     }
