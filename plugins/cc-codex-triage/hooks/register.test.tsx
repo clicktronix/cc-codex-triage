@@ -40,7 +40,14 @@ const BAND = {
   },
 } as const
 
-function world(on: On, files: Record<string, string>, alive: Set<string>, isPaneShown = true, stream = EVENTS) {
+function world(
+  on: On,
+  files: Record<string, string>,
+  alive: Set<string>,
+  isPaneShown = true,
+  stream = EVENTS,
+  faults = { isListBroken: false },
+) {
   const toasts: string[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo' }))
@@ -55,7 +62,9 @@ function world(on: On, files: Record<string, string>, alive: Set<string>, isPane
     return { value: undefined }
   })
   on('fs.exists', (_, e) => ({ value: e.path === DIR }))
-  on('fs.list', () => ({
+  on('fs.list', () => {
+    if (faults.isListBroken) return { deny: 'EIO' }
+    return {
     value: Object.keys(files).map(name => ({
       name,
       kind: 'file' as const,
@@ -63,7 +72,8 @@ function world(on: On, files: Record<string, string>, alive: Set<string>, isPane
       mtimeMs: name.endsWith('.active') ? START - 75_000 : START - 3_600_000,
       isLink: false,
     })),
-  }))
+    }
+  })
   on('fs.read', (_, e) => {
     const name = e.path.slice(DIR.length + 1)
     const text = e.path.startsWith(`${DIR}/`) ? files[name] : undefined
@@ -270,5 +280,20 @@ describe('mod', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Text', text: /●/ })).toBeUndefined()
     await ui.unmount()
+  })
+
+  test('a failed scan keeps the last known dispatch and announces nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const faults = { isListBroken: false }
+    const toasts = world(on, FILES, new Set(['4242']), true, EVENTS, faults)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    faults.isListBroken = true
+    await clock.advance(2000)
+    expect(toasts).toEqual([])
+    const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await band.find({ type: 'Text', text: /review-a\.b/ })).toBeDefined()
+    await band.unmount()
   })
 })

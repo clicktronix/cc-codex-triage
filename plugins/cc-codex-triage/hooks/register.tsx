@@ -175,7 +175,11 @@ async function tick($: EngineInterface, isForced = false) {
     try {
       next = await scan($, await resolveStateDir($), now)
     } catch (error) {
-      next = { atMs: now, stateDir: stateDir?.dir ?? null, threads: [], reviews: [], error: String(error) }
+      // A failed scan says nothing about the threads: keep what was last seen, so
+      // a running dispatch is neither dropped nor announced as finished.
+      const kept = previous ?? { atMs: now, stateDir: stateDir?.dir ?? null, threads: [], reviews: [], error: null }
+      await update($, snapshot, () => ({ ...kept, error: String(error) }))
+      return
     }
     for (const before of previous?.threads ?? []) {
       const after = next.threads.find(t => t.name === before.name)
@@ -257,10 +261,10 @@ export const register: Register = on => {
     const cut = (text: string) => (text.length > width ? `${text.slice(0, width - 1)}…` : text)
 
     if (!shot) return <Text dimColor>Reading Codex threads…</Text>
-    if (shot.error) return <Text color="red">{cut(shot.error)}</Text>
 
     return (
       <Box flexDirection="column">
+        {shot.error && <Text color="red">{cut(`Last scan failed: ${shot.error}`)}</Text>}
         {shot.threads.length === 0 && <Text dimColor>No Codex threads in this context.</Text>}
         {shot.threads.map(t => (
           <Box flexDirection="column">
