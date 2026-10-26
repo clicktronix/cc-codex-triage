@@ -235,8 +235,14 @@ for f in "$ROOT"/plugins/cc-codex-triage/skills/*/SKILL.md; do
   check_manifest "$f" name description
 done
 
-[[ ! -e "$ROOT/plugins/cc-codex-triage/hooks/hooks.json" ]] \
-  && ok || bad "optional Stop-hook subsystem was re-registered"
+# hooks.json carries the threads-pane mod only. Its `hooks` record stays empty (older
+# Claude Code requires the key) so no settings hook, such as the removed Stop-hook
+# subsystem, comes back with it.
+python3 - "$ROOT/plugins/cc-codex-triage/hooks/hooks.json" <<'PY' && ok || bad "hooks.json registers settings hooks or another module"
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d == {"hooks": {}, "modules": ["./register.tsx"]} else 1)
+PY
 
 echo "== required runtime helpers =="
 for helper in scripts/review-state.sh scripts/codex-thread.sh scripts/dir-lock.sh scripts/round-counter.sh \

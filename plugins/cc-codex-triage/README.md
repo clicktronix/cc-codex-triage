@@ -25,6 +25,20 @@ An already-authorized workflow may call every command except `/thread`, which st
 user-invoked. The owner retains tasks, fixes and delivery; the bridge does not create
 backlog items. Details: [SKILL.md](skills/codex-triage/SKILL.md).
 
+## Threads pane
+
+In the Claude Code CLI (2.1.287 or later, which loads mods), the plugin's mod shows the
+current context's Codex threads without a model turn. `/codex-pane` opens or closes a
+pane listing each thread with its rounds, last activity and topic, the in-flight
+dispatch first with its round, running time and what Codex is doing now (the command it
+runs, the file it edits or the reply it writes), and the required-review states. While a
+dispatch runs, one line above the prompt says the same; a toast reports when it ends.
+
+The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
+stream through `tail`, and `kill -0` on a lease PID. Command output is never shown and
+event text passes through `redact.sh`. It makes no network calls and draws nothing
+outside the terminal, since `$.process` is CLI-only.
+
 ## Required review
 
 Required review binds one exact clean candidate (base, tracked spec, HEAD, tree) to a

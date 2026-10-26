@@ -31,8 +31,10 @@ The available commands are `/ask`, `/research`, `/review`, `/plan`, `/reply`, `/
 plugins/cc-codex-triage/
   .claude-plugin/plugin.json
   commands/
+  hooks/            # threads-pane mod: register.tsx, parse.ts, register.test.tsx
   skills/codex-triage/
   scripts/
+  types/            # the mod's $.state contract
 tests/
   driver-regression.sh
   review-contract-regression.sh
@@ -51,6 +53,13 @@ cover the product routes and required gate.
 ```bash
 bash tests/run.sh
 ```
+
+`run.sh` needs the `claude` CLI: it runs `claude plugin validate --strict` and
+`claude plugin test` on the mod. To type-check the mod, load it once with
+`claude --plugin-dir plugins/cc-codex-triage` (Claude Code then lays its types and a
+`tsconfig.json` beside it, both ignored by Git) and run
+`bunx -p typescript@5.9.3 tsc -p plugins/cc-codex-triage`. TypeScript before 5.9 stops
+on the depth of the engine's types.
 
 This repository intentionally packages a Claude Code plugin only. Codex CLI is
 the callee, not the host.

@@ -2,3 +2,6 @@
 node_modules/
 *.log
 /tmp-test/
+# Laid by Claude Code when it loads the mod from a folder
+plugins/cc-codex-triage/.claude-plugin/types/
+plugins/cc-codex-triage/tsconfig.json
