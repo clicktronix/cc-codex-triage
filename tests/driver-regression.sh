@@ -22,6 +22,7 @@ cat > "$T/bin/codex" <<'STUB'
 # thread.started JSONL line. FAKE_CODEX_SPACED=1 emits "key": "value" with a
 # space after the colon (the formatting the old awk offsets silently broke on).
 # FAKE_CODEX_SLEEP=<s>  sleep before replying (lease-lifecycle tests).
+# FAKE_CODEX_HOLD=<s>   sleep after the first event, so a test can read a live stream.
 # FAKE_CODEX_BIGERR=1   emit >64KB of stderr noise (diag-cap test).
 # FAKE_CODEX_NOUUID=1   exit 0 but emit no recognizable session UUID.
 # FAKE_CODEX_NOEOL=1    write the reply WITHOUT a trailing newline. The real CLI can
@@ -56,6 +57,7 @@ elif [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
 else
   echo '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}'
 fi
+[[ "${FAKE_CODEX_HOLD:-0}" != "0" ]] && sleep "$FAKE_CODEX_HOLD"
 if [[ -n "$out" ]]; then
   if [[ "${FAKE_CODEX_NOEOL:-0}" == "1" ]]; then
     printf '%s' "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
@@ -390,7 +392,7 @@ grep -q '^  FAKE_REPLY$' "$SD/a8.log" 2>/dev/null && ok "the reply body is in th
 
 echo "== lease: .active holds the dispatching PID during dispatch, gone after =="
 rm -rf "$SD"
-FAKE_CODEX_SLEEP=2 bash "$DRIVER" a9 <<< "ping" > "$T/a9.out" 2>&1 &
+FAKE_CODEX_SLEEP=1 FAKE_CODEX_HOLD=3 bash "$DRIVER" a9 <<< "ping" > "$T/a9.out" 2>&1 &
 DRV=$!
 i=0; while [[ ! -f "$SD/a9.active" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
 [[ -f "$SD/a9.active" ]] && ok "lease appeared during dispatch" || bad "lease never appeared"
