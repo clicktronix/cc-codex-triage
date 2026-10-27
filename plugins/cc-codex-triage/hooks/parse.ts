@@ -52,26 +52,22 @@ function shellCommand(command: string): string {
 }
 
 const PROGRAM = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
-const SUBCOMMAND = /^[a-z][a-z-]{0,19}$/
-const FILE = /^[A-Za-z0-9][A-Za-z0-9._/-]*\.[a-z]{1,5}$/
+const SCRIPT = /^[A-Za-z0-9][A-Za-z0-9._/-]*\.[a-z]{1,5}$/
+const INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'python', 'python3', 'node', 'bun', 'deno', 'ruby', 'perl'])
 
 function base(word: string): string {
   return word.slice(word.lastIndexOf('/') + 1)
 }
 
-// What a command is, never what it carries: its program, then up to two words
-// that read as a subcommand or a file name. Credentials ride in arguments, URLs
-// and assignments, which no pattern list catches in full, so none of those is shown.
+// What a command is, never what it carries: the program, and for an interpreter
+// the script it runs. Any other word may be a credential (`redis-cli auth <pw>`
+// reads like a subcommand), so none is shown.
 export function commandSummary(command: string): string {
   const words = oneLine(shellCommand(command)).split(' ')
-  const [program] = words
+  const [program, next] = words
   if (!program || !PROGRAM.test(program)) return '…'
   const shown = [base(program)]
-  for (const word of words.slice(1, 3)) {
-    if (SUBCOMMAND.test(word)) shown.push(word)
-    else if (FILE.test(word)) shown.push(base(word))
-    else break
-  }
+  if (INTERPRETERS.has(base(program)) && next && SCRIPT.test(next)) shown.push(base(next))
   return shown.length < words.length ? `${shown.join(' ')} …` : shown.join(' ')
 }
 

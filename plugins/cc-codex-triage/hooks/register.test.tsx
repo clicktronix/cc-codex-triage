@@ -6,6 +6,7 @@ import { commandSummary, isStreamPath, lastEvent, leasePid, splitStateName } fro
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
 const START = 1_800_000_000_000
+const tailed: string[] = []
 
 const EVENTS = [
   '{"type":"thread.started","thread_id":"01a179cb-bf55-7af1-b216-fc71b6980e63"}',
@@ -49,6 +50,7 @@ function world(
   faults = { isListBroken: false },
 ) {
   const toasts: string[] = []
+  tailed.length = 0
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo' }))
   on('command.register', () => ({ value: { command: 'codex-pane' } }))
@@ -62,11 +64,8 @@ function world(
     return { value: undefined }
   })
   on('fs.exists', (_, e) => ({ value: e.path === DIR }))
-  on('fs.stat', (_, e) =>
-    e.path === STREAM
-      ? { value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: false } }
-      : { deny: `ENOENT ${e.path}` },
-  )
+  // Every path is an existing regular file, so only the mod's own checks stop a read.
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: false } }))
   on('fs.list', () => {
     if (faults.isListBroken) return { deny: 'EIO' }
     return {
@@ -99,7 +98,10 @@ function world(
       return done((e.init?.stdin ?? '').replace(/([Bb]earer )[A-Za-z0-9._~+/-]{12,}=*/g, '$1[redacted]'))
     }
     if (cmd === 'kill') return done('', alive.has(e.argv[2] ?? '') ? 0 : 1)
-    if (cmd === 'tail') return done(stream)
+    if (cmd === 'tail') {
+      tailed.push(e.argv[3] ?? '')
+      return done(stream)
+    }
     return done('', 1)
   })
   return toasts
@@ -127,17 +129,19 @@ describe('parse', () => {
   })
 
   test('a command shows its program and plain words only, never its arguments', async () => {
-    expect(commandSummary("/bin/zsh -lc 'npm test -- auth'")).toBe('npm test …')
+    expect(commandSummary("/bin/zsh -lc 'npm test -- auth'")).toBe('npm …')
     expect(commandSummary('bash tests/driver-regression.sh')).toBe('bash driver-regression.sh')
-    expect(commandSummary('git status')).toBe('git status')
+    expect(commandSummary('git status')).toBe('git …')
+    expect(commandSummary('python3 scripts/check.py --fast')).toBe('python3 check.py …')
     const secrets = [
       'curl -u alice:SYNTHETIC_PASSWORD https://example.test',
       'psql postgresql://app:SYNTHETIC_PASSWORD@db.internal/app',
       'aws configure set aws_secret_access_key SYNTHETICabc123SECRET',
       'mytool SYNTHETIC9secret8TOKEN',
       'API_KEY=SYNTHETIC123 node run.js',
+      'redis-cli auth synthetichunter',
     ]
-    for (const command of secrets) expect(commandSummary(command)).not.toContain('SYNTHETIC')
+    for (const command of secrets) expect(commandSummary(command).toUpperCase()).not.toContain('SYNTHETIC')
   })
 
   test('only a driver-shaped stream path is read', async () => {
@@ -155,7 +159,7 @@ describe('parse', () => {
   })
 
   test('the latest event wins, and command output is never shown', async () => {
-    expect(lastEvent(EVENTS)).toBe('runs: npm test …')
+    expect(lastEvent(EVENTS)).toBe('runs: npm …')
     const finished = `${EVENTS}\n{"type":"item.completed","item":{"type":"agent_message","text":"found password=hunter2 in .env"}}`
     expect(lastEvent(finished)).toBe('replied')
     expect(lastEvent('{"type":"item.completed","item":{"type":"error","message":"warn"}}\nnot json')).toBe(null)
@@ -172,7 +176,7 @@ describe('mod', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts[0]).toBe('● review-a.b · round 3 · 1:15')
-    expect(texts).toContain('  runs: npm test …')
+    expect(texts).toContain('  runs: npm …')
     expect(texts).toContain('○ plan-x · 5 rounds · 1h ago')
     expect(texts).toContain('review-a.b · PENDING · -')
     await ui.unmount()
@@ -187,7 +191,7 @@ describe('mod', () => {
 
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect((await band.find({ type: 'Text', text: /review-a\.b/ }))?.text).toBe(
-      ' · review-a.b · round 3 · 1:15 · runs: npm test …',
+      ' · review-a.b · round 3 · 1:15 · runs: npm …',
     )
     await band.unmount()
 
@@ -333,6 +337,7 @@ describe('mod', () => {
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Text', text: /runs:/ })).toBeUndefined()
+    expect(tailed).toEqual([])
     await ui.unmount()
   })
 })

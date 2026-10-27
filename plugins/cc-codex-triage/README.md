@@ -35,9 +35,8 @@ runs, the file it edits, or that it is replying), and the required-review states
 dispatch runs, one line above the prompt says the same; a toast reports when it ends.
 
 The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
-stream through `tail`, and `kill -0` on a lease PID. A command shows as its program and
-at most two plain words after it (`npm test …`), never its arguments, URLs or
-assignments; reply text and command output are never shown, and what is shown still
+stream through `tail`, and `kill -0` on a lease PID. A command shows as its program alone
+(`npm …`), or for an interpreter its script (`bash check.sh`), never its arguments; reply text and command output are never shown, and what is shown still
 passes through `redact.sh`. The stream is followed only at the driver's own
 `cc-codex-<thread>.XXXXXX.jsonl` name, as a regular file. It makes no network calls and
 draws nothing outside the terminal, since `$.process` is CLI-only.
