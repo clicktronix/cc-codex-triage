@@ -1,10 +1,10 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { lastEvent, leasePid, splitStateName } from './parse'
+import { commandSummary, isStreamPath, lastEvent, leasePid, splitStateName } from './parse'
 
 const DIR = '/repo/.git/cc-codex-triage/threads'
-const STREAM = '/tmp/cc-codex-review-a.b.X.jsonl'
+const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
 const START = 1_800_000_000_000
 
 const EVENTS = [
@@ -62,6 +62,11 @@ function world(
     return { value: undefined }
   })
   on('fs.exists', (_, e) => ({ value: e.path === DIR }))
+  on('fs.stat', (_, e) =>
+    e.path === STREAM
+      ? { value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: false } }
+      : { deny: `ENOENT ${e.path}` },
+  )
   on('fs.list', () => {
     if (faults.isListBroken) return { deny: 'EIO' }
     return {
@@ -94,7 +99,7 @@ function world(
       return done((e.init?.stdin ?? '').replace(/([Bb]earer )[A-Za-z0-9._~+/-]{12,}=*/g, '$1[redacted]'))
     }
     if (cmd === 'kill') return done('', alive.has(e.argv[2] ?? '') ? 0 : 1)
-    if (cmd === 'tail' && e.argv[3] === STREAM) return done(stream)
+    if (cmd === 'tail') return done(stream)
     return done('', 1)
   })
   return toasts
@@ -121,15 +126,38 @@ describe('parse', () => {
     expect(splitStateName('plan-x.archive.ab12')).toBe(null)
   })
 
+  test('a command shows its program and plain words only, never its arguments', async () => {
+    expect(commandSummary("/bin/zsh -lc 'npm test -- auth'")).toBe('npm test …')
+    expect(commandSummary('bash tests/driver-regression.sh')).toBe('bash driver-regression.sh')
+    expect(commandSummary('git status')).toBe('git status')
+    const secrets = [
+      'curl -u alice:SYNTHETIC_PASSWORD https://example.test',
+      'psql postgresql://app:SYNTHETIC_PASSWORD@db.internal/app',
+      'aws configure set aws_secret_access_key SYNTHETICabc123SECRET',
+      'mytool SYNTHETIC9secret8TOKEN',
+      'API_KEY=SYNTHETIC123 node run.js',
+    ]
+    for (const command of secrets) expect(commandSummary(command)).not.toContain('SYNTHETIC')
+  })
+
+  test('only a driver-shaped stream path is read', async () => {
+    expect(isStreamPath('review-a.b', '/var/folders/x/T/cc-codex-review-a.b.Ab12Cd.jsonl')).toBe(true)
+    expect(isStreamPath('review-a.b', '/repo/.git/cc-codex-triage/threads/review-a.b.last-error.jsonl')).toBe(false)
+    expect(isStreamPath('review-a.b', '/tmp/cc-codex-review-a.b.last-error.jsonl')).toBe(false)
+    expect(isStreamPath('review-a.b', '/tmp/cc-codex-other.Ab12Cd.jsonl')).toBe(false)
+    expect(isStreamPath('review-a.b', 'cc-codex-review-a.b.Ab12Cd.jsonl')).toBe(false)
+    expect(isStreamPath('review-a.b', '/tmp/../etc/cc-codex-review-a.b.Ab12Cd.jsonl')).toBe(false)
+  })
+
   test('the lease grammar takes no repair', async () => {
     expect(leasePid('4242')).toBe('4242')
     for (const bad of ['0', '0123', ' 42', '42\n', '1234567890123', 'abc']) expect(leasePid(bad)).toBe(null)
   })
 
   test('the latest event wins, and command output is never shown', async () => {
-    expect(lastEvent(EVENTS)).toBe('runs: npm test -- auth')
-    const finished = `${EVENTS}\n{"type":"item.completed","item":{"type":"agent_message","text":"APPROVE\\n\\nno findings"}}`
-    expect(lastEvent(finished)).toBe('says: APPROVE no findings')
+    expect(lastEvent(EVENTS)).toBe('runs: npm test …')
+    const finished = `${EVENTS}\n{"type":"item.completed","item":{"type":"agent_message","text":"found password=hunter2 in .env"}}`
+    expect(lastEvent(finished)).toBe('replied')
     expect(lastEvent('{"type":"item.completed","item":{"type":"error","message":"warn"}}\nnot json')).toBe(null)
   })
 })
@@ -144,7 +172,7 @@ describe('mod', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts[0]).toBe('● review-a.b · round 3 · 1:15')
-    expect(texts).toContain('  runs: npm test -- auth')
+    expect(texts).toContain('  runs: npm test …')
     expect(texts).toContain('○ plan-x · 5 rounds · 1h ago')
     expect(texts).toContain('review-a.b · PENDING · -')
     await ui.unmount()
@@ -159,7 +187,7 @@ describe('mod', () => {
 
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect((await band.find({ type: 'Text', text: /review-a\.b/ }))?.text).toBe(
-      ' · review-a.b · round 3 · 1:15 · runs: npm test -- auth',
+      ' · review-a.b · round 3 · 1:15 · runs: npm test …',
     )
     await band.unmount()
 
@@ -198,7 +226,7 @@ describe('mod', () => {
     await ui.unmount()
   })
 
-  test('a credential is redacted before the event line is shortened', async ($, on) => {
+  test('a credential in a command never reaches the band', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const head = "curl -H 'X-Pad: "
     const tail = "' -H 'Authorization: Bearer "
@@ -211,7 +239,7 @@ describe('mod', () => {
 
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
     const line = (await band.find({ type: 'Text', text: /review-a\.b/ }))?.text ?? ''
-    expect(line).toContain('Bearer [redacted]')
+    expect(line).toContain('runs: curl …')
     expect(line).not.toContain('SYNTHETI')
     await band.unmount()
   })
@@ -295,5 +323,16 @@ describe('mod', () => {
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await band.find({ type: 'Text', text: /review-a\.b/ })).toBeDefined()
     await band.unmount()
+  })
+
+  test('a stream pointer outside the driver naming is not read', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, { ...FILES, 'review-a.b.stream': `pid=4242\npath=${DIR}/plan-x.log\n` }, new Set(['4242']))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /runs:/ })).toBeUndefined()
+    await ui.unmount()
   })
 })

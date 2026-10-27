@@ -30,14 +30,17 @@ backlog items. Details: [SKILL.md](skills/codex-triage/SKILL.md).
 In the Claude Code CLI (2.1.287 or later, which loads mods), the plugin's mod shows the
 current context's Codex threads without a model turn. `/codex-pane` opens or closes a
 pane listing each thread with its rounds, last activity and topic, the in-flight
-dispatch first with its round, running time and what Codex is doing now (the command it
-runs, the file it edits or the reply it writes), and the required-review states. While a
+dispatch first with its round, running time and what Codex is doing now (the program it
+runs, the file it edits, or that it is replying), and the required-review states. While a
 dispatch runs, one line above the prompt says the same; a toast reports when it ends.
 
 The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
-stream through `tail`, and `kill -0` on a lease PID. Command output is never shown and
-event text passes through `redact.sh`. It makes no network calls and draws nothing
-outside the terminal, since `$.process` is CLI-only.
+stream through `tail`, and `kill -0` on a lease PID. A command shows as its program and
+at most two plain words after it (`npm test …`), never its arguments, URLs or
+assignments; reply text and command output are never shown, and what is shown still
+passes through `redact.sh`. The stream is followed only at the driver's own
+`cc-codex-<thread>.XXXXXX.jsonl` name, as a regular file. It makes no network calls and
+draws nothing outside the terminal, since `$.process` is CLI-only.
 
 ## Required review
 

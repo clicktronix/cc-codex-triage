@@ -51,6 +51,39 @@ function shellCommand(command: string): string {
   return wrapped?.[2] ?? command
 }
 
+const PROGRAM = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
+const SUBCOMMAND = /^[a-z][a-z-]{0,19}$/
+const FILE = /^[A-Za-z0-9][A-Za-z0-9._/-]*\.[a-z]{1,5}$/
+
+function base(word: string): string {
+  return word.slice(word.lastIndexOf('/') + 1)
+}
+
+// What a command is, never what it carries: its program, then up to two words
+// that read as a subcommand or a file name. Credentials ride in arguments, URLs
+// and assignments, which no pattern list catches in full, so none of those is shown.
+export function commandSummary(command: string): string {
+  const words = oneLine(shellCommand(command)).split(' ')
+  const [program] = words
+  if (!program || !PROGRAM.test(program)) return '…'
+  const shown = [base(program)]
+  for (const word of words.slice(1, 3)) {
+    if (SUBCOMMAND.test(word)) shown.push(word)
+    else if (FILE.test(word)) shown.push(base(word))
+    else break
+  }
+  return shown.length < words.length ? `${shown.join(' ')} …` : shown.join(' ')
+}
+
+// The driver's stream is `mktemp "$TMPDIR/cc-codex-<thread>.XXXXXX"` plus `.jsonl`;
+// a pointer naming anything else is not followed.
+export function isStreamPath(thread: string, path: string): boolean {
+  if (!path.startsWith('/') || path.split('/').includes('..')) return false
+  const name = base(path)
+  const prefix = `cc-codex-${thread}.`
+  return name.startsWith(prefix) && /^[A-Za-z0-9]{6}\.jsonl$/.test(name.slice(prefix.length))
+}
+
 type CodexItem = {
   type?: string
   command?: string
@@ -62,7 +95,7 @@ type CodexItem = {
 }
 
 // One unshortened line for the latest Codex event in a `codex exec --json` tail.
-// Command output is never shown: only what Codex runs, edits, searches or says.
+// Command output and reply text are never shown: only what kind of step runs.
 export function lastEvent(jsonl: string): string | null {
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -80,7 +113,7 @@ export function lastEvent(jsonl: string): string | null {
     const done = event.type === 'item.completed'
     switch (item.type) {
       case 'command_execution':
-        return `${done ? 'ran' : 'runs'}: ${oneLine(shellCommand(item.command ?? ''))}`
+        return `${done ? 'ran' : 'runs'}: ${commandSummary(item.command ?? '')}`
       case 'file_change':
         return `edits ${item.changes?.map(c => c.path).filter(Boolean).join(', ') || 'files'}`
       case 'mcp_tool_call':
@@ -90,7 +123,7 @@ export function lastEvent(jsonl: string): string | null {
       case 'reasoning':
         return 'thinking'
       case 'agent_message':
-        return done ? `says: ${oneLine(item.text ?? '')}` : 'writing a reply'
+        return done ? 'replied' : 'writing a reply'
       case 'todo_list':
         return 'updates its plan'
     }

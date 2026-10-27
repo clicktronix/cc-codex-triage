@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ReviewRow, Snapshot, ThreadRow } from '../types'
-import { ago, clip, elapsed, fields, lastEvent, leasePid, rounds, splitStateName } from './parse'
+import { ago, clip, elapsed, fields, isStreamPath, lastEvent, leasePid, rounds, splitStateName } from './parse'
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
@@ -43,7 +43,9 @@ async function isAlive($: EngineInterface, pid: string): Promise<boolean> {
 
 async function streamEvent($: EngineInterface, dir: string, thread: string, pid: string) {
   const pointer = fields(await readText($, `${dir}/${thread}.stream`))
-  if (pointer.pid !== pid || !pointer.path) return null
+  if (pointer.pid !== pid || !pointer.path || !isStreamPath(thread, pointer.path)) return null
+  const stat = await $.fs.stat(pointer.path).catch(() => null)
+  if (stat?.kind !== 'file' || stat.isLink) return null
   const tail = await $.process.run(['tail', '-c', '32768', pointer.path], { timeoutMs: 5000 })
   const event = tail.exitCode === 0 ? lastEvent(tail.stdout) : null
   if (!event) return null
