@@ -6,6 +6,7 @@ import { ago, clip, elapsed, fields, isStreamPath, lastEvent, leasePid, rounds, 
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
+const PANE_COLUMNS = 48
 const TICK_MS = 2000
 const IDLE_EVERY = 8
 const HOT_MS = 60_000
@@ -212,7 +213,7 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: 'Codex threads pane closed.' }
     }
-    await $.ui.open({ id: PANE, title: 'Codex' })
+    await $.ui.open({ id: PANE, title: 'Codex', columns: PANE_COLUMNS })
     await tick($, true)
 
     return { text: 'Codex threads pane opened.' }

@@ -29,7 +29,8 @@ backlog items. Details: [SKILL.md](skills/codex-triage/SKILL.md).
 
 In the Claude Code CLI (2.1.287 or later, which loads mods), the plugin's mod shows the
 current context's Codex threads without a model turn. `/codex-pane` opens or closes a
-pane listing each thread with its rounds, last activity and topic, the in-flight
+48-column pane (`ctrl+x tab` focuses it, then `ctrl+x left` or `ctrl+x right` widens or
+narrows it) listing each thread with its rounds, last activity and topic, the in-flight
 dispatch first with its round, running time and what Codex is doing now (the program it
 runs, the file it edits, or that it is replying), and the required-review states. While a
 dispatch runs, one line above the prompt says the same; a toast reports when it ends.

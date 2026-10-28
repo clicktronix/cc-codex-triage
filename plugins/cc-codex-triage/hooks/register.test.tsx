@@ -182,6 +182,27 @@ describe('mod', () => {
     await ui.unmount()
   })
 
+  test('the pane asks for a narrow dock when the person opens it', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, FILES, new Set(), false)
+    const opened: { id: string; columns?: number }[] = []
+    on('ui.open', (_, e) => {
+      opened.push({ id: e.id, columns: e.columns })
+      return { value: { isPlaced: true } }
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const { text } = await $.command.run({
+      command: 'codex-pane',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+    expect(text).toBe('Codex threads pane opened.')
+    expect(opened).toEqual([{ id: 'codex-threads', columns: 48 }])
+  })
+
   test('the band shows a running dispatch and steps aside when none runs', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const alive = new Set(['4242'])
