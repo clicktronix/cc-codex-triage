@@ -11,6 +11,8 @@ const TICK_MS = 2000
 const IDLE_EVERY = 8
 const HOT_MS = 60_000
 const DETAILED = 12
+// Each read is held to the engine's 4 MiB of process output.
+const LOG_TAIL_BYTES = [65_536, 524_288, 4_194_304]
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
   shape: 'snapshot-2',
@@ -140,22 +142,30 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
   return { ...empty, threads: threads.sort((a, b) => Number(b.isBusy) - Number(a.isBusy)), reviews }
 }
 
-// The whole log, not a tail: the driver rotates it past 1 MB only before a round, so a
-// tail of any fixed size can cut the latest REPLY marker off a long reply. Every shown
-// line passes through redact.sh. Null is a read that failed and may be tried again.
+// The log's end, widened until it holds the latest whole REPLY section: a long reply
+// outgrows a short tail, and a whole log may outgrow one engine read. A tail shorter than
+// the file drops its first line, which may begin mid-line and so look like a marker.
+// Every shown line passes through redact.sh. Null is a read that failed and may be tried again.
 async function loadReply($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply | null> {
   const ready: Reply = { thread, forMs, status: 'ready', lines: null }
   const path = `${dir}/${thread}.log`
   try {
     const stat = await $.fs.stat(path)
     if (stat.kind !== 'file' || stat.isLink) return ready
-    const text = lastReply(await $.fs.read(path))
-    if (!text) return ready
-    const redacted = await $.process.run(['bash', `${$.plugin.root}/scripts/redact.sh`], {
-      stdin: text,
-      timeoutMs: 5000,
-    })
-    return redacted.exitCode === 0 ? { ...ready, lines: redacted.stdout.replace(/\s+$/, '').split('\n') } : null
+    for (const bytes of LOG_TAIL_BYTES) {
+      const tail = await $.process.run(['tail', '-c', String(bytes), path], { timeoutMs: 5000 })
+      if (tail.exitCode !== 0) return null
+      const isWhole = stat.size <= bytes
+      const text = lastReply(isWhole ? tail.stdout : tail.stdout.slice(tail.stdout.indexOf('\n') + 1))
+      if (text === null && !isWhole) continue
+      if (!text) return ready
+      const redacted = await $.process.run(['bash', `${$.plugin.root}/scripts/redact.sh`], {
+        stdin: text,
+        timeoutMs: 5000,
+      })
+      return redacted.exitCode === 0 ? { ...ready, lines: redacted.stdout.replace(/\s+$/, '').split('\n') } : null
+    }
+    return ready
   } catch {
     return null
   }
@@ -179,7 +189,7 @@ async function showReply($: EngineInterface, dir: string, thread: string, forMs:
   const loaded = await replyFor($, dir, thread, forMs)
   await update($, reply, open =>
     open?.thread === thread && open.forMs === forMs
-      ? { thread, forMs, status: loaded ? ('ready' as const) : ('failed' as const), lines: loaded?.lines ?? open.lines }
+      ? { thread, forMs, status: loaded ? ('ready' as const) : ('failed' as const), lines: loaded ? loaded.lines : open.lines }
       : open,
   )
 }

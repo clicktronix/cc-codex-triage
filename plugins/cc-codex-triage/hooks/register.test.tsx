@@ -86,7 +86,12 @@ function world(
   on('fs.exists', (_, e) => ({ value: e.path === DIR }))
   // Every path is an existing regular file, so only the mod's own checks stop a read.
   on('fs.stat', (_, e) => ({
-    value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: faults.links?.includes(e.path) ?? false },
+    value: {
+      kind: 'file' as const,
+      size: e.path.startsWith(`${DIR}/`) ? (files[e.path.slice(DIR.length + 1)]?.length ?? 0) : stream.length,
+      mtimeMs: START,
+      isLink: faults.links?.includes(e.path) ?? false,
+    },
   }))
   on('fs.list', () => {
     if (faults.isListBroken) return { deny: 'EIO' }
@@ -100,11 +105,7 @@ function world(
     })),
     }
   })
-  on('fs.read', async (_, e) => {
-    if (e.path.endsWith('.log')) {
-      logReads.push(e.path)
-      if ((await faults.beforeLogRead?.(e.path)) === 'deny') return { deny: `EIO ${e.path}` }
-    }
+  on('fs.read', (_, e) => {
     const name = e.path.slice(DIR.length + 1)
     const text = e.path.startsWith(`${DIR}/`) ? files[name] : undefined
     return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
@@ -113,7 +114,7 @@ function world(
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     const [cmd, arg] = e.argv
     const done = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -128,6 +129,8 @@ function world(
       const path = e.argv[3] ?? ''
       tailed.push(path)
       if (!path.startsWith(`${DIR}/`)) return done(stream)
+      logReads.push(path)
+      if ((await faults.beforeLogRead?.(path)) === 'deny') return done('', 1)
       const text = files[path.slice(DIR.length + 1)]
       return text === undefined ? done('', 1) : done(text.slice(-Number(e.argv[2])))
     }
@@ -460,7 +463,7 @@ describe('mod', () => {
     await ui.unmount()
   })
 
-  test('a reply longer than any tail still shows whole', async ($, on) => {
+  test('a reply longer than the first tail still shows whole', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const body = Array.from({ length: 1500 }, (_, i) => `row ${i} ${'x'.repeat(40)}`)
     const files = { ...FILES, 'plan-x.log': logOf('older', ['opening line', ...body, 'closing line'].join('\n')) }
@@ -548,6 +551,40 @@ describe('mod', () => {
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).toContain('reply of other')
     expect(texts).not.toContain('reply of a')
+    await ui.unmount()
+  })
+
+  test('a tail that starts mid-line never takes a reply line for a marker', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    // The latest reply holds a line "REPLY:"; its log line is "  REPLY:", and the first
+    // tail is sized to start right after those two spaces.
+    const closing = '\n  closing line\n---\n'
+    const filler = 'y'.repeat(65_536 - 'REPLY:\n'.length - 2 - closing.length)
+    const log = logOf('older', ['opening line', 'REPLY:', filler, 'closing line'].join('\n'))
+    expect(log.slice(-65_536).startsWith('REPLY:\n  y')).toBe(true)
+    world(on, { ...FILES, 'plan-x.log': log }, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line')
+    await ui.unmount()
+  })
+
+  test('a new round with an empty reply does not keep the old text', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five') }
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'thread:plan-x' })
+    files['plan-x.log'] = logOf('round five', '')
+    await clock.advance(2000)
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).not.toContain('round five')
+    expect(texts).toContain('No saved reply to show; see plan-x.log')
     await ui.unmount()
   })
 })
