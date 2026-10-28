@@ -11,12 +11,11 @@ const TICK_MS = 2000
 const IDLE_EVERY = 8
 const HOT_MS = 60_000
 const DETAILED = 12
-const LOG_TAIL_BYTES = '65536'
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
   shape: 'snapshot-2',
 })
-const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-1' })
+const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-2' })
 
 type Files = Map<string, Map<Suffix, number>>
 
@@ -81,7 +80,7 @@ async function threadRow(
     preview: null,
   }
   if (!pid) {
-    const lines = (await replyFor($, dir, name, row.lastActivityMs)).lines ?? []
+    const lines = (await replyFor($, dir, name, row.lastActivityMs))?.lines ?? []
     return { ...row, preview: lines.find(line => line.trim()) ?? null }
   }
 
@@ -141,56 +140,76 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
   return { ...empty, threads: threads.sort((a, b) => Number(b.isBusy) - Number(a.isBusy)), reviews }
 }
 
-// Read only when the person opens a thread, and through redact.sh like every other shown text.
-async function loadReply($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply> {
-  const none: Reply = { thread, forMs, lines: null }
+// The whole log, not a tail: the driver rotates it past 1 MB only before a round, so a
+// tail of any fixed size can cut the latest REPLY marker off a long reply. Every shown
+// line passes through redact.sh. Null is a read that failed and may be tried again.
+async function loadReply($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply | null> {
+  const ready: Reply = { thread, forMs, status: 'ready', lines: null }
   const path = `${dir}/${thread}.log`
-  const stat = await $.fs.stat(path).catch(() => null)
-  if (stat?.kind !== 'file' || stat.isLink) return none
-  const tail = await $.process.run(['tail', '-c', LOG_TAIL_BYTES, path], { timeoutMs: 5000 })
-  const text = tail.exitCode === 0 ? lastReply(tail.stdout) : null
-  if (!text) return none
-  const redacted = await $.process.run(['bash', `${$.plugin.root}/scripts/redact.sh`], {
-    stdin: text,
-    timeoutMs: 5000,
-  })
-  return redacted.exitCode === 0 ? { ...none, lines: redacted.stdout.replace(/\s+$/, '').split('\n') } : none
+  try {
+    const stat = await $.fs.stat(path)
+    if (stat.kind !== 'file' || stat.isLink) return ready
+    const text = lastReply(await $.fs.read(path))
+    if (!text) return ready
+    const redacted = await $.process.run(['bash', `${$.plugin.root}/scripts/redact.sh`], {
+      stdin: text,
+      timeoutMs: 5000,
+    })
+    return redacted.exitCode === 0 ? { ...ready, lines: redacted.stdout.replace(/\s+$/, '').split('\n') } : null
+  } catch {
+    return null
+  }
 }
 
-// Each log is read again only when it changes, so a pane redrawn every tick costs no reads.
+// Each log is read again only when it changes, so a pane redrawn every tick costs no
+// reads; a failed read is not kept, so the next scan or press tries again.
 const replies = new Map<string, Reply>()
 
-async function replyFor($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply> {
+async function replyFor($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply | null> {
   const cached = replies.get(`${dir}/${thread}`)
   if (cached?.forMs === forMs) return cached
   const loaded = await loadReply($, dir, thread, forMs)
-  replies.set(`${dir}/${thread}`, loaded)
+  if (loaded) replies.set(`${dir}/${thread}`, loaded)
   return loaded
 }
 
+// A load lands only on the selection it was started for: a press on another thread, a
+// collapse or a newer round made while it ran wins over it.
+async function showReply($: EngineInterface, dir: string, thread: string, forMs: number) {
+  const loaded = await replyFor($, dir, thread, forMs)
+  await update($, reply, open =>
+    open?.thread === thread && open.forMs === forMs
+      ? { thread, forMs, status: loaded ? ('ready' as const) : ('failed' as const), lines: loaded?.lines ?? open.lines }
+      : open,
+  )
+}
+
 async function toggleReply($: EngineInterface, thread: string) {
-  if ((await read($, reply))?.thread === thread) {
-    await update($, reply, () => null)
-    return
-  }
   const shot = await read($, snapshot)
   const row = shot?.threads.find(t => t.name === thread)
   if (!shot?.stateDir || !row) return
-  const loaded = await replyFor($, shot.stateDir, thread, row.lastActivityMs)
-  await update($, reply, () => loaded)
+  let isOpening = false
+  await update($, reply, open => {
+    isOpening = open?.thread !== thread
+    return isOpening ? { thread, forMs: row.lastActivityMs, status: 'loading' as const, lines: null } : null
+  })
+  if (isOpening) await showReply($, shot.stateDir, thread, row.lastActivityMs)
 }
 
-// An open reply follows its thread: a new round reloads it, a thread gone closes it.
+// An open reply follows its thread: a new round or a failed read loads it again, and a
+// thread gone closes it.
 async function followReply($: EngineInterface, shot: Snapshot) {
   const open = await read($, reply)
   if (!open) return
   const row = shot.threads.find(t => t.name === open.thread)
   if (!row || !shot.stateDir) {
-    await update($, reply, () => null)
-  } else if (row.lastActivityMs !== open.forMs) {
-    const loaded = await replyFor($, shot.stateDir, open.thread, row.lastActivityMs)
-    await update($, reply, () => loaded)
+    await update($, reply, now => (now?.thread === open.thread ? null : now))
+    return
   }
+  if (row.lastActivityMs === open.forMs && open.status !== 'failed') return
+  const forMs = row.lastActivityMs
+  await update($, reply, now => (now?.thread === open.thread ? { ...now, forMs, status: 'loading' as const } : now))
+  await showReply($, shot.stateDir, open.thread, forMs)
 }
 
 function finishedLine(name: string, thread: ThreadRow | undefined, reviews: ReviewRow[]): string {
@@ -331,7 +350,7 @@ export const register: Register = on => {
         {shot.threads.length === 0 && <Text dimColor>No Codex threads in this context.</Text>}
         {shot.threads.map(t => (
           <Box flexDirection="column">
-            <Button key={t.name} plain onPress={() => void toggleReply($, t.name)}>
+            <Button key={`thread:${t.name}`} plain onPress={() => void toggleReply($, t.name)}>
               <Text color={t.isBusy ? 'cyan' : undefined} dimColor={!t.isBusy}>
                 {cut(
                   t.isBusy
@@ -344,12 +363,16 @@ export const register: Register = on => {
             {t.topic && <Text dimColor>{cut(`  ${t.topic}`)}</Text>}
             {open?.thread === t.name ? (
               <Box flexDirection="column" marginLeft={2} marginBottom={1}>
-                {open.lines === null && <Text dimColor>{cut(`No saved reply to show; see ${t.name}.log`)}</Text>}
+                {open.status === 'loading' && !open.lines && <Text dimColor>Reading the reply…</Text>}
+                {open.status === 'failed' && <Text dimColor>{cut('Could not read the reply; trying again')}</Text>}
+                {open.status === 'ready' && !open.lines && (
+                  <Text dimColor>{cut(`No saved reply to show; see ${t.name}.log`)}</Text>
+                )}
                 {open.lines?.map(line => <Text>{line || ' '}</Text>)}
               </Box>
             ) : (
               t.preview && (
-                <Button key={`${t.name}.reply`} plain onPress={() => void toggleReply($, t.name)}>
+                <Button key={`reply:${t.name}`} plain onPress={() => void toggleReply($, t.name)}>
                   <Text wrap="truncate-end">  {t.preview}</Text>
                 </Button>
               )

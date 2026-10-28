@@ -7,6 +7,7 @@ const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
 const START = 1_800_000_000_000
 const tailed: string[] = []
+const logReads: string[] = []
 
 const EVENTS = [
   '{"type":"thread.started","thread_id":"01a179cb-bf55-7af1-b216-fc71b6980e63"}',
@@ -52,16 +53,24 @@ function logOf(...replies: string[]): string {
     .join('')
 }
 
+type Faults = {
+  isListBroken: boolean
+  links?: string[]
+  // Runs before a log is read; 'deny' fails that read.
+  beforeLogRead?: (path: string) => Promise<'deny' | void>
+}
+
 function world(
   on: On,
   files: Record<string, string>,
   alive: Set<string>,
   isPaneShown = true,
   stream = EVENTS,
-  faults: { isListBroken: boolean; links?: string[] } = { isListBroken: false },
+  faults: Faults = { isListBroken: false },
 ) {
   const toasts: string[] = []
   tailed.length = 0
+  logReads.length = 0
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo' }))
   on('command.register', () => ({ value: { command: 'codex-pane' } }))
@@ -91,7 +100,11 @@ function world(
     })),
     }
   })
-  on('fs.read', (_, e) => {
+  on('fs.read', async (_, e) => {
+    if (e.path.endsWith('.log')) {
+      logReads.push(e.path)
+      if ((await faults.beforeLogRead?.(e.path)) === 'deny') return { deny: `EIO ${e.path}` }
+    }
     const name = e.path.slice(DIR.length + 1)
     const text = e.path.startsWith(`${DIR}/`) ? files[name] : undefined
     return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
@@ -116,7 +129,7 @@ function world(
       tailed.push(path)
       if (!path.startsWith(`${DIR}/`)) return done(stream)
       const text = files[path.slice(DIR.length + 1)]
-      return text === undefined ? done('', 1) : done(text)
+      return text === undefined ? done('', 1) : done(text.slice(-Number(e.argv[2])))
     }
     return done('', 1)
   })
@@ -399,13 +412,13 @@ describe('mod', () => {
     expect(before).not.toContain('line 1')
     expect(before.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
 
-    await ui.press({ key: 'plan-x.reply' })
+    await ui.press({ key: 'reply:plan-x' })
     const shown = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(shown).toContain('Bearer [redacted]')
     expect(shown).toContain('line 25')
     expect(shown.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
 
-    await ui.press({ key: 'plan-x' })
+    await ui.press({ key: 'thread:plan-x' })
     const after = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(after).not.toContain('line 25')
     expect(after).toContain('  Bearer [redacted]')
@@ -420,7 +433,7 @@ describe('mod', () => {
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    await ui.press({ key: 'plan-x' })
+    await ui.press({ key: 'thread:plan-x' })
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('round five')
 
     files['plan-x.log'] = logOf('round five', 'round six')
@@ -439,11 +452,102 @@ describe('mod', () => {
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    await ui.press({ key: 'plan-x' })
+    await ui.press({ key: 'thread:plan-x' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).toContain('No saved reply to show; see plan-x.log')
     expect(texts).not.toContain('secret elsewhere')
-    expect(tailed).not.toContain(`${DIR}/plan-x.log`)
+    expect(logReads).not.toContain(`${DIR}/plan-x.log`)
+    await ui.unmount()
+  })
+
+  test('a reply longer than any tail still shows whole', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const body = Array.from({ length: 1500 }, (_, i) => `row ${i} ${'x'.repeat(40)}`)
+    const files = { ...FILES, 'plan-x.log': logOf('older', ['opening line', ...body, 'closing line'].join('\n')) }
+    expect(files['plan-x.log'].length).toBeGreaterThan(65_536)
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line')
+    await ui.press({ key: 'reply:plan-x' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('closing line')
+    await ui.unmount()
+  })
+
+  test('threads named like each other keep their own controls', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files = {
+      'review.id': 'a', 'review.log': logOf('reply of review'),
+      'review.reply.id': 'b', 'review.reply.log': logOf('reply of review.reply'),
+    }
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'reply:review' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain('reply of review')
+    expect(texts).toContain('  reply of review.reply')
+    expect(texts).not.toContain('reply of review.reply')
+    await ui.unmount()
+  })
+
+  test('a failed read is tried again rather than kept', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    let isBroken = true
+    const files = { ...FILES, 'plan-x.log': logOf('it recovers') }
+    world(on, files, new Set(), true, EVENTS, {
+      isListBroken: false,
+      beforeLogRead: async () => (isBroken ? 'deny' : undefined),
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'thread:plan-x' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('Could not read the reply; trying again')
+
+    isBroken = false
+    await clock.advance(2000)
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain('it recovers')
+    expect(texts).not.toContain('Could not read the reply; trying again')
+    await ui.unmount()
+  })
+
+  test('a slow load does not take the pane back from a later press', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    let release = () => {}
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const files = {
+      ...FILES,
+      'review-a.b.log': logOf('reply of a'),
+      'other.id': 'c',
+      'other.active': '4343',
+      'other.log': logOf('reply of other'),
+    }
+    world(on, files, new Set(['4242', '4343']), true, EVENTS, {
+      isListBroken: false,
+      beforeLogRead: async path => {
+        if (path.endsWith('/review-a.b.log')) await held
+        if (path.endsWith('/other.log')) release()
+      },
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const first = ui.press({ key: 'thread:review-a.b' })
+    await ui.press({ key: 'thread:other' })
+    await first
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain('reply of other')
+    expect(texts).not.toContain('reply of a')
     await ui.unmount()
   })
 })

@@ -27,6 +27,7 @@ export type Snapshot = {
 export type Reply = {
   thread: string
   forMs: number
+  status: 'loading' | 'ready' | 'failed'
   lines: string[] | null
 }
 
