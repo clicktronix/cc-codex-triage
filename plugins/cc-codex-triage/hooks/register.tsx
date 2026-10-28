@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ReviewRow, Snapshot, ThreadRow } from '../types'
-import { ago, clip, elapsed, fields, isStreamPath, lastEvent, leasePid, rounds, splitStateName } from './parse'
+import type { Reply, ReviewRow, Snapshot, ThreadRow } from '../types'
+import { ago, clip, elapsed, fields, isStreamPath, lastEvent, lastReply, leasePid, rounds, splitStateName } from './parse'
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
@@ -11,10 +11,12 @@ const TICK_MS = 2000
 const IDLE_EVERY = 8
 const HOT_MS = 60_000
 const DETAILED = 12
+const LOG_TAIL_BYTES = '65536'
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
-  shape: 'snapshot-1',
+  shape: 'snapshot-2',
 })
+const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-1' })
 
 type Files = Map<string, Map<Suffix, number>>
 
@@ -76,8 +78,12 @@ async function threadRow(
     isBusy: false,
     startedAtMs: null,
     event: null,
+    preview: null,
   }
-  if (!pid) return row
+  if (!pid) {
+    const lines = (await replyFor($, dir, name, row.lastActivityMs)).lines ?? []
+    return { ...row, preview: lines.find(line => line.trim()) ?? null }
+  }
 
   return {
     ...row,
@@ -135,6 +141,58 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
   return { ...empty, threads: threads.sort((a, b) => Number(b.isBusy) - Number(a.isBusy)), reviews }
 }
 
+// Read only when the person opens a thread, and through redact.sh like every other shown text.
+async function loadReply($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply> {
+  const none: Reply = { thread, forMs, lines: null }
+  const path = `${dir}/${thread}.log`
+  const stat = await $.fs.stat(path).catch(() => null)
+  if (stat?.kind !== 'file' || stat.isLink) return none
+  const tail = await $.process.run(['tail', '-c', LOG_TAIL_BYTES, path], { timeoutMs: 5000 })
+  const text = tail.exitCode === 0 ? lastReply(tail.stdout) : null
+  if (!text) return none
+  const redacted = await $.process.run(['bash', `${$.plugin.root}/scripts/redact.sh`], {
+    stdin: text,
+    timeoutMs: 5000,
+  })
+  return redacted.exitCode === 0 ? { ...none, lines: redacted.stdout.replace(/\s+$/, '').split('\n') } : none
+}
+
+// Each log is read again only when it changes, so a pane redrawn every tick costs no reads.
+const replies = new Map<string, Reply>()
+
+async function replyFor($: EngineInterface, dir: string, thread: string, forMs: number): Promise<Reply> {
+  const cached = replies.get(`${dir}/${thread}`)
+  if (cached?.forMs === forMs) return cached
+  const loaded = await loadReply($, dir, thread, forMs)
+  replies.set(`${dir}/${thread}`, loaded)
+  return loaded
+}
+
+async function toggleReply($: EngineInterface, thread: string) {
+  if ((await read($, reply))?.thread === thread) {
+    await update($, reply, () => null)
+    return
+  }
+  const shot = await read($, snapshot)
+  const row = shot?.threads.find(t => t.name === thread)
+  if (!shot?.stateDir || !row) return
+  const loaded = await replyFor($, shot.stateDir, thread, row.lastActivityMs)
+  await update($, reply, () => loaded)
+}
+
+// An open reply follows its thread: a new round reloads it, a thread gone closes it.
+async function followReply($: EngineInterface, shot: Snapshot) {
+  const open = await read($, reply)
+  if (!open) return
+  const row = shot.threads.find(t => t.name === open.thread)
+  if (!row || !shot.stateDir) {
+    await update($, reply, () => null)
+  } else if (row.lastActivityMs !== open.forMs) {
+    const loaded = await replyFor($, shot.stateDir, open.thread, row.lastActivityMs)
+    await update($, reply, () => loaded)
+  }
+}
+
 function finishedLine(name: string, thread: ThreadRow | undefined, reviews: ReviewRow[]): string {
   // A first dispatch that fails leaves no .id, so its thread drops out of the scan.
   if (!thread) return `Codex ${name}: dispatch ended without a saved round`
@@ -189,6 +247,7 @@ async function tick($: EngineInterface, isForced = false) {
       if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
     }
     await update($, snapshot, () => next)
+    await followReply($, next)
   } finally {
     isScanning = false
   }
@@ -257,8 +316,9 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const shot = await read($, snapshot)
+    const open = await read($, reply)
     const now = await $.clock.now()
     const width = Math.max(20, e.props.bodyColumns)
     const cut = (text: string) => (text.length > width ? `${text.slice(0, width - 1)}…` : text)
@@ -271,17 +331,32 @@ export const register: Register = on => {
         {shot.threads.length === 0 && <Text dimColor>No Codex threads in this context.</Text>}
         {shot.threads.map(t => (
           <Box flexDirection="column">
-            <Text color={t.isBusy ? 'cyan' : undefined} dimColor={!t.isBusy}>
-              {cut(
-                t.isBusy
-                  ? `● ${t.name} · round ${t.rounds + 1} · ${elapsed(now - (t.startedAtMs ?? now))}`
-                  : `○ ${t.name} · ${rounds(t.rounds)} · ${ago(now - t.lastActivityMs)}`,
-              )}
-            </Text>
+            <Button key={t.name} plain onPress={() => void toggleReply($, t.name)}>
+              <Text color={t.isBusy ? 'cyan' : undefined} dimColor={!t.isBusy}>
+                {cut(
+                  t.isBusy
+                    ? `● ${t.name} · round ${t.rounds + 1} · ${elapsed(now - (t.startedAtMs ?? now))}`
+                    : `○ ${t.name} · ${rounds(t.rounds)} · ${ago(now - t.lastActivityMs)}`,
+                )}
+              </Text>
+            </Button>
             {t.isBusy && t.event && <Text>{cut(`  ${t.event}`)}</Text>}
             {t.topic && <Text dimColor>{cut(`  ${t.topic}`)}</Text>}
+            {open?.thread === t.name ? (
+              <Box flexDirection="column" marginLeft={2} marginBottom={1}>
+                {open.lines === null && <Text dimColor>{cut(`No saved reply to show; see ${t.name}.log`)}</Text>}
+                {open.lines?.map(line => <Text>{line || ' '}</Text>)}
+              </Box>
+            ) : (
+              t.preview && (
+                <Button key={`${t.name}.reply`} plain onPress={() => void toggleReply($, t.name)}>
+                  <Text wrap="truncate-end">  {t.preview}</Text>
+                </Button>
+              )
+            )}
           </Box>
         ))}
+        {shot.threads.length > 0 && !open && <Text dimColor>{cut('ctrl+x tab, then Enter: whole reply')}</Text>}
         {shot.reviews.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <Text weight="semibold">Required review</Text>

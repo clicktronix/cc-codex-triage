@@ -34,12 +34,17 @@ narrows it) listing each thread with its rounds, last activity and topic, the in
 dispatch first with its round, running time and what Codex is doing now (the program it
 runs, the file it edits, or that it is replying), and the required-review states. While a
 dispatch runs, one line above the prompt says the same; a toast reports when it ends.
+Each idle thread shows the first line of its last reply; pressing the thread (`Enter` once
+the pane has focus, or a click) shows the whole reply until pressed again, and a new round
+of that thread replaces it.
 
 The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
-stream through `tail`, and `kill -0` on a lease PID. A command shows as its program alone
-(`npm …`), or for an interpreter its script (`bash check.sh`), never its arguments; reply text and command output are never shown, and what is shown still
-passes through `redact.sh`. The stream is followed only at the driver's own
-`cc-codex-<thread>.XXXXXX.jsonl` name, as a regular file. It makes no network calls and
+stream and each thread's log through `tail` (again only when the log changes), and `kill -0` on a lease PID. A command
+shows as its program alone (`npm …`), or for an interpreter its script
+(`bash check.sh`), never its arguments. Reply text is on screen (a first line per thread,
+the whole reply once opened) and command output never; everything shown passes through
+`redact.sh`, which masks known key shapes only. The stream is followed only at the driver's own
+`cc-codex-<thread>.XXXXXX.jsonl` name, and a stream or log only as a regular file. It makes no network calls and
 draws nothing outside the terminal, since `$.process` is CLI-only.
 
 ## Required review

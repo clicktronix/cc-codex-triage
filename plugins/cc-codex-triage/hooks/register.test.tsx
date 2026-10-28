@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { commandSummary, isStreamPath, lastEvent, leasePid, splitStateName } from './parse'
+import { commandSummary, isStreamPath, lastEvent, lastReply, leasePid, splitStateName } from './parse'
 
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
@@ -41,13 +41,24 @@ const BAND = {
   },
 } as const
 
+// A log's mtime moves with its content, as the driver's appends move it.
+function logMs(text = ''): number {
+  return START - 3_660_000 + text.length
+}
+
+function logOf(...replies: string[]): string {
+  return replies
+    .map((reply, i) => `[2026-10-28T18:53:1${i}Z] mode=resume thread=t round=${i + 1}\nPROMPT:\n  q\nREPLY:\n${reply.split('\n').map(l => `  ${l}`).join('\n')}\n---\n`)
+    .join('')
+}
+
 function world(
   on: On,
   files: Record<string, string>,
   alive: Set<string>,
   isPaneShown = true,
   stream = EVENTS,
-  faults = { isListBroken: false },
+  faults: { isListBroken: boolean; links?: string[] } = { isListBroken: false },
 ) {
   const toasts: string[] = []
   tailed.length = 0
@@ -65,7 +76,9 @@ function world(
   })
   on('fs.exists', (_, e) => ({ value: e.path === DIR }))
   // Every path is an existing regular file, so only the mod's own checks stop a read.
-  on('fs.stat', () => ({ value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: false } }))
+  on('fs.stat', (_, e) => ({
+    value: { kind: 'file' as const, size: stream.length, mtimeMs: START, isLink: faults.links?.includes(e.path) ?? false },
+  }))
   on('fs.list', () => {
     if (faults.isListBroken) return { deny: 'EIO' }
     return {
@@ -73,7 +86,7 @@ function world(
       name,
       kind: 'file' as const,
       size: files[name]?.length ?? 0,
-      mtimeMs: name.endsWith('.active') ? START - 75_000 : START - 3_600_000,
+      mtimeMs: name.endsWith('.active') ? START - 75_000 : name.endsWith('.log') ? logMs(files[name]) : START - 3_600_000,
       isLink: false,
     })),
     }
@@ -99,8 +112,11 @@ function world(
     }
     if (cmd === 'kill') return done('', alive.has(e.argv[2] ?? '') ? 0 : 1)
     if (cmd === 'tail') {
-      tailed.push(e.argv[3] ?? '')
-      return done(stream)
+      const path = e.argv[3] ?? ''
+      tailed.push(path)
+      if (!path.startsWith(`${DIR}/`)) return done(stream)
+      const text = files[path.slice(DIR.length + 1)]
+      return text === undefined ? done('', 1) : done(text)
     }
     return done('', 1)
   })
@@ -122,6 +138,12 @@ const FILES = {
 }
 
 describe('parse', () => {
+  test('the last reply is read from the log, markers at column 0 only', async () => {
+    expect(lastReply(logOf('first', 'second\n\n  indented\nREPLY:\n---'))).toBe('second\n\n  indented\nREPLY:\n---')
+    expect(lastReply(`${logOf('done')}[x] mode=resume\nPROMPT:\n  q\nREPLY:\n  half`)).toBe(null)
+    expect(lastReply('round=1')).toBe(null)
+  })
+
   test('a thread name may hold dots; archives are not state files', async () => {
     expect(splitStateName('review-a.b.review-state')).toEqual({ thread: 'review-a.b', suffix: 'review-state' })
     expect(splitStateName('x.active.lock')).toBe(null)
@@ -352,13 +374,76 @@ describe('mod', () => {
 
   test('a stream pointer outside the driver naming is not read', async ($, on) => {
     const clock = mock.clock(on, { now: START })
-    world(on, { ...FILES, 'review-a.b.stream': `pid=4242\npath=${DIR}/plan-x.log\n` }, new Set(['4242']))
+    world(on, { ...FILES, 'review-a.b.stream': `pid=4242\npath=/tmp/notes.jsonl\n` }, new Set(['4242']))
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ type: 'Text', text: /runs:/ })).toBeUndefined()
-    expect(tailed).toEqual([])
+    expect(tailed).not.toContain('/tmp/notes.jsonl')
+    await ui.unmount()
+  })
+
+  test('a thread shows the first line of its last reply, and pressing it shows the whole reply', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const long = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`)
+    const files = { ...FILES, 'plan-x.log': logOf('old reply', ['Bearer abcdefghijklmnop', ...long].join('\n')) }
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const before = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(before).toContain('ctrl+x tab, then Enter: whole reply')
+    expect(before).toContain('  Bearer [redacted]')
+    expect(before).not.toContain('line 1')
+    expect(before.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
+
+    await ui.press({ key: 'plan-x.reply' })
+    const shown = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(shown).toContain('Bearer [redacted]')
+    expect(shown).toContain('line 25')
+    expect(shown.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
+
+    await ui.press({ key: 'plan-x' })
+    const after = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(after).not.toContain('line 25')
+    expect(after).toContain('  Bearer [redacted]')
+    await ui.unmount()
+  })
+
+  test('an open reply follows a new round of its thread', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five') }
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'plan-x' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('round five')
+
+    files['plan-x.log'] = logOf('round five', 'round six')
+    await clock.advance(2000)
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain('round six')
+    expect(texts).not.toContain('round five')
+    await ui.unmount()
+  })
+
+  test('a thread log that is a symlink is not read', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files = { ...FILES, 'plan-x.log': logOf('secret elsewhere') }
+    world(on, files, new Set(), true, EVENTS, { isListBroken: false, links: [`${DIR}/plan-x.log`] })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'plan-x' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toContain('No saved reply to show; see plan-x.log')
+    expect(texts).not.toContain('secret elsewhere')
+    expect(tailed).not.toContain(`${DIR}/plan-x.log`)
     await ui.unmount()
   })
 })

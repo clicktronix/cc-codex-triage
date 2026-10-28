@@ -127,6 +127,20 @@ export function lastEvent(jsonl: string): string | null {
   return null
 }
 
+// The last REPLY section of a thread log tail. The driver writes markers at column 0
+// and indents every body line two spaces, so no prompt or reply text reads as a marker.
+export function lastReply(log: string): string | null {
+  const lines = log.split('\n')
+  const start = lines.lastIndexOf('REPLY:')
+  const end = start === -1 ? -1 : lines.indexOf('---', start + 1)
+  if (end === -1) return null
+  return lines
+    .slice(start + 1, end)
+    .map(line => line.replace(/^ {2}/, ''))
+    .join('\n')
+    .replace(/\s+$/, '')
+}
+
 export function ago(ms: number): string {
   const m = Math.floor(Math.max(0, ms) / 60_000)
   if (m < 1) return 'just now'

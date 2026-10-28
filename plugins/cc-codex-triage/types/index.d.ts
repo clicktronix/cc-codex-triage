@@ -6,6 +6,7 @@ export type ThreadRow = {
   isBusy: boolean
   startedAtMs: number | null
   event: string | null
+  preview: string | null
 }
 
 export type ReviewRow = {
@@ -23,8 +24,14 @@ export type Snapshot = {
   error: string | null
 }
 
+export type Reply = {
+  thread: string
+  forMs: number
+  lines: string[] | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'cc-codex-triage': { snapshot: Shaped<Snapshot | null> }
+    'cc-codex-triage': { snapshot: Shaped<Snapshot | null>; reply: Shaped<Reply | null> }
   }
 }
