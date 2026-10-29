@@ -7,6 +7,7 @@ export type ThreadRow = {
   startedAtMs: number | null
   event: string | null
   preview: string | null
+  moreLines: number
 }
 
 export type ReviewRow = {

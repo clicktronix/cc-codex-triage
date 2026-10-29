@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Reply, ReviewRow, Snapshot, ThreadRow } from '../types'
-import { ago, clip, elapsed, fields, isStreamPath, lastEvent, lastReply, leasePid, rounds, splitStateName } from './parse'
+import { ago, cells, clip, elapsed, fit, fields, isStreamPath, lastEvent, lastReply, leasePid, rounds, splitStateName } from './parse'
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
@@ -15,7 +15,7 @@ const DETAILED = 12
 const LOG_TAIL_BYTES = [65_536, 524_288, 4_194_304]
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
-  shape: 'snapshot-2',
+  shape: 'snapshot-3',
 })
 const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-2' })
 
@@ -80,10 +80,12 @@ async function threadRow(
     startedAtMs: null,
     event: null,
     preview: null,
+    moreLines: 0,
   }
   if (!pid) {
     const lines = (await replyFor($, dir, name, row.lastActivityMs))?.lines ?? []
-    return { ...row, preview: lines.find(line => line.trim()) ?? null }
+    const first = lines.findIndex(line => line.trim())
+    return first === -1 ? row : { ...row, preview: lines[first] ?? null, moreLines: lines.length - first - 1 }
   }
 
   return {
@@ -350,7 +352,13 @@ export const register: Register = on => {
     const open = await read($, reply)
     const now = await $.clock.now()
     const width = Math.max(20, e.props.bodyColumns)
-    const cut = (text: string) => (text.length > width ? `${text.slice(0, width - 1)}…` : text)
+    const cut = (text: string) => fit(text, width)
+    // A reply worth opening: more lines than the preview, or a first line the pane cuts.
+    const isExpandable = (t: ThreadRow) => t.moreLines > 0 || cells(`  ${t.preview ?? ''}`) > width
+    const preview = (t: ThreadRow) => {
+      const more = t.moreLines > 0 ? ` · +${t.moreLines} lines` : ''
+      return `${fit(`  ${t.preview ?? ''}`, width - cells(more))}${more}`
+    }
 
     if (!shot) return <Text dimColor>Reading Codex threads…</Text>
 
@@ -360,15 +368,25 @@ export const register: Register = on => {
         {shot.threads.length === 0 && <Text dimColor>No Codex threads in this context.</Text>}
         {shot.threads.map(t => (
           <Box flexDirection="column">
-            <Button key={`thread:${t.name}`} plain onPress={() => void toggleReply($, t.name)}>
-              <Text color={t.isBusy ? 'cyan' : undefined} dimColor={!t.isBusy}>
-                {cut(
-                  t.isBusy
-                    ? `● ${t.name} · round ${t.rounds + 1} · ${elapsed(now - (t.startedAtMs ?? now))}`
-                    : `○ ${t.name} · ${rounds(t.rounds)} · ${ago(now - t.lastActivityMs)}`,
-                )}
-              </Text>
-            </Button>
+            {(() => {
+              const header = (
+                <Text color={t.isBusy ? 'cyan' : undefined} dimColor={!t.isBusy}>
+                  {cut(
+                    t.isBusy
+                      ? `● ${t.name} · round ${t.rounds + 1} · ${elapsed(now - (t.startedAtMs ?? now))}`
+                      : `○ ${t.name} · ${rounds(t.rounds)} · ${ago(now - t.lastActivityMs)}`,
+                  )}
+                </Text>
+              )
+              // A busy thread opens its previous round's reply; an idle one only when there is more to see.
+              return t.isBusy || isExpandable(t) || open?.thread === t.name ? (
+                <Button key={`thread:${t.name}`} plain onPress={() => void toggleReply($, t.name)}>
+                  {header}
+                </Button>
+              ) : (
+                header
+              )
+            })()}
             {t.isBusy && t.event && <Text>{cut(`  ${t.event}`)}</Text>}
             {t.topic && <Text dimColor>{cut(`  ${t.topic}`)}</Text>}
             {open?.thread === t.name ? (
@@ -381,15 +399,18 @@ export const register: Register = on => {
                 {open.lines?.map(line => <Text>{line || ' '}</Text>)}
               </Box>
             ) : (
-              t.preview && (
+              t.preview &&
+              (isExpandable(t) ? (
                 <Button key={`reply:${t.name}`} plain onPress={() => void toggleReply($, t.name)}>
-                  <Text wrap="truncate-end">  {t.preview}</Text>
+                  <Text>{preview(t)}</Text>
                 </Button>
-              )
+              ) : (
+                <Text>{preview(t)}</Text>
+              ))
             )}
           </Box>
         ))}
-        {shot.threads.length > 0 && !open && <Text dimColor>{cut('ctrl+x tab, then Enter: whole reply')}</Text>}
+        {!open && shot.threads.some(isExpandable) && <Text dimColor>{cut('ctrl+x tab, then Enter: whole reply')}</Text>}
         {shot.reviews.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <Text weight="semibold">Required review</Text>

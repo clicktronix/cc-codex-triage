@@ -411,7 +411,7 @@ describe('mod', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const before = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(before).toContain('ctrl+x tab, then Enter: whole reply')
-    expect(before).toContain('  Bearer [redacted]')
+    expect(before).toContain('  Bearer [redacted] · +25 lines')
     expect(before).not.toContain('line 1')
     expect(before.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
 
@@ -424,13 +424,13 @@ describe('mod', () => {
     await ui.press({ key: 'thread:plan-x' })
     const after = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(after).not.toContain('line 25')
-    expect(after).toContain('  Bearer [redacted]')
+    expect(after).toContain('  Bearer [redacted] · +25 lines')
     await ui.unmount()
   })
 
   test('an open reply follows a new round of its thread', async ($, on) => {
     const clock = mock.clock(on, { now: START })
-    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five') }
+    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five\nmore') }
     world(on, files, new Set())
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await clock.advance(1)
@@ -439,7 +439,7 @@ describe('mod', () => {
     await ui.press({ key: 'thread:plan-x' })
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('round five')
 
-    files['plan-x.log'] = logOf('round five', 'round six')
+    files['plan-x.log'] = logOf('round five\nmore', 'round six\nmore')
     await clock.advance(2000)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).toContain('round six')
@@ -455,10 +455,9 @@ describe('mod', () => {
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    await ui.press({ key: 'thread:plan-x' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(texts).toContain('No saved reply to show; see plan-x.log')
-    expect(texts).not.toContain('secret elsewhere')
+    expect(texts.some(t => t.includes('secret elsewhere'))).toBe(false)
+    expect(await ui.find({ type: 'Button', key: 'thread:plan-x' })).toBeUndefined()
     expect(logReads).not.toContain(`${DIR}/plan-x.log`)
     await ui.unmount()
   })
@@ -473,7 +472,7 @@ describe('mod', () => {
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line')
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line · +1501 lines')
     await ui.press({ key: 'reply:plan-x' })
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('closing line')
     await ui.unmount()
@@ -482,8 +481,8 @@ describe('mod', () => {
   test('threads named like each other keep their own controls', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const files = {
-      'review.id': 'a', 'review.log': logOf('reply of review'),
-      'review.reply.id': 'b', 'review.reply.log': logOf('reply of review.reply'),
+      'review.id': 'a', 'review.log': logOf('reply of review\nmore'),
+      'review.reply.id': 'b', 'review.reply.log': logOf('reply of review.reply\nmore'),
     }
     world(on, files, new Set())
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -493,15 +492,15 @@ describe('mod', () => {
     await ui.press({ key: 'reply:review' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).toContain('reply of review')
-    expect(texts).toContain('  reply of review.reply')
+    expect(texts).toContain('  reply of review.reply · +1 lines')
     expect(texts).not.toContain('reply of review.reply')
     await ui.unmount()
   })
 
   test('a failed read is tried again rather than kept', async ($, on) => {
     const clock = mock.clock(on, { now: START })
-    let isBroken = true
-    const files = { ...FILES, 'plan-x.log': logOf('it recovers') }
+    let isBroken = false
+    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five\nmore') }
     world(on, files, new Set(), true, EVENTS, {
       isListBroken: false,
       beforeLogRead: async () => (isBroken ? 'deny' : undefined),
@@ -511,6 +510,9 @@ describe('mod', () => {
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'thread:plan-x' })
+    isBroken = true
+    files['plan-x.log'] = logOf('round five\nmore', 'it recovers\nmore')
+    await clock.advance(2000)
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('Could not read the reply; trying again')
 
     isBroken = false
@@ -567,24 +569,52 @@ describe('mod', () => {
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line')
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  opening line · +3 lines')
     await ui.unmount()
   })
 
   test('a new round with an empty reply does not keep the old text', async ($, on) => {
     const clock = mock.clock(on, { now: START })
-    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five') }
+    const files: Record<string, string> = { ...FILES, 'plan-x.log': logOf('round five\nmore') }
     world(on, files, new Set())
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'thread:plan-x' })
-    files['plan-x.log'] = logOf('round five', '')
+    files['plan-x.log'] = logOf('round five\nmore', '')
     await clock.advance(2000)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).not.toContain('round five')
     expect(texts).toContain('No saved reply to show; see plan-x.log')
+    await ui.unmount()
+  })
+
+  test('a short one-line reply is shown whole and is not a control', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, { ...FILES, 'plan-x.log': logOf('all of it 🙂') }, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  all of it 🙂')
+    expect(await ui.find({ type: 'Button', key: 'reply:plan-x' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /whole reply/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a first line wider than the pane is cut by terminal cells and opens whole', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const wide = `${'🙂'.repeat(40)} end`
+    world(on, { ...FILES, 'plan-x.log': logOf(wide) }, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const cut = (await ui.findAll({ type: 'Text' })).map(t => t.text).find(t => t.startsWith('  🙂'))
+    expect(cut).toBe(`  ${'🙂'.repeat(28)}…`)
+    await ui.press({ key: 'reply:plan-x' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain(wide)
     await ui.unmount()
   })
 })
