@@ -47,7 +47,8 @@ To turn the pane off, run `/codex-pane` again or press `ctrl+x x` while it has f
 never opens by itself, so a closed pane stays closed. The band and the toast have no
 switch of their own, since Claude Code has no setting for one plugin's mod: disabling the
 plugin (`/plugin`, or `"cc-codex-triage@cc-codex-triage": false` under `enabledPlugins`)
-removes them with its commands, and `disableAllHooks: true` stops every mod and hook.
+removes them with its commands, and `disableAllHooks: true` also stops this mod, along with
+other user-installed mods and hooks.
 
 The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
 stream and each thread's log through `tail` (a log again only when it changes), and
