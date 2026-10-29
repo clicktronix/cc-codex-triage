@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { commandSummary, isStreamPath, lastEvent, lastReply, leasePid, splitStateName } from './parse'
+import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePid, splitStateName } from './parse'
 
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
@@ -158,6 +158,18 @@ describe('parse', () => {
     expect(lastReply(logOf('first', 'second\n\n  indented\nREPLY:\n---'))).toBe('second\n\n  indented\nREPLY:\n---')
     expect(lastReply(`${logOf('done')}[x] mode=resume\nPROMPT:\n  q\nREPLY:\n  half`)).toBe(null)
     expect(lastReply('round=1')).toBe(null)
+  })
+
+  test('width is counted in terminal cells per glyph', async () => {
+    expect(cells('abc')).toBe(3)
+    expect(cells('✅')).toBe(2)
+    expect(cells('🙂')).toBe(2)
+    expect(cells('☺️')).toBe(2)
+    expect(cells('👩‍💻')).toBe(2)
+    expect(cells('e\u0301')).toBe(1)
+    expect(cells('漢字')).toBe(4)
+    expect(cells('→ ✓')).toBe(3)
+    expect(fit('✅✅✅', 5)).toBe('✅✅…')
   })
 
   test('a thread name may hold dots; archives are not state files', async () => {
@@ -605,14 +617,14 @@ describe('mod', () => {
 
   test('a first line wider than the pane is cut by terminal cells and opens whole', async ($, on) => {
     const clock = mock.clock(on, { now: START })
-    const wide = `${'🙂'.repeat(40)} end`
+    const wide = `${'🙂✅'.repeat(20)} end`
     world(on, { ...FILES, 'plan-x.log': logOf(wide) }, new Set())
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await clock.advance(1)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    const cut = (await ui.findAll({ type: 'Text' })).map(t => t.text).find(t => t.startsWith('  🙂'))
-    expect(cut).toBe(`  ${'🙂'.repeat(28)}…`)
+    const cut = (await ui.findAll({ type: 'Text' })).map(t => t.text).find(t => t.startsWith('  🙂✅'))
+    expect(cut).toBe(`  ${'🙂✅'.repeat(14)}…`)
     await ui.press({ key: 'reply:plan-x' })
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain(wide)
     await ui.unmount()

@@ -141,30 +141,39 @@ export function lastReply(log: string): string | null {
     .replace(/\s+$/, '')
 }
 
-// Terminal cells, not characters: wide scripts and emoji take two, so a line cut by
-// its length alone still wraps.
+// Terminal cells, not characters: an emoji (by its Unicode property, not a hand list)
+// and the East Asian wide and fullwidth blocks take two, so a line cut by its length
+// alone still wraps. Counted per grapheme, so a ZWJ sequence or an emoji with VS16 is
+// one wide glyph and a combining mark adds nothing.
 const WIDE: [number, number][] = [
-  [0x1100, 0x115f], [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff],
-  [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1faff],
+  [0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff],
+  [0xa000, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60],
+  [0xffe0, 0xffe6], [0x20000, 0x3fffd],
 ]
+const EMOJI = /\p{Emoji_Presentation}|\uFE0F/u
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
-function cellsOf(char: string): number {
-  const code = char.codePointAt(0) ?? 0
-  return WIDE.some(([from, to]) => code >= from && code <= to) ? 2 : 1
+function graphemes(text: string): string[] {
+  return [...segmenter.segment(text)].map(part => part.segment)
+}
+
+function cellsOf(glyph: string): number {
+  const code = glyph.codePointAt(0) ?? 0
+  return EMOJI.test(glyph) || WIDE.some(([from, to]) => code >= from && code <= to) ? 2 : 1
 }
 
 export function cells(text: string): number {
-  return [...text].reduce((sum, char) => sum + cellsOf(char), 0)
+  return graphemes(text).reduce((sum, glyph) => sum + cellsOf(glyph), 0)
 }
 
 export function fit(text: string, width: number): string {
   if (cells(text) <= width) return text
   let out = ''
   let used = 0
-  for (const char of text) {
-    if (used + cellsOf(char) > width - 1) break
-    out += char
-    used += cellsOf(char)
+  for (const glyph of graphemes(text)) {
+    if (used + cellsOf(glyph) > width - 1) break
+    out += glyph
+    used += cellsOf(glyph)
   }
   return `${out}…`
 }
