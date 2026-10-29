@@ -2,12 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.16.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.15.1...v0.16.0) (2026-10-29)
+## [0.16.0] - 2026-10-29
 
+### Added
+- Threads pane mod (Claude Code CLI 2.1.287+): `/codex-pane` opens a pane of the current
+  context's Codex threads with rounds, last activity and topic; an in-flight dispatch first
+  with its round, running time and what Codex is doing now (the program it runs, never its
+  arguments); the required-review states; and under each idle thread the first line of its
+  last reply, opened whole on a press. While a dispatch runs, a band above the prompt says the
+  same, and a toast reports when it ends. Shown text passes through `redact.sh`. `/codex-pane`
+  again or `ctrl+x x` closes it (#16).
+- The driver writes `<thread>.stream` (`pid=`, `path=` of the `codex exec --json` stream) while
+  it holds the lease and removes it under the same ownership check, so the pane can follow a
+  live dispatch (#16).
 
-### Features
-
-* Codex threads pane mod with a live dispatch band ([#16](https://github.com/clicktronix/cc-codex-triage/issues/16)) ([74e0c0e](https://github.com/clicktronix/cc-codex-triage/commit/74e0c0eb0c096dacbbee8a35b595bc4c3104b605))
+### Changed
+- `tests/run.sh` also runs `claude plugin validate --strict` and `claude plugin test` on the
+  plugin; CI installs Claude Code for them (#16).
 
 ## [0.15.1] - 2026-10-25
 
