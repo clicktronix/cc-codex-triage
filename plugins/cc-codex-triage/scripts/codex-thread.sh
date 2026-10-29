@@ -55,6 +55,9 @@
 #   <thread>.profile           model, effort and the sandbox mode the thread was created with
 #                              (cleared by --new).
 #   <thread>.active           PID lease held while a dispatch is in flight.
+#   <thread>.stream           `pid=`/`path=` of the in-flight dispatch's Codex
+#                             JSONL stream, written with the lease and removed
+#                             with it; read by the threads-pane mod.
 #   <thread>.active.lock      recoverable mutex around lease acquisition.
 #   <thread>.active.lock-reclaim
 #                             serializes stale-lock replacement so a contender
@@ -275,6 +278,8 @@ LEASE_FILE="$STATE_DIR/${THREAD}.active"
 # Staging file for the atomic lease write below. Defined up front so the
 # combined cleanup() can always remove it — no exit path may leak it.
 LEASE_TMP="$STATE_DIR/${THREAD}.active.tmp.$$"
+STREAM_FILE="$STATE_DIR/${THREAD}.stream"
+STREAM_TMP="$STATE_DIR/${THREAD}.stream.tmp.$$"
 LEASE_LOCK="$STATE_DIR/${THREAD}.active.lock"
 LEASE_RECLAIM_LOCK="$STATE_DIR/${THREAD}.active.lock-reclaim"
 dir_lock_init "$LEASE_LOCK" "$LEASE_RECLAIM_LOCK"
@@ -594,7 +599,7 @@ cleanup() {
       && mv -f "$STATE_DIR/${THREAD}.detach-status.tmp" "$STATE_DIR/${THREAD}.detach-status" 2>/dev/null \
       || true
   fi
-  rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP"
+  rm -f "$OUT_FILE" "$JSONL_FILE" "$LEASE_TMP" "$STREAM_TMP"
   # Release a still-held acquisition mutex (exit paths inside the claim's
   # critical section — busy refusal, non-regular lease, lost ownership,
   # failed verify). A normal acquisition releases it inline first. The
@@ -604,6 +609,9 @@ cleanup() {
   # Lease removal is ownership-checked: only the PID that wrote the lease may
   # remove it — a later overlapping dispatch's lease must never be deleted by
   # an earlier owner's exit.
+  if [[ -f "$STREAM_FILE" && "$(sed -n 's/^pid=//p' "$STREAM_FILE" 2>/dev/null)" == "$$" ]]; then
+    rm -f "$STREAM_FILE"
+  fi
   if [[ -f "$LEASE_FILE" && "$(cat "$LEASE_FILE" 2>/dev/null)" == "$$" ]]; then
     rm -f "$LEASE_FILE"
   fi
@@ -717,6 +725,11 @@ if ! $ONESHOT; then
     exit 10
   fi
   dir_lock_release_all
+  # Publish where this dispatch's Codex event stream lands: the path is a
+  # random mktemp name, so the threads-pane mod cannot find it otherwise.
+  # Owner-tagged like the lease, and removed by the same ownership check.
+  printf 'pid=%s\npath=%s\n' "$$" "$JSONL_FILE" > "$STREAM_TMP" \
+    && mv -f "$STREAM_TMP" "$STREAM_FILE" || rm -f "$STREAM_TMP"
   # Detach child: canonical output boundary + status slate, established the
   # moment the lease is OURS — before ANY further preflight, so every later
   # warning (invalid saved .id discarded, porcelain

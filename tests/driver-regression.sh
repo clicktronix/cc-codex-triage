@@ -22,6 +22,7 @@ cat > "$T/bin/codex" <<'STUB'
 # thread.started JSONL line. FAKE_CODEX_SPACED=1 emits "key": "value" with a
 # space after the colon (the formatting the old awk offsets silently broke on).
 # FAKE_CODEX_SLEEP=<s>  sleep before replying (lease-lifecycle tests).
+# FAKE_CODEX_HOLD=<s>   sleep after the first event, so a test can read a live stream.
 # FAKE_CODEX_BIGERR=1   emit >64KB of stderr noise (diag-cap test).
 # FAKE_CODEX_NOUUID=1   exit 0 but emit no recognizable session UUID.
 # FAKE_CODEX_NOEOL=1    write the reply WITHOUT a trailing newline. The real CLI can
@@ -56,6 +57,7 @@ elif [[ "${FAKE_CODEX_SPACED:-0}" == "1" ]]; then
 else
   echo '{"type":"thread.started","thread_id":"0a1b2c3d-1111-4222-8333-444455556666"}'
 fi
+[[ "${FAKE_CODEX_HOLD:-0}" != "0" ]] && sleep "$FAKE_CODEX_HOLD"
 if [[ -n "$out" ]]; then
   if [[ "${FAKE_CODEX_NOEOL:-0}" == "1" ]]; then
     printf '%s' "${FAKE_CODEX_REPLY:-FAKE_REPLY}" > "$out"
@@ -390,15 +392,22 @@ grep -q '^  FAKE_REPLY$' "$SD/a8.log" 2>/dev/null && ok "the reply body is in th
 
 echo "== lease: .active holds the dispatching PID during dispatch, gone after =="
 rm -rf "$SD"
-FAKE_CODEX_SLEEP=2 bash "$DRIVER" a9 <<< "ping" > "$T/a9.out" 2>&1 &
+FAKE_CODEX_SLEEP=1 FAKE_CODEX_HOLD=3 bash "$DRIVER" a9 <<< "ping" > "$T/a9.out" 2>&1 &
 DRV=$!
 i=0; while [[ ! -f "$SD/a9.active" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
 [[ -f "$SD/a9.active" ]] && ok "lease appeared during dispatch" || bad "lease never appeared"
 [[ "$(cat "$SD/a9.active" 2>/dev/null)" == "$DRV" ]] && ok "lease holds the dispatching PID" || bad "lease pid: '$(cat "$SD/a9.active" 2>/dev/null)' expected $DRV"
+i=0; while [[ ! -f "$SD/a9.stream" && $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
+STREAM_PATH="$(sed -n 's/^path=//p' "$SD/a9.stream" 2>/dev/null)"
+[[ "$(sed -n 's/^pid=//p' "$SD/a9.stream" 2>/dev/null)" == "$DRV" ]] && ok "stream pointer is tagged with the dispatching PID" || bad "stream pointer: '$(cat "$SD/a9.stream" 2>/dev/null)'"
+i=0; while ! grep -q '"thread.started"' "$STREAM_PATH" 2>/dev/null && [[ $i -lt 40 ]]; do sleep 0.1; i=$((i+1)); done
+grep -q '"thread.started"' "$STREAM_PATH" 2>/dev/null && ok "stream pointer names the live Codex JSONL" || bad "stream path '$STREAM_PATH' holds no Codex event"
 wait "$DRV"; RC=$?
 [[ "$RC" -eq 0 && ! -e "$SD/a9.active" ]] && ok "lease removed after successful exit" || bad "lease left after success (rc=$RC)"
+[[ ! -e "$SD/a9.stream" && ! -e "$STREAM_PATH" ]] && ok "stream pointer and its stream removed with the lease" || bad "stream pointer or stream left after success"
 FAKE_CODEX_EXIT=7 run a9b
 [[ "$RC" -eq 3 && ! -e "$SD/a9b.active" ]] && ok "lease removed after failed exit" || bad "lease left after failure (rc=$RC)"
+[[ ! -e "$SD/a9b.stream" ]] && ok "stream pointer removed after failed exit" || bad "stream pointer left after failure"
 
 echo "== lease removal is ownership-checked: a foreign lease survives =="
 rm -rf "$SD"
@@ -423,6 +432,7 @@ grep -q "busy (active dispatch pid=$FL)" "$T/err" && ok "busy message names the 
 [[ "$(cat "$SD/b1.active" 2>/dev/null)" == "$FL" ]] && ok "foreign lease untouched by the refusal" || bad "lease touched: '$(cat "$SD/b1.active" 2>/dev/null)'"
 [[ ! -e "$T/b1argv" ]] && ok "stub codex never ran for the refused dispatch" || bad "dispatch ran despite the live lease"
 [[ ! -f "$SD/b1.log" ]] && ok "no thread state written by the refused dispatch" || bad "refused dispatch wrote thread state"
+[[ ! -e "$SD/b1.stream" ]] && ok "refused dispatch publishes no stream pointer" || bad "refused dispatch wrote a stream pointer"
 run b1 --detach
 [[ "$RC" -eq 10 ]] && ok "busy thread -> exit 10 on --detach too (launcher pre-check)" || bad "detach busy rc=$RC err=$(cat "$T/err")"
 kill "$FL" 2>/dev/null; wait "$FL" 2>/dev/null

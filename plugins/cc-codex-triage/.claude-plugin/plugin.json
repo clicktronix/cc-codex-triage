@@ -20,5 +20,6 @@
     "worktree-isolation",
     "agent-skills",
     "slash-commands"
-  ]
+  ],
+  "types": "./types/index.d.ts"
 }
