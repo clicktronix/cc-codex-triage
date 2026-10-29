@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.16.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.15.1...v0.16.0) (2026-10-29)
+
+
+### Features
+
+* Codex threads pane mod with a live dispatch band ([#16](https://github.com/clicktronix/cc-codex-triage/issues/16)) ([74e0c0e](https://github.com/clicktronix/cc-codex-triage/commit/74e0c0eb0c096dacbbee8a35b595bc4c3104b605))
+
 ## [0.15.1] - 2026-10-25
 
 ### Changed
