@@ -28,24 +28,36 @@ backlog items. Details: [SKILL.md](skills/codex-triage/SKILL.md).
 ## Threads pane
 
 In the Claude Code CLI (2.1.287 or later, which loads mods), the plugin's mod shows the
-current context's Codex threads without a model turn. `/codex-pane` opens or closes a
-48-column pane (`ctrl+x tab` focuses it, then `ctrl+x left` or `ctrl+x right` widens or
-narrows it) listing each thread with its rounds, last activity and topic, the in-flight
-dispatch first with its round, running time and what Codex is doing now (the program it
-runs, the file it edits, or that it is replying), and the required-review states. While a
-dispatch runs, one line above the prompt says the same; a toast reports when it ends.
-Each idle thread shows the first line of its last reply; pressing the thread (`Enter` once
-the pane has focus, or a click) shows the whole reply until pressed again, and a new round
-of that thread replaces it.
+current context's Codex threads without a model turn: the threads whose state lives in
+this session's working directory, so a dispatch started from another repository shows in
+a session opened there.
+
+`/codex-pane` opens a pane beside the transcript, asking for 48 columns; a width you set
+wins. `ctrl+x tab` focuses it, `ctrl+x left` or `ctrl+x right` widens or narrows it. It
+lists each thread with its rounds, last activity and topic; an in-flight dispatch comes
+first with its round, running time and what Codex is doing now (the program it runs, the
+file it edits, or that it is replying); required-review states follow. Under an idle
+thread is the first line of its last reply, cut to the pane, with `+N lines` when there
+is more. A reply with more to see opens whole in place when its thread or that line is
+pressed (`Enter` once the pane has focus, or a click) and closes on a second press; a new
+round of that thread replaces it. While a dispatch runs, one line above the prompt says
+what the pane says; a toast reports when it ends.
+
+To turn the pane off, run `/codex-pane` again or press `ctrl+x x` while it has focus. It
+never opens by itself, so a closed pane stays closed. The band and the toast have no
+switch of their own: Claude Code has no setting that disables one plugin's mod, so they
+go only with the plugin (`/plugin`, or `"cc-codex-triage@cc-codex-triage": false` under
+`enabledPlugins`), which also removes its commands.
 
 The mod only reads: the state directory through `$.fs`, the dispatch's Codex event
-stream and each thread's log through `tail` (again only when the log changes), and `kill -0` on a lease PID. A command
-shows as its program alone (`npm …`), or for an interpreter its script
-(`bash check.sh`), never its arguments. Reply text is on screen (a first line per thread,
-the whole reply once opened) and command output never; everything shown passes through
-`redact.sh`, which masks known key shapes only. The stream is followed only at the driver's own
-`cc-codex-<thread>.XXXXXX.jsonl` name, and a stream or log only as a regular file. It makes no network calls and
-draws nothing outside the terminal, since `$.process` is CLI-only.
+stream and each thread's log through `tail` (a log again only when it changes), and
+`kill -0` on a lease PID. A command shows as its program alone (`npm …`), or for an
+interpreter its script (`bash check.sh`), never its arguments. Reply text is on screen (a
+first line per thread, the whole reply once opened) and command output never; everything
+shown passes through `redact.sh`, which masks known key shapes only. The stream is
+followed only at the driver's own `cc-codex-<thread>.XXXXXX.jsonl` name, and a stream or
+log only as a regular file. It makes no network calls and draws nothing outside the
+terminal, since `$.process` is CLI-only.
 
 ## Required review
 
