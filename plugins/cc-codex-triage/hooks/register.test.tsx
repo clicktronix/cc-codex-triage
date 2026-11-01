@@ -6,6 +6,9 @@ import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePi
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
 const START = 1_800_000_000_000
+// The mod's type environment has no timers; the test runtime does.
+const timers = globalThis as { setTimeout?: (run: () => void, ms: number) => unknown }
+const pause = (ms: number) => new Promise<void>(resolve => timers.setTimeout?.(resolve, ms))
 const tailed: string[] = []
 const logReads: string[] = []
 
@@ -372,7 +375,7 @@ describe('mod', () => {
       presentation: { isFullscreen: false, columns: 120 },
     })
     await listReached
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await pause(200)
     release()
     expect((await pending).text).toBe('Opened the reply view for old-one.')
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
