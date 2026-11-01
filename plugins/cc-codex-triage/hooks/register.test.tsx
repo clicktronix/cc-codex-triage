@@ -60,6 +60,8 @@ type Faults = {
   beforeLogRead?: (path: string) => Promise<'deny' | void>
   // Runs before the state directory is listed.
   beforeList?: () => Promise<void>
+  // Runs before an existence check inside the state directory.
+  beforeExists?: (path: string) => Promise<void>
   // When given, the pane is shown while this says so, and ui.open / ui.close change it.
   pane?: { isShown: boolean }
 }
@@ -87,9 +89,11 @@ function world(
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('fs.exists', (_, e) => ({
-    value: e.path === DIR || (e.path.startsWith(`${DIR}/`) && files[e.path.slice(DIR.length + 1)] !== undefined),
-  }))
+  on('fs.exists', async (_, e) => {
+    await faults.beforeExists?.(e.path)
+    const name = e.path.slice(DIR.length + 1)
+    return { value: e.path === DIR || (e.path.startsWith(`${DIR}/`) && files[name] !== undefined) }
+  })
   // Every path is an existing regular file, so only the mod's own checks stop a read.
   on('fs.stat', (_, e) => ({
     value: {
@@ -318,6 +322,59 @@ describe('mod', () => {
       presentation: { isFullscreen: false, columns: 120 },
     })
     expect(text).toBe('Opened the reply view for old-one.')
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts.some(t => t.startsWith('○ old-one'))).toBe(true)
+    expect(texts).toContain('more')
+    await ui.unmount()
+  })
+
+  test('a scan already running does not drop a thread just opened past the row cap', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { 'old-one.id': 'x', 'old-one.log': logOf('old reply\nmore') }
+    for (let i = 0; i < 12; i += 1) {
+      files[`recent-${i}.id`] = 'y'
+      files[`recent-${i}.log`] = logOf(`recent reply ${i} ${'x'.repeat(200)}`)
+    }
+    let release = () => {}
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let listHeld = () => {}
+    const listReached = new Promise<void>(resolve => {
+      listHeld = resolve
+    })
+    let isHolding = false
+    world(on, files, new Set(), true, EVENTS, {
+      isListBroken: false,
+      beforeList: async () => {
+        if (!isHolding) return
+        isHolding = false
+        listHeld()
+        await held
+      },
+      // The timer's scan starts while the command checks the thread's state file, so it reads
+      // the pick before the command writes it and is still running when the command waits.
+      beforeExists: async path => {
+        if (!path.endsWith('/old-one.id')) return
+        isHolding = true
+        void clock.advance(2000)
+        await listReached
+      },
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const pending = $.command.run({
+      command: 'codex-pane',
+      args: 'old-one',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    await listReached
+    await new Promise(resolve => setTimeout(resolve, 200))
+    release()
+    expect((await pending).text).toBe('Opened the reply view for old-one.')
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts.some(t => t.startsWith('○ old-one'))).toBe(true)

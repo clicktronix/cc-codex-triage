@@ -221,11 +221,14 @@ async function toggleReply($: EngineInterface, thread: string): Promise<'opened'
 
 // An open reply follows its thread: a new round or a failed read loads it again, and a
 // thread gone closes it.
-async function followReply($: EngineInterface, shot: Snapshot) {
+// `pinned` is the thread the scan behind `shot` kept listed. A scan started before a newer
+// pick never saw it, so it neither closes nor loads that pick; the next scan does.
+async function followReply($: EngineInterface, shot: Snapshot, pinned: string | null) {
   const open = await read($, reply)
   if (!open) return
   const row = shot.threads.find(t => t.name === open.thread)
   if (!row || !shot.stateDir) {
+    if (open.thread !== pinned) return
     await update($, reply, now => (now?.thread === open.thread ? null : now))
     return
   }
@@ -263,12 +266,12 @@ async function resolveStateDir($: EngineInterface): Promise<string | null> {
 
 // Idle, the scan runs every IDLE_EVERY ticks; it runs every tick while a thread
 // is busy, while the pane is shown, or for HOT_MS after a cc-codex-triage call.
-// One scan at a time. A forced tick waits for the one in flight instead of skipping, so a
-// command run during the first scan still sees the threads it found.
+// One scan at a time. A forced tick waits for the one in flight and then scans itself, so a
+// command sees what it just picked rather than what an earlier scan started from.
 async function tick($: EngineInterface, isForced = false) {
-  if (scanning) {
-    if (isForced) await scanning
-    return
+  while (scanning) {
+    if (!isForced) return
+    await scanning
   }
   scanning = runTick($, isForced).finally(() => {
     scanning = null
@@ -284,9 +287,10 @@ async function runTick($: EngineInterface, isForced: boolean) {
   const isShown = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
   if (!isForced && !isBusy && !isShown && now > hotUntilMs && ticks % IDLE_EVERY !== 0) return
 
+  const pinned = (await read($, reply))?.thread ?? null
   let next: Snapshot
   try {
-    next = await scan($, await resolveStateDir($), now, (await read($, reply))?.thread ?? null)
+    next = await scan($, await resolveStateDir($), now, pinned)
   } catch (error) {
     // A failed scan says nothing about the threads: keep what was last seen, so
     // a running dispatch is neither dropped nor announced as finished.
@@ -299,7 +303,7 @@ async function runTick($: EngineInterface, isForced: boolean) {
     if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
   }
   await update($, snapshot, () => next)
-  await followReply($, next)
+  await followReply($, next, pinned)
 }
 
 export const register: Register = on => {
