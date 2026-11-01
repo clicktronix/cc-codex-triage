@@ -96,7 +96,8 @@ async function threadRow(
   }
 }
 
-async function scan($: EngineInterface, dir: string | null, atMs: number): Promise<Snapshot> {
+// `pinned` is the thread whose reply is open: it stays listed past the row cap.
+async function scan($: EngineInterface, dir: string | null, atMs: number, pinned: string | null): Promise<Snapshot> {
   const empty: Snapshot = { atMs, stateDir: dir, threads: [], reviews: [], error: null }
   if (!dir || !(await $.fs.exists(dir))) return empty
 
@@ -124,7 +125,7 @@ async function scan($: EngineInterface, dir: string | null, atMs: number): Promi
     // A first dispatch has a lease but no .id until it completes.
     .filter(([name, own]) => own.has('id') || live.has(name))
     .sort(([an, a], [bn, b]) => Number(live.has(bn)) - Number(live.has(an)) || lastActivityMs(b) - lastActivityMs(a))
-    .slice(0, DETAILED)
+    .filter(([name], i) => i < DETAILED || name === pinned)
   const threads = await Promise.all(
     recent.map(([name, own]) => threadRow($, dir, name, own, live.get(name) ?? null)),
   )
@@ -196,10 +197,19 @@ async function showReply($: EngineInterface, dir: string, thread: string, forMs:
   )
 }
 
+// The driver's thread grammar; a name outside it never reaches a path.
+const THREAD_NAME = /^[A-Za-z0-9_.-]+$/
+
 async function toggleReply($: EngineInterface, thread: string): Promise<'opened' | 'closed' | 'missing'> {
   const shot = await read($, snapshot)
   const row = shot?.threads.find(t => t.name === thread)
-  if (!shot?.stateDir || !row) return 'missing'
+  if (!shot?.stateDir) return 'missing'
+  if (!row) {
+    // Past the row cap: open it by its state files; the next scan pins it and loads the reply.
+    if (!THREAD_NAME.test(thread) || !(await $.fs.exists(`${shot.stateDir}/${thread}.id`))) return 'missing'
+    await update($, reply, () => ({ thread, forMs: -1, status: 'loading' as const, lines: null }))
+    return 'opened'
+  }
   let isOpening = false
   await update($, reply, open => {
     isOpening = open?.thread !== thread
@@ -276,7 +286,7 @@ async function runTick($: EngineInterface, isForced: boolean) {
 
   let next: Snapshot
   try {
-    next = await scan($, await resolveStateDir($), now)
+    next = await scan($, await resolveStateDir($), now, (await read($, reply))?.thread ?? null)
   } catch (error) {
     // A failed scan says nothing about the threads: keep what was last seen, so
     // a running dispatch is neither dropped nor announced as finished.
@@ -321,8 +331,13 @@ export const register: Register = on => {
 
     const result = await toggleReply($, thread)
     if (result === 'missing') return { text: `No Codex thread named ${clip(thread, 64)} in this context.` }
+    if (result === 'closed') return { text: `Closed the reply view for ${thread}.` }
+    await tick($, true)
+    // Above the prompt the block shows a window of the list; bring the opened thread into it.
+    // A refused or failed scroll leaves the reply open where it is.
+    await $.ui.scroll({ to: { key: `thread:${thread}` }, in: PANE, block: 'start' }).catch(() => undefined)
 
-    return { text: result === 'opened' ? `Showing the last reply of ${thread}.` : `Hid the reply of ${thread}.` }
+    return { text: `Opened the reply view for ${thread}.` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -426,7 +441,7 @@ export const register: Register = on => {
             )}
           </Box>
         ))}
-        {!open && shot.threads.some(isExpandable) && <Text dimColor>{cut('/codex-pane <thread> or a click: whole reply')}</Text>}
+        {!open && shot.threads.some(isExpandable) && <Text dimColor>{cut(e.props.placement === 'dock' ? '/codex-pane <thread> or a click: whole reply' : '/codex-pane <thread>: whole reply')}</Text>}
         {shot.reviews.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <Text weight="semibold">Required review</Text>
