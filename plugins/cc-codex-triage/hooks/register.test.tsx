@@ -253,6 +253,39 @@ describe('mod', () => {
     expect(opened).toEqual([{ id: 'codex-threads', columns: 48 }])
   })
 
+  test('/codex-pane <thread> opens the pane and toggles that reply without a press', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files = { ...FILES, 'plan-x.log': logOf('first line\nsecond line') }
+    const opened: string[] = []
+    world(on, files, new Set(), false)
+    on('ui.open', (_, e) => {
+      opened.push(e.id)
+      return { value: { isPlaced: true } }
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const run = (args: string) =>
+      $.command.run({
+        command: 'codex-pane',
+        args,
+        origin: { kind: 'composer' },
+        presentation: { isFullscreen: false, columns: 120 },
+      })
+
+    expect((await run(' plan-x ')).text).toBe('Showing the last reply of plan-x.')
+    expect(opened).toEqual(['codex-threads'])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('second line')
+    await ui.unmount()
+
+    expect((await run('plan-x')).text).toBe('Hid the reply of plan-x.')
+    const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await after.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('second line')
+    await after.unmount()
+
+    expect((await run('nope')).text).toBe('No Codex thread named nope in this context.')
+  })
+
   test('the band shows a running dispatch and steps aside when none runs', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const alive = new Set(['4242'])
@@ -422,7 +455,7 @@ describe('mod', () => {
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const before = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(before).toContain('ctrl+x tab, then Enter: whole reply')
+    expect(before).toContain('/codex-pane <thread> or a click: whole reply')
     expect(before).toContain('  Bearer [redacted] · +25 lines')
     expect(before).not.toContain('line 1')
     expect(before.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)

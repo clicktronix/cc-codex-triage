@@ -288,7 +288,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'codex-pane',
-      description: "Show this context's Codex threads in a pane",
+      description: "Show this context's Codex threads in a pane; with a thread name, its whole last reply",
+      argumentHint: '[thread]',
     })
     timer?.cancel()
     timer = $.clock.every(TICK_MS, () => void tick($))
@@ -297,16 +298,26 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'codex-pane' }, async $ => {
+  // A thread name opens its reply without a press: above the prompt on the main screen the
+  // pane's buttons take no clicks and ctrl+x tab does not reach them.
+  on('command.run', { command: 'codex-pane' }, async ($, e) => {
+    const thread = e.args.trim()
     const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-    if (isOpen) {
+    if (!thread && isOpen) {
       await $.ui.close({ id: PANE })
       return { text: 'Codex threads pane closed.' }
     }
-    await $.ui.open({ id: PANE, title: 'Codex', columns: PANE_COLUMNS })
+    if (!isOpen) await $.ui.open({ id: PANE, title: 'Codex', columns: PANE_COLUMNS })
     await tick($, true)
+    if (!thread) return { text: 'Codex threads pane opened.' }
 
-    return { text: 'Codex threads pane opened.' }
+    if (!(await read($, snapshot))?.threads.some(t => t.name === thread)) {
+      return { text: `No Codex thread named ${clip(thread, 64)} in this context.` }
+    }
+    await toggleReply($, thread)
+    const isShown = (await read($, reply))?.thread === thread
+
+    return { text: isShown ? `Showing the last reply of ${thread}.` : `Hid the reply of ${thread}.` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -410,7 +421,7 @@ export const register: Register = on => {
             )}
           </Box>
         ))}
-        {!open && shot.threads.some(isExpandable) && <Text dimColor>{cut('ctrl+x tab, then Enter: whole reply')}</Text>}
+        {!open && shot.threads.some(isExpandable) && <Text dimColor>{cut('/codex-pane <thread> or a click: whole reply')}</Text>}
         {shot.reviews.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <Text weight="semibold">Required review</Text>
