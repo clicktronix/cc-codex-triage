@@ -32,15 +32,17 @@ current context's Codex threads without a model turn: the threads whose state li
 this session's working directory, so a dispatch started from another repository shows in
 a session opened there.
 
-`/codex-pane` opens a pane beside the transcript, asking for 48 columns; a width you set
-wins. `ctrl+x tab` focuses it, `ctrl+x left` or `ctrl+x right` widens or narrows it. It
+`/codex-pane` opens a pane. In the fullscreen layout it docks beside the transcript, asking
+for 48 columns (a width you set wins; `ctrl+x tab` focuses it, `ctrl+x left` or `ctrl+x right`
+widens or narrows it); on the main screen, or a terminal under 110 columns, it sits above the
+prompt. It
 lists each thread with its rounds, last activity and topic; an in-flight dispatch comes
 first with its round, running time and what Codex is doing now (the program it runs, the
 file it edits, or that it is replying); required-review states follow. Under an idle
 thread is the first line of its last reply, cut to the pane, with `+N lines` when there
-is more. A reply with more to see opens whole in place when its thread or that line is
-pressed (`Enter` once the pane has focus, or a click) and closes on a second press; a new
-round of that thread replaces it. While a dispatch runs, one line above the prompt says
+is more. `/codex-pane <thread>` opens that thread's whole reply in place and closes it on a
+second run, in either layout; in the docked pane a click on the thread or its line does the
+same. A new round of that thread replaces an open reply. While a dispatch runs, one line above the prompt says
 what the pane says; a toast reports when it ends.
 
 To turn the pane off, run `/codex-pane` again or press `ctrl+x x` while it has focus. It

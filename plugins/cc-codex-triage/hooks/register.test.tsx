@@ -6,6 +6,9 @@ import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePi
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
 const START = 1_800_000_000_000
+// The mod's type environment has no timers; the test runtime does.
+const timers = globalThis as { setTimeout?: (run: () => void, ms: number) => unknown }
+const pause = (ms: number) => new Promise<void>(resolve => timers.setTimeout?.(resolve, ms))
 const tailed: string[] = []
 const logReads: string[] = []
 
@@ -58,6 +61,12 @@ type Faults = {
   links?: string[]
   // Runs before a log is read; 'deny' fails that read.
   beforeLogRead?: (path: string) => Promise<'deny' | void>
+  // Runs before the state directory is listed.
+  beforeList?: () => Promise<void>
+  // Runs before an existence check inside the state directory.
+  beforeExists?: (path: string) => Promise<void>
+  // When given, the pane is shown while this says so, and ui.open / ui.close change it.
+  pane?: { isShown: boolean }
 }
 
 function world(
@@ -75,7 +84,7 @@ function world(
   on('session.cwd', () => ({ value: '/repo' }))
   on('command.register', () => ({ value: { command: 'codex-pane' } }))
   on('ui.panes', () => ({
-    value: isPaneShown
+    value: (faults.pane?.isShown ?? isPaneShown)
       ? [{ id: 'codex-threads', title: 'Codex', isShown: true, isFocused: false, isPlaced: true }]
       : [],
   }))
@@ -83,7 +92,11 @@ function world(
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('fs.exists', (_, e) => ({ value: e.path === DIR }))
+  on('fs.exists', async (_, e) => {
+    await faults.beforeExists?.(e.path)
+    const name = e.path.slice(DIR.length + 1)
+    return { value: e.path === DIR || (e.path.startsWith(`${DIR}/`) && files[name] !== undefined) }
+  })
   // Every path is an existing regular file, so only the mod's own checks stop a read.
   on('fs.stat', (_, e) => ({
     value: {
@@ -93,7 +106,8 @@ function world(
       isLink: faults.links?.includes(e.path) ?? false,
     },
   }))
-  on('fs.list', () => {
+  on('fs.list', async () => {
+    await faults.beforeList?.()
     if (faults.isListBroken) return { deny: 'EIO' }
     return {
     value: Object.keys(files).map(name => ({
@@ -251,6 +265,165 @@ describe('mod', () => {
     })
     expect(text).toBe('Codex threads pane opened.')
     expect(opened).toEqual([{ id: 'codex-threads', columns: 48 }])
+  })
+
+  test('/codex-pane <thread> opens the pane and toggles that reply without a press', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files = { ...FILES, 'plan-x.log': logOf('first line\nsecond line') }
+    const pane = { isShown: false }
+    const opened: string[] = []
+    world(on, files, new Set(), false, EVENTS, { isListBroken: false, pane })
+    on('ui.open', (_, e) => {
+      opened.push(e.id)
+      pane.isShown = true
+      return { value: { isPlaced: true } }
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const run = (args: string) =>
+      $.command.run({
+        command: 'codex-pane',
+        args,
+        origin: { kind: 'composer' },
+        presentation: { isFullscreen: false, columns: 120 },
+      })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await run(' plan-x ')).text).toBe('Opened the reply view for plan-x.')
+    expect(opened).toEqual(['codex-threads'])
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('second line')
+    await ui.unmount()
+
+    expect((await run('plan-x')).text).toBe('Closed the reply view for plan-x.')
+    expect(opened).toEqual(['codex-threads'])
+    const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await after.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('second line')
+    await after.unmount()
+
+    expect((await run('nope')).text).toBe('No Codex thread named nope in this context.')
+    expect((await run('../plan-x')).text).toBe('No Codex thread named ../plan-x in this context.')
+  })
+
+  test('/codex-pane <thread> opens a thread past the pane row cap and keeps it listed', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { 'old-one.id': 'x', 'old-one.log': logOf('old reply\nmore') }
+    for (let i = 0; i < 12; i += 1) {
+      files[`recent-${i}.id`] = 'y'
+      files[`recent-${i}.log`] = logOf(`recent reply ${i} ${'x'.repeat(200)}`)
+    }
+    world(on, files, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const before = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await before.findAll({ type: 'Text' })).some(t => t.text.includes('old-one'))).toBe(false)
+    await before.unmount()
+
+    const { text } = await $.command.run({
+      command: 'codex-pane',
+      args: 'old-one',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    expect(text).toBe('Opened the reply view for old-one.')
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts.some(t => t.startsWith('○ old-one'))).toBe(true)
+    expect(texts).toContain('more')
+    await ui.unmount()
+  })
+
+  test('a scan already running does not drop a thread just opened past the row cap', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { 'old-one.id': 'x', 'old-one.log': logOf('old reply\nmore') }
+    for (let i = 0; i < 12; i += 1) {
+      files[`recent-${i}.id`] = 'y'
+      files[`recent-${i}.log`] = logOf(`recent reply ${i} ${'x'.repeat(200)}`)
+    }
+    let release = () => {}
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let listHeld = () => {}
+    const listReached = new Promise<void>(resolve => {
+      listHeld = resolve
+    })
+    let isHolding = false
+    world(on, files, new Set(), true, EVENTS, {
+      isListBroken: false,
+      beforeList: async () => {
+        if (!isHolding) return
+        isHolding = false
+        listHeld()
+        await held
+      },
+      // The timer's scan starts while the command checks the thread's state file, so it reads
+      // the pick before the command writes it and is still running when the command waits.
+      beforeExists: async path => {
+        if (!path.endsWith('/old-one.id')) return
+        isHolding = true
+        void clock.advance(2000)
+        await listReached
+      },
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const pending = $.command.run({
+      command: 'codex-pane',
+      args: 'old-one',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    await listReached
+    await pause(200)
+    release()
+    expect((await pending).text).toBe('Opened the reply view for old-one.')
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts.some(t => t.startsWith('○ old-one'))).toBe(true)
+    expect(texts).toContain('more')
+    await ui.unmount()
+  })
+
+  test('the hint offers a click only where the pane is docked', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, { ...FILES, 'plan-x.log': logOf('first line\nsecond line') }, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const docked = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await docked.find({ type: 'Text', text: '/codex-pane <thread> or a click: whole reply' })).toBeDefined()
+    await docked.unmount()
+    const inline = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'inline' }, surface: 'terminal' })
+    expect(await inline.find({ type: 'Text', text: '/codex-pane <thread>: whole reply' })).toBeDefined()
+    await inline.unmount()
+  })
+
+  test('/codex-pane <thread> run during the first scan waits for it', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    let release = () => {}
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let lists = 0
+    world(on, { ...FILES, 'plan-x.log': logOf('first line\nsecond line') }, new Set(), false, EVENTS, {
+      isListBroken: false,
+      beforeList: async () => {
+        lists += 1
+        if (lists === 1) await held
+      },
+    })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+    const pending = $.command.run({
+      command: 'codex-pane',
+      args: 'plan-x',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    await clock.advance(1)
+    release()
+    expect((await pending).text).toBe('Opened the reply view for plan-x.')
   })
 
   test('the band shows a running dispatch and steps aside when none runs', async ($, on) => {
@@ -422,7 +595,7 @@ describe('mod', () => {
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const before = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(before).toContain('ctrl+x tab, then Enter: whole reply')
+    expect(before).toContain('/codex-pane <thread> or a click: whole reply')
     expect(before).toContain('  Bearer [redacted] · +25 lines')
     expect(before).not.toContain('line 1')
     expect(before.some(t => t.includes('old reply') || t.includes('abcdefghijklmnop'))).toBe(false)
