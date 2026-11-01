@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.17.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.16.0...v0.17.0) (2026-11-01)
+
+
+### Features
+
+* /codex-pane &lt;thread&gt; opens a reply in either layout ([#18](https://github.com/clicktronix/cc-codex-triage/issues/18)) ([42ce5f4](https://github.com/clicktronix/cc-codex-triage/commit/42ce5f43e0c934ce1078637d2244812ea6bc69d3))
+
 ## [0.16.0] - 2026-10-29
 
 ### Added
