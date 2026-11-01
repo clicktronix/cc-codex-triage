@@ -196,16 +196,17 @@ async function showReply($: EngineInterface, dir: string, thread: string, forMs:
   )
 }
 
-async function toggleReply($: EngineInterface, thread: string) {
+async function toggleReply($: EngineInterface, thread: string): Promise<'opened' | 'closed' | 'missing'> {
   const shot = await read($, snapshot)
   const row = shot?.threads.find(t => t.name === thread)
-  if (!shot?.stateDir || !row) return
+  if (!shot?.stateDir || !row) return 'missing'
   let isOpening = false
   await update($, reply, open => {
     isOpening = open?.thread !== thread
     return isOpening ? { thread, forMs: row.lastActivityMs, status: 'loading' as const, lines: null } : null
   })
   if (isOpening) await showReply($, shot.stateDir, thread, row.lastActivityMs)
+  return isOpening ? 'opened' : 'closed'
 }
 
 // An open reply follows its thread: a new round or a failed read loads it again, and a
@@ -235,7 +236,7 @@ function finishedLine(name: string, thread: ThreadRow | undefined, reviews: Revi
 let stateDir: { cwd: string; dir: string | null } | null = null
 let hotUntilMs = 0
 let ticks = 0
-let isScanning = false
+let scanning: Promise<void> | null = null
 let timer: { cancel: () => void } | null = null
 
 async function resolveStateDir($: EngineInterface): Promise<string | null> {
@@ -252,36 +253,43 @@ async function resolveStateDir($: EngineInterface): Promise<string | null> {
 
 // Idle, the scan runs every IDLE_EVERY ticks; it runs every tick while a thread
 // is busy, while the pane is shown, or for HOT_MS after a cc-codex-triage call.
+// One scan at a time. A forced tick waits for the one in flight instead of skipping, so a
+// command run during the first scan still sees the threads it found.
 async function tick($: EngineInterface, isForced = false) {
-  if (isScanning) return
-  isScanning = true
-  try {
-    ticks += 1
-    const now = await $.clock.now()
-    const previous = await read($, snapshot)
-    const isBusy = previous?.threads.some(t => t.isBusy) ?? false
-    const isShown = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
-    if (!isForced && !isBusy && !isShown && now > hotUntilMs && ticks % IDLE_EVERY !== 0) return
-
-    let next: Snapshot
-    try {
-      next = await scan($, await resolveStateDir($), now)
-    } catch (error) {
-      // A failed scan says nothing about the threads: keep what was last seen, so
-      // a running dispatch is neither dropped nor announced as finished.
-      const kept = previous ?? { atMs: now, stateDir: stateDir?.dir ?? null, threads: [], reviews: [], error: null }
-      await update($, snapshot, () => ({ ...kept, error: String(error) }))
-      return
-    }
-    for (const before of previous?.threads ?? []) {
-      const after = next.threads.find(t => t.name === before.name)
-      if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
-    }
-    await update($, snapshot, () => next)
-    await followReply($, next)
-  } finally {
-    isScanning = false
+  if (scanning) {
+    if (isForced) await scanning
+    return
   }
+  scanning = runTick($, isForced).finally(() => {
+    scanning = null
+  })
+  await scanning
+}
+
+async function runTick($: EngineInterface, isForced: boolean) {
+  ticks += 1
+  const now = await $.clock.now()
+  const previous = await read($, snapshot)
+  const isBusy = previous?.threads.some(t => t.isBusy) ?? false
+  const isShown = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
+  if (!isForced && !isBusy && !isShown && now > hotUntilMs && ticks % IDLE_EVERY !== 0) return
+
+  let next: Snapshot
+  try {
+    next = await scan($, await resolveStateDir($), now)
+  } catch (error) {
+    // A failed scan says nothing about the threads: keep what was last seen, so
+    // a running dispatch is neither dropped nor announced as finished.
+    const kept = previous ?? { atMs: now, stateDir: stateDir?.dir ?? null, threads: [], reviews: [], error: null }
+    await update($, snapshot, () => ({ ...kept, error: String(error) }))
+    return
+  }
+  for (const before of previous?.threads ?? []) {
+    const after = next.threads.find(t => t.name === before.name)
+    if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
+  }
+  await update($, snapshot, () => next)
+  await followReply($, next)
 }
 
 export const register: Register = on => {
@@ -311,13 +319,10 @@ export const register: Register = on => {
     await tick($, true)
     if (!thread) return { text: 'Codex threads pane opened.' }
 
-    if (!(await read($, snapshot))?.threads.some(t => t.name === thread)) {
-      return { text: `No Codex thread named ${clip(thread, 64)} in this context.` }
-    }
-    await toggleReply($, thread)
-    const isShown = (await read($, reply))?.thread === thread
+    const result = await toggleReply($, thread)
+    if (result === 'missing') return { text: `No Codex thread named ${clip(thread, 64)} in this context.` }
 
-    return { text: isShown ? `Showing the last reply of ${thread}.` : `Hid the reply of ${thread}.` }
+    return { text: result === 'opened' ? `Showing the last reply of ${thread}.` : `Hid the reply of ${thread}.` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {

@@ -58,6 +58,8 @@ type Faults = {
   links?: string[]
   // Runs before a log is read; 'deny' fails that read.
   beforeLogRead?: (path: string) => Promise<'deny' | void>
+  // Runs before the state directory is listed.
+  beforeList?: () => Promise<void>
 }
 
 function world(
@@ -93,7 +95,8 @@ function world(
       isLink: faults.links?.includes(e.path) ?? false,
     },
   }))
-  on('fs.list', () => {
+  on('fs.list', async () => {
+    await faults.beforeList?.()
     if (faults.isListBroken) return { deny: 'EIO' }
     return {
     value: Object.keys(files).map(name => ({
@@ -284,6 +287,34 @@ describe('mod', () => {
     await after.unmount()
 
     expect((await run('nope')).text).toBe('No Codex thread named nope in this context.')
+  })
+
+  test('/codex-pane <thread> run during the first scan waits for it', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    let release = () => {}
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let lists = 0
+    world(on, { ...FILES, 'plan-x.log': logOf('first line\nsecond line') }, new Set(), false, EVENTS, {
+      isListBroken: false,
+      beforeList: async () => {
+        lists += 1
+        if (lists === 1) await held
+      },
+    })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+    const pending = $.command.run({
+      command: 'codex-pane',
+      args: 'plan-x',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    await clock.advance(1)
+    release()
+    expect((await pending).text).toBe('Showing the last reply of plan-x.')
   })
 
   test('the band shows a running dispatch and steps aside when none runs', async ($, on) => {
