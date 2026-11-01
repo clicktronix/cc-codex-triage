@@ -2,12 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.17.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.16.0...v0.17.0) (2026-11-01)
+## [0.17.0] - 2026-11-01
 
+### Added
+- `/codex-pane <thread>` opens that thread's whole last reply in the threads pane and closes it on a
+  second run, in either layout: above the prompt on the main screen the pane's buttons take no
+  clicks and `ctrl+x tab` does not reach them. The pane opens if closed and scrolls to the reply; a
+  thread past the pane's 12 rows opens by its state file and stays listed while its reply is open (#18).
 
-### Features
+### Changed
+- The pane's hint offers a click only where the pane is docked beside the transcript (#18).
 
-* /codex-pane &lt;thread&gt; opens a reply in either layout ([#18](https://github.com/clicktronix/cc-codex-triage/issues/18)) ([42ce5f4](https://github.com/clicktronix/cc-codex-triage/commit/42ce5f43e0c934ce1078637d2244812ea6bc69d3))
+### Fixed
+- A command run during a scan waits for it and scans again, so it sees the thread it names and a
+  scan started earlier no longer closes a reply just opened (#18).
 
 ## [0.16.0] - 2026-10-29
 
