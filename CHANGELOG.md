@@ -2,12 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.18.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.17.0...v0.18.0) (2026-11-03)
+## [0.18.0] - 2026-11-03
 
-
-### Features
-
-* the threads pane shows reply text without Markdown marks ([#20](https://github.com/clicktronix/cc-codex-triage/issues/20)) ([a712e27](https://github.com/clicktronix/cc-codex-triage/commit/a712e27229bf2c5c89436af8ff292ef2f196dd49))
+### Changed
+- The threads pane shows reply text without the Markdown marks a terminal draws literally: heading
+  hashes, quote marks, `**bold**`, code spans and `[text](link)` keep only their words, while fenced
+  code stays literal with its fence lines blank, and single `*` and `_` stay. The stripping runs
+  after `redact.sh`, in linear time on any reply (#20).
 
 ## [0.17.0] - 2026-11-01
 
