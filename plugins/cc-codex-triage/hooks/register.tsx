@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Reply, ReviewRow, Snapshot, ThreadRow } from '../types'
-import { ago, cells, clip, elapsed, fit, fields, isStreamPath, lastEvent, lastReply, leasePid, plainLine, rounds, splitStateName } from './parse'
+import { ago, cells, clip, elapsed, fit, fields, isStreamPath, lastEvent, lastReply, leasePid, plainReply, rounds, splitStateName } from './parse'
 import type { Suffix } from './parse'
 
 const PANE = 'codex-threads'
@@ -167,7 +167,7 @@ async function loadReply($: EngineInterface, dir: string, thread: string, forMs:
         timeoutMs: 5000,
       })
       return redacted.exitCode === 0
-        ? { ...ready, lines: redacted.stdout.replace(/\s+$/, '').split('\n').map(plainLine) }
+        ? { ...ready, lines: plainReply(redacted.stdout.replace(/\s+$/, '').split('\n')) }
         : null
     }
     return ready

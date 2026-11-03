@@ -129,17 +129,96 @@ export function lastEvent(jsonl: string): string | null {
 
 // The last REPLY section of a thread log tail. The driver writes markers at column 0
 // and indents every body line two spaces, so no prompt or reply text reads as a marker.
-// A reply line as the pane shows it: Markdown marks a terminal draws literally are dropped —
-// heading hashes, quote marks, fences, **bold**, `code`, [text](link) — and the words kept. Single
-// `*` and `_` stay, since they are often part of a name (`__init__`, `snake_case`).
+// A reply as the pane shows it: Markdown marks a terminal draws literally are dropped and the
+// words kept. Fenced code stays literal, its fence lines blank, since a `#` or `**` there is code.
+// Single `*` and `_` stay, being often part of a name (`__init__`, `snake_case`).
+const OPEN_FENCE = /^ {0,3}(`{3,}[^`]*|~{3,}.*)$/
+
+export function plainReply(lines: string[]): string[] {
+  let fence: string | null = null
+  return lines.map(line => {
+    if (fence) {
+      const close = line.trim()
+      if (close.length >= fence.length && close === close[0]?.repeat(close.length) && close[0] === fence[0]) fence = null
+      return fence ? line : ''
+    }
+    const open = OPEN_FENCE.exec(line)
+    if (open) {
+      fence = /^[`~]+/.exec(open[1] ?? '')?.[0] ?? null
+      return ''
+    }
+    return plainLine(line)
+  })
+}
+
 export function plainLine(line: string): string {
-  if (/^\s*(```|~~~)/.test(line)) return ''
-  return line
-    .replace(/^(\s*)#{1,6}\s+/, '$1')
-    .replace(/^(\s*)>\s?/, '$1')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1')
+  return plainInline(line.replace(/^(\s*)#{1,6}\s+/, '$1').replace(/^(\s*)>\s?/, '$1'))
+}
+
+// One pass over the line. Every forward search remembers its answer, so a mark that never closes
+// is looked for once, not once per occurrence: the cost stays linear in the line.
+function plainInline(text: string): string {
+  const next = new Map<string, number>()
+  const find = (token: string, from: number) => {
+    const known = next.get(token)
+    if (known !== undefined && (known === -1 || known >= from)) return known
+    const at = text.indexOf(token, from)
+    next.set(token, at)
+    return at
+  }
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    if (text.startsWith('**', i)) {
+      const end = find('**', i + 2)
+      if (end > i + 2) {
+        out += plainInline(text.slice(i + 2, end))
+        i = end + 2
+        continue
+      }
+    }
+    if (text[i] === '`') {
+      let run = 1
+      while (text[i + run] === '`') run += 1
+      const fence = '`'.repeat(run)
+      const end = find(fence, i + run)
+      if (end > i + run && text[end + run] !== '`') {
+        out += text.slice(i + run, end)
+        i = end + run
+        continue
+      }
+      out += fence
+      i += run
+      continue
+    }
+    if (text[i] === '[') {
+      const close = find(']', i + 1)
+      if (close > i + 1 && text[close + 1] === '(') {
+        const end = linkEnd(text, close + 2)
+        if (end !== -1) {
+          out += plainInline(text.slice(i + 1, close))
+          i = end + 1
+          continue
+        }
+      }
+    }
+    out += text[i]
+    i += 1
+  }
+  return out
+}
+
+// The `)` that closes a link target, counting nested parentheses (`/app/(auth)/page.tsx`); -1 when
+// the target has a space or does not close within 2048 characters.
+function linkEnd(text: string, from: number): number {
+  let depth = 1
+  for (let j = from; j < text.length && j < from + 2048; j += 1) {
+    const c = text[j]
+    if (c === ' ') return -1
+    if (c === '(') depth += 1
+    if (c === ')' && --depth === 0) return j
+  }
+  return -1
 }
 
 export function lastReply(log: string): string | null {

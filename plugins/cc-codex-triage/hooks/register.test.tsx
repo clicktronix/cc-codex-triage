@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePid, plainLine, splitStateName } from './parse'
+import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePid, plainLine, plainReply, splitStateName } from './parse'
 
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
@@ -181,8 +181,29 @@ describe('parse', () => {
       '- [P2] register.tsx:322 — tick races',
     )
     expect(plainLine('> quoted')).toBe('quoted')
-    expect(plainLine('```bash')).toBe('')
     expect(plainLine('call __init__ on snake_case and 2 * 3')).toBe('call __init__ on snake_case and 2 * 3')
+    expect(plainLine('see [page.tsx](/app/(auth)/page.tsx) now')).toBe('see page.tsx now')
+    expect(plainLine('```echo hi``` is unsafe')).toBe('echo hi is unsafe')
+    expect(plainLine('a ``x `y` z`` b')).toBe('a x `y` z b')
+  })
+
+  test('fenced code stays literal and only its fence lines go blank', async () => {
+    expect(plainReply(['```bash', '# rm -rf ./cache', 'merged = {**defaults, **overrides}', '```', '**after**'])).toEqual([
+      '',
+      '# rm -rf ./cache',
+      'merged = {**defaults, **overrides}',
+      '',
+      'after',
+    ])
+    expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
+    expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
+  })
+
+  test('unclosed marks cost linear time', async () => {
+    const started = Date.now()
+    for (const mark of ['[', '**', '`', '[x]('])
+      plainLine(mark.repeat(Math.floor(400_000 / mark.length)))
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 
   test('width is counted in terminal cells per glyph', async () => {
