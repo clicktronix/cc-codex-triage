@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePid, splitStateName } from './parse'
+import { cells, commandSummary, fit, isStreamPath, lastEvent, lastReply, leasePid, plainLine, plainReply, splitStateName } from './parse'
 
 const DIR = '/repo/.git/cc-codex-triage/threads'
 const STREAM = '/tmp/cc-codex-review-a.b.Ab12Cd.jsonl'
@@ -172,6 +172,47 @@ describe('parse', () => {
     expect(lastReply(logOf('first', 'second\n\n  indented\nREPLY:\n---'))).toBe('second\n\n  indented\nREPLY:\n---')
     expect(lastReply(`${logOf('done')}[x] mode=resume\nPROMPT:\n  q\nREPLY:\n  half`)).toBe(null)
     expect(lastReply('round=1')).toBe(null)
+  })
+
+  test('reply lines lose the Markdown a terminal would draw literally', async () => {
+    expect(plainLine('## Position')).toBe('Position')
+    expect(plainLine('**APPROVE** — no findings')).toBe('APPROVE — no findings')
+    expect(plainLine('- **[P2] [register.tsx:322](/x/register.tsx:322)** — `tick` races')).toBe(
+      '- [P2] register.tsx:322 — tick races',
+    )
+    expect(plainLine('> quoted')).toBe('quoted')
+    expect(plainLine('call __init__ on snake_case and 2 * 3')).toBe('call __init__ on snake_case and 2 * 3')
+    expect(plainLine('see [page.tsx](/app/(auth)/page.tsx) now')).toBe('see page.tsx now')
+    expect(plainLine('```echo hi``` is unsafe')).toBe('echo hi is unsafe')
+    expect(plainLine('a ``x `y` z`` b')).toBe('a x `y` z b')
+    expect(plainLine('**Use `**/*.ts` here**')).toBe('Use **/*.ts here')
+    expect(plainLine('`a ``b`` c`')).toBe('a ``b`` c')
+    expect(plainLine('[P2: see [file.ts](/path)]')).toBe('[P2: see file.ts]')
+  })
+
+  test('fenced code stays literal and only its fence lines go blank', async () => {
+    expect(plainReply(['```bash', '# rm -rf ./cache', 'merged = {**defaults, **overrides}', '```', '**after**'])).toEqual([
+      '',
+      '# rm -rf ./cache',
+      'merged = {**defaults, **overrides}',
+      '',
+      'after',
+    ])
+    expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
+    expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
+    expect(plainReply(['```', '    ```', '# keep', '```', '# Title'])).toEqual(['', '    ```', '# keep', '', 'Title'])
+    expect(plainReply(['~~~`text', '# keep', '~~~', '# Title'])).toEqual(['', '# keep', '', 'Title'])
+    expect(plainReply(['```', '\t```', '# keep', '```'])).toEqual(['', '\t```', '# keep', ''])
+  })
+
+  test('unclosed marks cost linear time', async () => {
+    const started = Date.now()
+    for (const mark of ['[', '**', '`', '[x]('])
+      plainLine(mark.repeat(Math.floor(400_000 / mark.length)))
+    plainLine(`${'['.repeat(400_000)}x](${'a'.repeat(2048)}`)
+    plainLine(Array.from({ length: 1000 }, (_, i) => '`'.repeat(1000 - i)).join(' '))
+    plainReply(['~~~', `${'~'.repeat(400_000)}x`, '~~~'])
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 
   test('width is counted in terminal cells per glyph', async () => {
@@ -772,6 +813,18 @@ describe('mod', () => {
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts).not.toContain('round five')
     expect(texts).toContain('No saved reply to show; see plan-x.log')
+    await ui.unmount()
+  })
+
+  test('the preview and the opened reply show plain text', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, { ...FILES, 'plan-x.log': logOf('**APPROVE** — see `tick`\n## Notes\nmore') }, new Set())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  APPROVE — see tick · +2 lines')
+    await ui.press({ key: 'reply:plan-x' })
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('Notes')
     await ui.unmount()
   })
 

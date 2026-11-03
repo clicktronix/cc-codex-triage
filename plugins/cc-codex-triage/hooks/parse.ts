@@ -129,6 +129,124 @@ export function lastEvent(jsonl: string): string | null {
 
 // The last REPLY section of a thread log tail. The driver writes markers at column 0
 // and indents every body line two spaces, so no prompt or reply text reads as a marker.
+// A reply as the pane shows it: Markdown marks a terminal draws literally are dropped and the
+// words kept. Fenced code stays literal, its fence lines blank, since a `#` or `**` there is code.
+// Single `*` and `_` stay, being often part of a name (`__init__`, `snake_case`).
+const OPEN_FENCE = /^ {0,3}(`{3,}[^`]*|~{3,}.*)$/
+
+export function plainReply(lines: string[]): string[] {
+  let fence: string | null = null
+  return lines.map(line => {
+    if (fence) {
+      const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
+      if (close.length >= fence.length && close === (fence[0] ?? '').repeat(close.length)) fence = null
+      return fence ? line : ''
+    }
+    const open = OPEN_FENCE.exec(line)?.[1]
+    if (open) {
+      fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
+      return ''
+    }
+    return plainLine(line)
+  })
+}
+
+export function plainLine(line: string): string {
+  return plainInline(line.replace(/^(\s*)#{1,6}\s+/, '$1').replace(/^(\s*)>\s?/, '$1'))
+}
+
+const LINK_TARGET_MAX = 512
+
+// Three passes, each linear: code spans first (a backtick run closes at the next run of the same
+// length), then `**` pairs and [text](target) links outside them; the output is built once.
+function plainInline(text: string): string {
+  const n = text.length
+  // Code spans: start -> [content start, content end, span end].
+  const runs: [number, number][] = []
+  for (let i = 0; i < n; ) {
+    if (text[i] !== '`') { i += 1; continue }
+    let j = i
+    while (text[j] === '`') j += 1
+    runs.push([i, j - i])
+    i = j
+  }
+  const byLength = new Map<number, number[]>()
+  for (const [pos, len] of runs) {
+    const same = byLength.get(len)
+    if (same) same.push(pos)
+    else byLength.set(len, [pos])
+  }
+  const cursor = new Map<number, number>()
+  const spans = new Map<number, [number, number, number]>()
+  let coveredTo = 0
+  for (const [pos, len] of runs) {
+    if (pos < coveredTo) continue
+    const same = byLength.get(len) ?? []
+    let k = cursor.get(len) ?? 0
+    while (k < same.length && (same[k] ?? 0) <= pos) k += 1
+    cursor.set(len, k)
+    const close = same[k]
+    if (close === undefined) continue
+    spans.set(pos, [pos + len, close, close + len])
+    coveredTo = close + len
+    cursor.set(len, k + 1)
+  }
+  // Outside code: which characters are code, bold marks, and the next `]`.
+  const inCode = new Uint8Array(n)
+  for (const [pos, [, , end]] of spans) inCode.fill(1, pos, end)
+  const bold: number[] = []
+  for (let i = 0; i < n - 1; i += 1) {
+    if (!inCode[i] && !inCode[i + 1] && text[i] === '*' && text[i + 1] === '*') {
+      bold.push(i)
+      i += 1
+    }
+  }
+  const drop = new Uint8Array(n)
+  for (let k = 0; k + 1 < bold.length; k += 2) {
+    const [open, close] = [bold[k] ?? 0, bold[k + 1] ?? 0]
+    if (close > open + 2) drop.fill(1, open, open + 2), drop.fill(1, close, close + 2)
+  }
+  const targetEnd = new Map<number, number>()
+  const endOf = (from: number) => {
+    const known = targetEnd.get(from)
+    if (known !== undefined) return known
+    let depth = 1
+    let end = -1
+    for (let j = from; j < n && j < from + LINK_TARGET_MAX; j += 1) {
+      const c = text[j]
+      if (c === ' ' || inCode[j]) break
+      if (c === '(') depth += 1
+      if (c === ')' && --depth === 0) { end = j; break }
+    }
+    targetEnd.set(from, end)
+    return end
+  }
+  // Each `]` closes the nearest open `[`, so brackets around a link keep theirs.
+  const linkTail = new Map<number, number>()
+  const opens: number[] = []
+  for (let i = 0; i < n; i += 1) {
+    if (inCode[i] || drop[i]) continue
+    if (text[i] === '[') opens.push(i)
+    if (text[i] !== ']') continue
+    const open = opens.pop()
+    if (open === undefined || i <= open + 1 || text[i + 1] !== '(') continue
+    const end = endOf(i + 2)
+    if (end === -1) continue
+    drop[open] = 1
+    linkTail.set(i, end)
+  }
+  let out = ''
+  for (let i = 0; i < n; ) {
+    const span = spans.get(i)
+    if (span) { out += text.slice(span[0], span[1]); i = span[2]; continue }
+    const tail = linkTail.get(i)
+    if (tail !== undefined) { i = tail + 1; continue }
+    if (!drop[i]) out += text[i]
+    i += 1
+  }
+  return out
+}
+
 export function lastReply(log: string): string | null {
   const lines = log.split('\n')
   const start = lines.lastIndexOf('REPLY:')
