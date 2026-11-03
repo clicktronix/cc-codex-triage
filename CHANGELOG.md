@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.18.0] - 2026-11-03
+
+### Changed
+- The threads pane shows reply text without the Markdown marks a terminal draws literally: heading
+  hashes, quote marks, `**bold**`, code spans and `[text](link)` keep only their words, while fenced
+  code stays literal with its fence lines blank, and single `*` and `_` stay. The stripping runs
+  after `redact.sh`, in linear time on any reply (#20).
+
 ## [0.17.0] - 2026-11-01
 
 ### Added
