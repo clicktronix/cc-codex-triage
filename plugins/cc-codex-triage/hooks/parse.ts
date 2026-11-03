@@ -138,9 +138,8 @@ export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
   return lines.map(line => {
     if (fence) {
-      const close = / {0,3}([`~]+)\s*$/.exec(line)?.[1] ?? ''
-      if (line.length - line.trimStart().length <= 3 && close === line.trim()
-        && close[0] === fence[0] && close.length >= fence.length && !close.includes(fence[0] === '`' ? '~' : '`')) fence = null
+      const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
+      if (close.length >= fence.length && close === (fence[0] ?? '').repeat(close.length)) fence = null
       return fence ? line : ''
     }
     const open = OPEN_FENCE.exec(line)?.[1]
@@ -207,8 +206,6 @@ function plainInline(text: string): string {
     const [open, close] = [bold[k] ?? 0, bold[k + 1] ?? 0]
     if (close > open + 2) drop.fill(1, open, open + 2), drop.fill(1, close, close + 2)
   }
-  const nextClose = new Int32Array(n + 1).fill(-1)
-  for (let i = n - 1; i >= 0; i -= 1) nextClose[i] = !inCode[i] && text[i] === ']' ? i : (nextClose[i + 1] ?? -1)
   const targetEnd = new Map<number, number>()
   const endOf = (from: number) => {
     const known = targetEnd.get(from)
@@ -224,15 +221,19 @@ function plainInline(text: string): string {
     targetEnd.set(from, end)
     return end
   }
+  // Each `]` closes the nearest open `[`, so brackets around a link keep theirs.
   const linkTail = new Map<number, number>()
+  const opens: number[] = []
   for (let i = 0; i < n; i += 1) {
-    if (inCode[i] || drop[i] || text[i] !== '[') continue
-    const close = nextClose[i + 1] ?? -1
-    if (close <= i + 1 || text[close + 1] !== '(') continue
-    const end = endOf(close + 2)
+    if (inCode[i] || drop[i]) continue
+    if (text[i] === '[') opens.push(i)
+    if (text[i] !== ']') continue
+    const open = opens.pop()
+    if (open === undefined || i <= open + 1 || text[i + 1] !== '(') continue
+    const end = endOf(i + 2)
     if (end === -1) continue
-    drop[i] = 1
-    linkTail.set(close, end)
+    drop[open] = 1
+    linkTail.set(i, end)
   }
   let out = ''
   for (let i = 0; i < n; ) {
