@@ -129,6 +129,19 @@ export function lastEvent(jsonl: string): string | null {
 
 // The last REPLY section of a thread log tail. The driver writes markers at column 0
 // and indents every body line two spaces, so no prompt or reply text reads as a marker.
+// A reply line as the pane shows it: Markdown marks a terminal draws literally are dropped —
+// heading hashes, quote marks, fences, **bold**, `code`, [text](link) — and the words kept. Single
+// `*` and `_` stay, since they are often part of a name (`__init__`, `snake_case`).
+export function plainLine(line: string): string {
+  if (/^\s*(```|~~~)/.test(line)) return ''
+  return line
+    .replace(/^(\s*)#{1,6}\s+/, '$1')
+    .replace(/^(\s*)>\s?/, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1')
+}
+
 export function lastReply(log: string): string | null {
   const lines = log.split('\n')
   const start = lines.lastIndexOf('REPLY:')
