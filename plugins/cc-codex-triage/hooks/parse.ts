@@ -138,13 +138,14 @@ export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
   return lines.map(line => {
     if (fence) {
-      const close = line.trim()
-      if (close.length >= fence.length && close === close[0]?.repeat(close.length) && close[0] === fence[0]) fence = null
+      const close = / {0,3}([`~]+)\s*$/.exec(line)?.[1] ?? ''
+      if (line.length - line.trimStart().length <= 3 && close === line.trim()
+        && close[0] === fence[0] && close.length >= fence.length && !close.includes(fence[0] === '`' ? '~' : '`')) fence = null
       return fence ? line : ''
     }
-    const open = OPEN_FENCE.exec(line)
+    const open = OPEN_FENCE.exec(line)?.[1]
     if (open) {
-      fence = /^[`~]+/.exec(open[1] ?? '')?.[0] ?? null
+      fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
       return ''
     }
     return plainLine(line)
@@ -155,70 +156,94 @@ export function plainLine(line: string): string {
   return plainInline(line.replace(/^(\s*)#{1,6}\s+/, '$1').replace(/^(\s*)>\s?/, '$1'))
 }
 
-// One pass over the line. Every forward search remembers its answer, so a mark that never closes
-// is looked for once, not once per occurrence: the cost stays linear in the line.
+const LINK_TARGET_MAX = 512
+
+// Three passes, each linear: code spans first (a backtick run closes at the next run of the same
+// length), then `**` pairs and [text](target) links outside them; the output is built once.
 function plainInline(text: string): string {
-  const next = new Map<string, number>()
-  const find = (token: string, from: number) => {
-    const known = next.get(token)
-    if (known !== undefined && (known === -1 || known >= from)) return known
-    const at = text.indexOf(token, from)
-    next.set(token, at)
-    return at
+  const n = text.length
+  // Code spans: start -> [content start, content end, span end].
+  const runs: [number, number][] = []
+  for (let i = 0; i < n; ) {
+    if (text[i] !== '`') { i += 1; continue }
+    let j = i
+    while (text[j] === '`') j += 1
+    runs.push([i, j - i])
+    i = j
+  }
+  const byLength = new Map<number, number[]>()
+  for (const [pos, len] of runs) {
+    const same = byLength.get(len)
+    if (same) same.push(pos)
+    else byLength.set(len, [pos])
+  }
+  const cursor = new Map<number, number>()
+  const spans = new Map<number, [number, number, number]>()
+  let coveredTo = 0
+  for (const [pos, len] of runs) {
+    if (pos < coveredTo) continue
+    const same = byLength.get(len) ?? []
+    let k = cursor.get(len) ?? 0
+    while (k < same.length && (same[k] ?? 0) <= pos) k += 1
+    cursor.set(len, k)
+    const close = same[k]
+    if (close === undefined) continue
+    spans.set(pos, [pos + len, close, close + len])
+    coveredTo = close + len
+    cursor.set(len, k + 1)
+  }
+  // Outside code: which characters are code, bold marks, and the next `]`.
+  const inCode = new Uint8Array(n)
+  for (const [pos, [, , end]] of spans) inCode.fill(1, pos, end)
+  const bold: number[] = []
+  for (let i = 0; i < n - 1; i += 1) {
+    if (!inCode[i] && !inCode[i + 1] && text[i] === '*' && text[i + 1] === '*') {
+      bold.push(i)
+      i += 1
+    }
+  }
+  const drop = new Uint8Array(n)
+  for (let k = 0; k + 1 < bold.length; k += 2) {
+    const [open, close] = [bold[k] ?? 0, bold[k + 1] ?? 0]
+    if (close > open + 2) drop.fill(1, open, open + 2), drop.fill(1, close, close + 2)
+  }
+  const nextClose = new Int32Array(n + 1).fill(-1)
+  for (let i = n - 1; i >= 0; i -= 1) nextClose[i] = !inCode[i] && text[i] === ']' ? i : (nextClose[i + 1] ?? -1)
+  const targetEnd = new Map<number, number>()
+  const endOf = (from: number) => {
+    const known = targetEnd.get(from)
+    if (known !== undefined) return known
+    let depth = 1
+    let end = -1
+    for (let j = from; j < n && j < from + LINK_TARGET_MAX; j += 1) {
+      const c = text[j]
+      if (c === ' ' || inCode[j]) break
+      if (c === '(') depth += 1
+      if (c === ')' && --depth === 0) { end = j; break }
+    }
+    targetEnd.set(from, end)
+    return end
+  }
+  const linkTail = new Map<number, number>()
+  for (let i = 0; i < n; i += 1) {
+    if (inCode[i] || drop[i] || text[i] !== '[') continue
+    const close = nextClose[i + 1] ?? -1
+    if (close <= i + 1 || text[close + 1] !== '(') continue
+    const end = endOf(close + 2)
+    if (end === -1) continue
+    drop[i] = 1
+    linkTail.set(close, end)
   }
   let out = ''
-  let i = 0
-  while (i < text.length) {
-    if (text.startsWith('**', i)) {
-      const end = find('**', i + 2)
-      if (end > i + 2) {
-        out += plainInline(text.slice(i + 2, end))
-        i = end + 2
-        continue
-      }
-    }
-    if (text[i] === '`') {
-      let run = 1
-      while (text[i + run] === '`') run += 1
-      const fence = '`'.repeat(run)
-      const end = find(fence, i + run)
-      if (end > i + run && text[end + run] !== '`') {
-        out += text.slice(i + run, end)
-        i = end + run
-        continue
-      }
-      out += fence
-      i += run
-      continue
-    }
-    if (text[i] === '[') {
-      const close = find(']', i + 1)
-      if (close > i + 1 && text[close + 1] === '(') {
-        const end = linkEnd(text, close + 2)
-        if (end !== -1) {
-          out += plainInline(text.slice(i + 1, close))
-          i = end + 1
-          continue
-        }
-      }
-    }
-    out += text[i]
+  for (let i = 0; i < n; ) {
+    const span = spans.get(i)
+    if (span) { out += text.slice(span[0], span[1]); i = span[2]; continue }
+    const tail = linkTail.get(i)
+    if (tail !== undefined) { i = tail + 1; continue }
+    if (!drop[i]) out += text[i]
     i += 1
   }
   return out
-}
-
-// The `)` that closes a link target, counting nested parentheses (`/app/(auth)/page.tsx`); -1 when
-// the target has a space or does not close within 2048 characters.
-function linkEnd(text: string, from: number): number {
-  let depth = 1
-  for (let j = from; j < text.length && j < from + 2048; j += 1) {
-    const c = text[j]
-    if (c === ' ') return -1
-    if (c === '(') depth += 1
-    if (c === ')' && --depth === 0) return j
-  }
-  return -1
 }
 
 export function lastReply(log: string): string | null {

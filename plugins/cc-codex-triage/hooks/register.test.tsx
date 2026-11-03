@@ -185,6 +185,8 @@ describe('parse', () => {
     expect(plainLine('see [page.tsx](/app/(auth)/page.tsx) now')).toBe('see page.tsx now')
     expect(plainLine('```echo hi``` is unsafe')).toBe('echo hi is unsafe')
     expect(plainLine('a ``x `y` z`` b')).toBe('a x `y` z b')
+    expect(plainLine('**Use `**/*.ts` here**')).toBe('Use **/*.ts here')
+    expect(plainLine('`a ``b`` c`')).toBe('a ``b`` c')
   })
 
   test('fenced code stays literal and only its fence lines go blank', async () => {
@@ -197,12 +199,16 @@ describe('parse', () => {
     ])
     expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
     expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
+    expect(plainReply(['```', '    ```', '# keep', '```', '# Title'])).toEqual(['', '    ```', '# keep', '', 'Title'])
+    expect(plainReply(['~~~`text', '# keep', '~~~', '# Title'])).toEqual(['', '# keep', '', 'Title'])
   })
 
   test('unclosed marks cost linear time', async () => {
     const started = Date.now()
     for (const mark of ['[', '**', '`', '[x]('])
       plainLine(mark.repeat(Math.floor(400_000 / mark.length)))
+    plainLine(`${'['.repeat(400_000)}x](${'a'.repeat(2048)}`)
+    plainLine(Array.from({ length: 1000 }, (_, i) => '`'.repeat(1000 - i)).join(' '))
     expect(Date.now() - started).toBeLessThan(1000)
   })
 
