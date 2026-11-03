@@ -347,5 +347,18 @@ class ProductIntegrity(unittest.TestCase):
         self.assertFalse((self.sd/'review.id').exists())
         self.assertNotEqual(self.gate('check','review').returncode,0)
 
+
+class Workflows(unittest.TestCase):
+    def test_every_workflow_running_the_suite_installs_one_claude_cli(self):
+        pins={}
+        for f in sorted((SCRIPTS.parents[2]/'.github/workflows').glob('*.yml')):
+            text=f.read_text()
+            if 'tests/run.sh' in text:
+                pins[f.name]=re.findall(r'@anthropic-ai/claude-code@(\S+)',text)
+        self.assertGreaterEqual(len(pins),2,pins)
+        for name,found in pins.items():
+            self.assertEqual(len(found),1,f'{name} must install the Claude Code CLI once: {found}')
+        self.assertEqual(len({found[0] for found in pins.values()}),1,pins)
+
 if __name__ == '__main__':
     unittest.main()
