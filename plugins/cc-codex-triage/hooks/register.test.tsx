@@ -211,6 +211,11 @@ describe('parse', () => {
     expect(plainReply(['- item', '', '      **code**'])).toEqual(['- item', '', '      **code**'])
     expect(plainReply(['- item', '', '**out**', '', '    **code**'])).toEqual(['- item', '', 'out', '', '    **code**'])
     expect(plainReply([' \t# keep'])).toEqual([' \t# keep'])
+    expect(plainReply(['- item', '', '```', 'x', '```', '    # keep'])).toEqual(['- item', '', '', 'x', '', '    # keep'])
+    expect(plainReply(['-\titem', '', '      **continuation**'])).toEqual(['-\titem', '', '      continuation'])
+    expect(plainReply(['- outer', '  - inner', '', '  **parent**', '', '    **continuation**'])).toEqual([
+      '- outer', '  - inner', '', '  parent', '', '    continuation',
+    ])
     expect(plainReply(['    **code**', '', '**out**', '    **continues**'])).toEqual(['    **code**', '', 'out', '    continues'])
     expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
     expect(plainReply(['```', '    ```', '# keep', '```', '# Title'])).toEqual(['', '    ```', '# keep', '', 'Title'])

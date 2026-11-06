@@ -152,7 +152,10 @@ export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
   let afterBreak = true
   let inCode = false
-  let listContent = 0
+  const lists: number[] = []
+  const leaveLists = (at: number) => {
+    while ((lists.at(-1) ?? 0) > at) lists.pop()
+  }
   return lines.map(line => {
     if (fence) {
       const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
@@ -163,6 +166,7 @@ export function plainReply(lines: string[]): string[] {
     }
     const open = OPEN_FENCE.exec(line)?.[1]
     if (open) {
+      if (afterBreak) leaveLists(column(line))
       fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
       return ''
     }
@@ -172,11 +176,11 @@ export function plainReply(lines: string[]): string[] {
     }
     const item = LIST_ITEM.exec(line)?.[0]
     const at = column(line)
-    if (afterBreak && !item && at < listContent) listContent = 0
-    inCode = at >= listContent + CODE_INDENT && (inCode || (afterBreak && !item))
+    if (afterBreak || item) leaveLists(at)
+    inCode = at >= (lists.at(-1) ?? 0) + CODE_INDENT && (inCode || (afterBreak && !item))
     afterBreak = false
     if (inCode) return line
-    if (item) listContent = item.length
+    if (item) lists.push(column(item.replace(/\S/g, ' ')))
     return plainLine(line)
   })
 }
