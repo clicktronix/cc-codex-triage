@@ -349,16 +349,25 @@ class ProductIntegrity(unittest.TestCase):
 
 
 class Workflows(unittest.TestCase):
-    def test_every_workflow_running_the_suite_installs_one_claude_cli(self):
+    @staticmethod
+    def steps(text):
+        blocks=re.split(r'(?m)^ {6}- ',text.split('    steps:\n',1)[1])[1:]
+        return [dict(re.findall(r'(?m)^(?: {8})?(\w[\w-]*): (.*)$',block)) for block in blocks]
+
+    def test_every_workflow_running_the_suite_installs_one_claude_cli_first(self):
         pins={}
         for f in sorted((SCRIPTS.parents[2]/'.github/workflows').glob('*.yml')):
-            text=f.read_text()
-            if 'tests/run.sh' in text:
-                pins[f.name]=re.findall(r'@anthropic-ai/claude-code@(\S+)',text)
+            steps=self.steps(f.read_text())
+            suite=[i for i,step in enumerate(steps) if step.get('run')=='bash tests/run.sh']
+            if not suite:
+                continue
+            install=[step for step in steps[:suite[0]]
+                     if re.fullmatch(r'npm install -g @anthropic-ai/claude-code@\S+',step.get('run',''))]
+            self.assertEqual(len(install),1,f'{f.name} must install the Claude Code CLI once before the suite')
+            self.assertEqual(install[0].get('if'),steps[suite[0]].get('if'),f'{f.name} must install whenever the suite runs')
+            pins[f.name]=install[0]['run'].rsplit('@',1)[1]
         self.assertGreaterEqual(len(pins),2,pins)
-        for name,found in pins.items():
-            self.assertEqual(len(found),1,f'{name} must install the Claude Code CLI once: {found}')
-        self.assertEqual(len({found[0] for found in pins.values()}),1,pins)
+        self.assertEqual(len(set(pins.values())),1,pins)
 
 if __name__ == '__main__':
     unittest.main()
