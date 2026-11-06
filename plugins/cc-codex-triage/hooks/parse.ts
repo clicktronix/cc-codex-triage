@@ -166,7 +166,7 @@ export function plainReply(lines: string[]): string[] {
     }
     const open = OPEN_FENCE.exec(line)?.[1]
     if (open) {
-      if (afterBreak) leaveLists(column(line))
+      leaveLists(column(line))
       fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
       return ''
     }
