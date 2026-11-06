@@ -347,5 +347,28 @@ class ProductIntegrity(unittest.TestCase):
         self.assertFalse((self.sd/'review.id').exists())
         self.assertNotEqual(self.gate('check','review').returncode,0)
 
+
+class Workflows(unittest.TestCase):
+    @staticmethod
+    def jobs(text):
+        for job in re.split(r'(?m)^ {4}steps:\n',text)[1:]:
+            blocks=re.split(r'(?m)^ {6}- ',re.split(r'(?m)^ {0,3}\S',job,maxsplit=1)[0])[1:]
+            yield [dict(re.findall(r'(?m)^(?: {8})?(\w[\w-]*): (.*)$',block)) for block in blocks]
+
+    def test_every_job_running_the_suite_installs_one_claude_cli_first(self):
+        pins={}
+        for f in sorted((SCRIPTS.parents[2]/'.github/workflows').glob('*.yml')):
+            for n,steps in enumerate(self.jobs(f.read_text())):
+                suite=[i for i,step in enumerate(steps) if step.get('run')=='bash tests/run.sh']
+                if not suite:
+                    continue
+                install=[step for step in steps[:suite[0]]
+                         if re.fullmatch(r'npm install -g @anthropic-ai/claude-code@\S+',step.get('run',''))]
+                self.assertEqual(len(install),1,f'{f.name} must install the Claude Code CLI once before the suite')
+                self.assertEqual(install[0].get('if'),steps[suite[0]].get('if'),f'{f.name} must install whenever the suite runs')
+                pins[f.name,n]=install[0]['run'].rsplit('@',1)[1]
+        self.assertGreaterEqual(len({name for name,_ in pins}),2,pins)
+        self.assertEqual(len(set(pins.values())),1,pins)
+
 if __name__ == '__main__':
     unittest.main()

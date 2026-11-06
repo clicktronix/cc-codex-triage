@@ -47,6 +47,11 @@ jobs:
           ref: ${{ steps.release-pr.outputs.sha }}
           persist-credentials: false
 
+      # tests/run.sh validates the threads-pane mod with the Claude Code CLI, as validate.yml does.
+      - name: Install Claude Code
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        run: npm install -g @anthropic-ai/claude-code@2.1.310
+
       - name: Validate release PR
         id: validate-release
         if: ${{ steps.release.outputs.prs_created == 'true' }}
