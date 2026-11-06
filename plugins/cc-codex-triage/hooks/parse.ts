@@ -131,15 +131,19 @@ export function lastEvent(jsonl: string): string | null {
 // and indents every body line two spaces, so no prompt or reply text reads as a marker.
 // A reply as the pane shows it: Markdown marks a terminal draws literally are dropped and the
 // words kept. Fenced code stays literal, its fence lines blank, since a `#` or `**` there is code.
+// So does indented code, which by CommonMark follows a blank line or more of itself and is no list item.
 // Single `*` and `_` stay, being often part of a name (`__init__`, `snake_case`).
 const OPEN_FENCE = /^ {0,3}(`{3,}[^`]*|~{3,}.*)$/
+const INDENTED_CODE = /^(?: {4}|\t)(?!\s*(?:[-*+]|\d+[.)])\s)/
 
 export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
+  let afterBreak = true
   return lines.map(line => {
     if (fence) {
       const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
       if (close.length >= fence.length && close === (fence[0] ?? '').repeat(close.length)) fence = null
+      afterBreak = true
       return fence ? line : ''
     }
     const open = OPEN_FENCE.exec(line)?.[1]
@@ -147,7 +151,9 @@ export function plainReply(lines: string[]): string[] {
       fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
       return ''
     }
-    return plainLine(line)
+    const code = afterBreak && INDENTED_CODE.test(line)
+    afterBreak = code || line.trim() === ''
+    return code ? line : plainLine(line)
   })
 }
 

@@ -199,6 +199,13 @@ describe('parse', () => {
       'after',
     ])
     expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
+    expect(plainReply(['Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', '**after**'])).toEqual([
+      'Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', 'after',
+    ])
+    expect(plainReply(['    # first line', '\t**tab**'])).toEqual(['    # first line', '\t**tab**'])
+    expect(plainReply(['- item', '    - **nested**', '', '    1. **numbered**'])).toEqual(['- item', '    - nested', '', '    1. numbered'])
+    expect(plainReply(['A paragraph', '    **continues**'])).toEqual(['A paragraph', '    continues'])
+    expect(plainReply(['text', '```', 'x', '```', '    # keep'])).toEqual(['text', '', 'x', '', '    # keep'])
     expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
     expect(plainReply(['```', '    ```', '# keep', '```', '# Title'])).toEqual(['', '    ```', '# keep', '', 'Title'])
     expect(plainReply(['~~~`text', '# keep', '~~~', '# Title'])).toEqual(['', '# keep', '', 'Title'])
