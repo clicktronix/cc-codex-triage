@@ -360,8 +360,8 @@ class Workflows(unittest.TestCase):
             if not key:
                 continue
             value=key[2]
-            if re.fullmatch(r'[|>][+-]?',value):
-                if key[1]!='run' or value.startswith('>'):
+            if value[:1] in ('|','>'):
+                if (key[1],value)!=('run','|'):
                     found.setdefault('unsupported',[]).append(f'{key[1]}: {value}')
                 body=[]
                 for more in lines[i+1:]:
