@@ -359,7 +359,7 @@ class Workflows(unittest.TestCase):
             key=re.fullmatch(r' {8}(\w[\w-]*): (.*)',line)
             if not key:
                 continue
-            value=key[2]
+            value=key[2].strip()
             if value[:1] in ('|','>'):
                 if (key[1],value)!=('run','|'):
                     found.setdefault('unsupported',[]).append(f'{key[1]}: {value}')
