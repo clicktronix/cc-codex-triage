@@ -131,22 +131,58 @@ export function lastEvent(jsonl: string): string | null {
 // and indents every body line two spaces, so no prompt or reply text reads as a marker.
 // A reply as the pane shows it: Markdown marks a terminal draws literally are dropped and the
 // words kept. Fenced code stays literal, its fence lines blank, since a `#` or `**` there is code.
+// So does indented code: by CommonMark it starts after a blank line, at four columns past the list
+// item it sits in, and it runs on until a line is indented less.
 // Single `*` and `_` stay, being often part of a name (`__init__`, `snake_case`).
 const OPEN_FENCE = /^ {0,3}(`{3,}[^`]*|~{3,}.*)$/
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/
+const CODE_INDENT = 4
+
+function column(line: string): number {
+  let at = 0
+  for (const char of line) {
+    if (char === ' ') at += 1
+    else if (char === '\t') at += 4 - at % 4
+    else break
+  }
+  return at
+}
 
 export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
+  let afterBreak = true
+  let inCode = false
+  const lists: number[] = []
+  const leaveLists = (at: number) => {
+    while ((lists.at(-1) ?? 0) > at) lists.pop()
+  }
   return lines.map(line => {
     if (fence) {
       const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
       if (close.length >= fence.length && close === (fence[0] ?? '').repeat(close.length)) fence = null
+      afterBreak = true
+      inCode = false
       return fence ? line : ''
     }
     const open = OPEN_FENCE.exec(line)?.[1]
     if (open) {
+      leaveLists(column(line))
       fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
       return ''
     }
+    if (line.trim() === '') {
+      afterBreak = true
+      return line
+    }
+    const at = column(line)
+    if (afterBreak) leaveLists(at)
+    // A list item starts within three columns of its container; deeper, the marker is code or text.
+    const item = at < (lists.at(-1) ?? 0) + CODE_INDENT ? LIST_ITEM.exec(line)?.[0] : undefined
+    if (item) leaveLists(at)
+    inCode = at >= (lists.at(-1) ?? 0) + CODE_INDENT && (inCode || (afterBreak && !item))
+    afterBreak = false
+    if (inCode) return line
+    if (item) lists.push(column(item.replace(/\S/g, ' ')))
     return plainLine(line)
   })
 }

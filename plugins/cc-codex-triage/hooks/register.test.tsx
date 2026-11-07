@@ -199,6 +199,29 @@ describe('parse', () => {
       'after',
     ])
     expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
+    expect(plainReply(['Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', '**after**'])).toEqual([
+      'Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', 'after',
+    ])
+    expect(plainReply(['    # first line', '\t**tab**'])).toEqual(['    # first line', '\t**tab**'])
+    expect(plainReply(['- item', '    - **nested**', '', '    1. **numbered**'])).toEqual(['- item', '    - nested', '', '    1. numbered'])
+    expect(plainReply(['A paragraph', '    **continues**'])).toEqual(['A paragraph', '    continues'])
+    expect(plainReply(['text', '```', 'x', '```', '    # keep'])).toEqual(['text', '', 'x', '', '    # keep'])
+    expect(plainReply(['    # code', '    - **literal**', '    # tail'])).toEqual(['    # code', '    - **literal**', '    # tail'])
+    expect(plainReply(['Patterns:', '', '    - "**/node_modules/**"', '    - "**/.next/**"'])).toEqual([
+      'Patterns:', '', '    - "**/node_modules/**"', '    - "**/.next/**"',
+    ])
+    expect(plainReply(['- item', '', '      - **code**'])).toEqual(['- item', '', '      - **code**'])
+    expect(plainReply(['- item', '', '    **continuation**'])).toEqual(['- item', '', '    continuation'])
+    expect(plainReply(['- item', '', '      **code**'])).toEqual(['- item', '', '      **code**'])
+    expect(plainReply(['- item', '', '**out**', '', '    **code**'])).toEqual(['- item', '', 'out', '', '    **code**'])
+    expect(plainReply([' \t# keep'])).toEqual([' \t# keep'])
+    expect(plainReply(['- item', '', '```', 'x', '```', '    # keep'])).toEqual(['- item', '', '', 'x', '', '    # keep'])
+    expect(plainReply(['- item', '```', 'x', '```', '    # keep'])).toEqual(['- item', '', 'x', '', '    # keep'])
+    expect(plainReply(['-\titem', '', '      **continuation**'])).toEqual(['-\titem', '', '      continuation'])
+    expect(plainReply(['- outer', '  - inner', '', '  **parent**', '', '    **continuation**'])).toEqual([
+      '- outer', '  - inner', '', '  parent', '', '    continuation',
+    ])
+    expect(plainReply(['    **code**', '', '**out**', '    **continues**'])).toEqual(['    **code**', '', 'out', '    continues'])
     expect(plainReply(['```echo hi``` is unsafe'])).toEqual(['echo hi is unsafe'])
     expect(plainReply(['```', '    ```', '# keep', '```', '# Title'])).toEqual(['', '    ```', '# keep', '', 'Title'])
     expect(plainReply(['~~~`text', '# keep', '~~~', '# Title'])).toEqual(['', '# keep', '', 'Title'])
