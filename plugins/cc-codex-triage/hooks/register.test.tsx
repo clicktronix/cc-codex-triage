@@ -207,6 +207,10 @@ describe('parse', () => {
     expect(plainReply(['A paragraph', '    **continues**'])).toEqual(['A paragraph', '    continues'])
     expect(plainReply(['text', '```', 'x', '```', '    # keep'])).toEqual(['text', '', 'x', '', '    # keep'])
     expect(plainReply(['    # code', '    - **literal**', '    # tail'])).toEqual(['    # code', '    - **literal**', '    # tail'])
+    expect(plainReply(['Patterns:', '', '    - "**/node_modules/**"', '    - "**/.next/**"'])).toEqual([
+      'Patterns:', '', '    - "**/node_modules/**"', '    - "**/.next/**"',
+    ])
+    expect(plainReply(['- item', '', '      - **code**'])).toEqual(['- item', '', '      - **code**'])
     expect(plainReply(['- item', '', '    **continuation**'])).toEqual(['- item', '', '    continuation'])
     expect(plainReply(['- item', '', '      **code**'])).toEqual(['- item', '', '      **code**'])
     expect(plainReply(['- item', '', '**out**', '', '    **code**'])).toEqual(['- item', '', 'out', '', '    **code**'])

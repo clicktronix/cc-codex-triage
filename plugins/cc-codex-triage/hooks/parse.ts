@@ -174,9 +174,11 @@ export function plainReply(lines: string[]): string[] {
       afterBreak = true
       return line
     }
-    const item = LIST_ITEM.exec(line)?.[0]
     const at = column(line)
-    if (afterBreak || item) leaveLists(at)
+    if (afterBreak) leaveLists(at)
+    // A list item starts within three columns of its container; deeper, the marker is code or text.
+    const item = at < (lists.at(-1) ?? 0) + CODE_INDENT ? LIST_ITEM.exec(line)?.[0] : undefined
+    if (item) leaveLists(at)
     inCode = at >= (lists.at(-1) ?? 0) + CODE_INDENT && (inCode || (afterBreak && !item))
     afterBreak = false
     if (inCode) return line
