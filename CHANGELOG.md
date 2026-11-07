@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.18.1](https://github.com/clicktronix/cc-codex-triage/compare/v0.18.0...v0.18.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* keep indented code literal in the threads pane ([#23](https://github.com/clicktronix/cc-codex-triage/issues/23)) ([4dce2e5](https://github.com/clicktronix/cc-codex-triage/commit/4dce2e54744fb00aec3e3898c95f27e347891d29))
+
 ## [0.18.0] - 2026-11-03
 
 ### Changed
