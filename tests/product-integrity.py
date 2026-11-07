@@ -349,9 +349,10 @@ class ProductIntegrity(unittest.TestCase):
 
 
 class Workflows(unittest.TestCase):
+    # Not a YAML parser: a step's one-line keys and a literal `run: |` body. Any other block scalar
+    # (folded `>`, a block `if:`) is refused rather than read wrongly.
     @staticmethod
     def fields(block):
-        # A step's keys, a block scalar (`|`, `>`) read as its whole indented body.
         lines=(' '*8+block).split('\n')
         found={}
         for i,line in enumerate(lines):
@@ -360,6 +361,8 @@ class Workflows(unittest.TestCase):
                 continue
             value=key[2]
             if re.fullmatch(r'[|>][+-]?',value):
+                if key[1]!='run' or value.startswith('>'):
+                    found.setdefault('unsupported',[]).append(f'{key[1]}: {value}')
                 body=[]
                 for more in lines[i+1:]:
                     if more.strip() and not more.startswith(' '*9):
@@ -377,16 +380,17 @@ class Workflows(unittest.TestCase):
 
     def test_every_job_running_the_suite_installs_one_claude_cli_first(self):
         pins={}
-        when=lambda step:' '.join(step.get('if','').split())
         for f in sorted((SCRIPTS.parents[2]/'.github/workflows').glob('*.yml')):
             for n,steps in enumerate(self.jobs(f.read_text())):
+                for step in steps:
+                    self.assertNotIn('unsupported',step,f'{f.name}: write {step.get("unsupported")} as one line or `run: |`')
                 suite=[i for i,step in enumerate(steps) if 'bash tests/run.sh' in step.get('run','').splitlines()]
                 if not suite:
                     continue
                 install=[step for step in steps[:suite[0]]
                          if re.fullmatch(r'npm install -g @anthropic-ai/claude-code@\S+',step.get('run',''))]
                 self.assertEqual(len(install),1,f'{f.name} must install the Claude Code CLI once before the suite')
-                self.assertEqual(when(install[0]),when(steps[suite[0]]),f'{f.name} must install whenever the suite runs')
+                self.assertEqual(install[0].get('if'),steps[suite[0]].get('if'),f'{f.name} must install whenever the suite runs')
                 pins[f.name,n]=install[0]['run'].rsplit('@',1)[1]
         self.assertGreaterEqual(len({name for name,_ in pins}),2,pins)
         self.assertEqual(len(set(pins.values())),1,pins)
