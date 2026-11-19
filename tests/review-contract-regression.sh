@@ -178,7 +178,7 @@ begin empty-findings 2
   || bad "after empty findings: rc=$BRC out=$BOUT"
 append_reply empty-findings REQUEST_CHANGES
 "$STATE" record empty-findings "$CLAIM" >/dev/null 2>&1
-[[ "$(field "$SD/empty-findings.review-state" status)" == REQUEST_CHANGES ]] \
+[[ "$(field "$SD/empty-findings.review-state" status)" == CAP_REACHED && "$(field "$SD/empty-findings.review-state" verdict)" == REQUEST_CHANGES && "$(field "$SD/empty-findings.review-loop" attempts)" == 1 ]] \
   && ok "a blocking verdict with a located finding still counts" \
   || bad "located finding status: $(field "$SD/empty-findings.review-state" status)"
 "$STATE" reset empty-findings >/dev/null 2>&1
@@ -206,7 +206,7 @@ CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 append_reply integ APPROVE
 IOUT="$("$STATE" record integ "$CLAIM" 2>&1)"; IRC=$?
 [[ "$IRC" -eq 0 && "$IOUT" == "APPROVE head=$(git rev-parse HEAD)"* && "$(field "$SD/integ.review-loop" attempts)" == 1 ]] \
-  && ok "the integrated candidate is approved without spending the budget" \
+  && ok "the integrated candidate is approved without spending an attempt" \
   || bad "integration record rc=$IRC out=$IOUT attempts=$(field "$SD/integ.review-loop" attempts)"
 "$STATE" reset integ >/dev/null 2>&1
 BOUT="$("$STATE" begin integ --base HEAD --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
@@ -239,6 +239,28 @@ FAKE_REVIEW_BODY="Dockerfile:3 copies a missing artifact and the build fails" ap
   && ok "Dockerfile:3 counts as a located finding" || bad "extensionless status: $(field "$SD/extless.review-state" status)"
 "$STATE" reset extless >/dev/null 2>&1
 
+echo "== Unicode spec and findings =="
+printf 'spec\n' > 'docs/План работ.md'
+printf 'entry\n' > Словарь
+git add -- 'docs/План работ.md' Словарь && git commit -qm 'Add Unicode fixture'
+spec='docs/План работ.md'
+for verdict in REQUEST_CHANGES APPROVE; do
+  BOUT="$("$STATE" begin unicode --base HEAD --spec "$spec")"
+  CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+  HDR="$("$STATE" header unicode)"
+  FAKE_REVIEW_BODY="Словарь:1 correct the entry" FAKE_REVIEW_VERDICT="$verdict" "$DISPATCH" unicode --strict <<< "$HDR" >/dev/null
+  "$STATE" record unicode "$CLAIM" >/dev/null 2>&1
+  status="$(field "$SD/unicode.review-state" status)"
+  if [ "$verdict" = REQUEST_CHANGES ]; then
+    [[ "$status" = REQUEST_CHANGES ]] && ok "Unicode file:line remains actionable" || bad "Unicode finding: $status"
+  fi
+done
+marker="$("$STATE" check unicode)"
+expected="CC_CODEX_REQUIRED_REVIEW APPROVE thread=unicode head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$(git rev-parse HEAD) spec_path=$spec"
+[[ "$marker" = "$expected" ]] && ok "approval marker preserves the entire spec path" || bad "Unicode marker: $marker"
+"$STATE" begin newline --base HEAD --spec $'line\nbreak' 2>"$T/err" && bad "multiline spec accepted"
+grep -q 'one line' "$T/err" && ok "multiline spec rejected at begin" || bad "multiline spec diagnostic"
+
 echo "== a live claim is checked even when the prompt drops its first line =="
 begin nomarker 2
 NM_HDR="$("$STATE" header nomarker)"
@@ -260,15 +282,26 @@ append_reply retry-integ APPROVE
 "$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
 RB="$(field "$SD/retry-integ.candidate" base_sha)"
 git merge -q --no-ff --no-edit retry-target
+# Reaching the initial launch ceiling requires a grant even for integrations.
+OUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --integration 2>&1)"
+[[ "$?" -eq 10 && "$OUT" == *CAP_REACHED* ]] && ok "integration respects paid calls" || bad "unfunded integration: $OUT"
+"$STATE" renew retry-integ --by owner --rounds 1 || bad "direct renewal after approved HEAD moved"
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 "$STATE" abort retry-integ dispatch-failure "$CLAIM" >/dev/null 2>&1
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
-[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1"* ]] \
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=0/1"* ]] \
   && ok "an aborted integration claim is retried at the same attempt" || bad "retry after abort rc=$BRC out=$BOUT"
 FAKE_REVIEW_BODY="no location here" append_reply retry-integ REQUEST_CHANGES
 "$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
+FAILED_MERGE="$(git rev-parse HEAD)"
+git commit --amend -qm "different merge with the same parents"
+"$STATE" renew retry-integ --by owner --grant retry || bad "renew failed integration"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --integration 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "renewal preserves the exact merge of a technical retry" || bad "different merge after renewal: $BOUT"
+git checkout -q --detach "$FAILED_MERGE"
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 [[ "$BRC" -eq 0 ]] && ok "an integration round after NO_FINDINGS is retried too" || bad "retry after no findings rc=$BRC out=$BOUT"
@@ -277,19 +310,26 @@ append_reply retry-integ REQUEST_CHANGES
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 [[ "$BRC" -ne 0 && ( "$BOUT" == *INTEGRATION_REFUSED* || "$BOUT" == *CAP_REACHED* ) && "$BOUT" != *attempt=* ]] \
   && ok "a real REQUEST_CHANGES at the budget edge ends the loop instead of reopening the exception" || bad "after real RC rc=$BRC out=$BOUT"
+"$STATE" renew retry-integ --by owner --grant fixes || bad "renew review after blocking findings"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --integration 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "renewal after findings requires a normal round" || bad "integration after blocking findings: $BOUT"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 && "$BOUT" == *attempt=1/1* ]] \
+  && ok "the authorized normal round remains available" || bad "normal round after renewal: $BOUT"
 "$STATE" reset retry-integ >/dev/null 2>&1
 # With budget left, a real REQUEST_CHANGES in an integration round is refused as an integration.
 git reset -q --hard HEAD^1
-begin retry-integ2 2
+begin retry-integ2 3
 append_reply retry-integ2 APPROVE
 "$STATE" record retry-integ2 "$CLAIM" >/dev/null 2>&1
 RB2="$(field "$SD/retry-integ2.candidate" base_sha)"
 git merge -q --no-ff --no-edit retry-target
-BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --integration 2>&1)"
+BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 3 --integration 2>&1)"
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 append_reply retry-integ2 REQUEST_CHANGES
 "$STATE" record retry-integ2 "$CLAIM" >/dev/null 2>&1
-BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 3 --integration 2>&1)"; BRC=$?
 [[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
   && ok "a real REQUEST_CHANGES with budget left does not reopen the integration exception" || bad "after real RC with budget rc=$BRC out=$BOUT"
 "$STATE" reset retry-integ2 >/dev/null 2>&1
@@ -381,11 +421,16 @@ git add app.txt && git commit -qm next
   || bad "moved candidate rc=$RC reason=$(field "$SD/moved.review-state" reason)"
 
 begin scope 3
-append_reply scope APPROVE docs/other.md
+append_reply scope APPROVE docs/other.md >/dev/null 2>"$T/err"; RC=$?
+[[ "$RC" -eq 14 && "$(field "$SD/scope.review-loop" launches)" = 0 ]] \
+  && ok "direct dispatch rejects a mismatched spec before launch" || bad "direct preflight rc=$RC"
+# A damaged saved prompt is still independently rejected at record time.
+append_reply scope APPROVE
+sed 's|SPEC_PATH: docs/spec.md|SPEC_PATH: docs/other.md|' "$SD/scope.log" > "$T/log"
+cp "$T/log" "$SD/scope.log"
 "$STATE" record scope "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
-[[ "$RC" -eq 11 && "$(field "$SD/scope.review-state" reason)" == prompt_scope_mismatch ]] \
-  && ok "mismatched scope markers cannot authorize delivery" \
-  || bad "scope mismatch rc=$RC reason=$(field "$SD/scope.review-state" reason)"
+[[ "$RC" -eq 11 && "$(field "$SD/scope.review-state" reason)" = prompt_scope_mismatch ]] \
+  && ok "record rejects mismatched saved scope" || bad "scope mismatch rc=$RC"
 
 echo "== review loop outcomes =="
 begin refute 3

@@ -15,7 +15,7 @@ const DETAILED = 12
 const LOG_TAIL_BYTES = [65_536, 524_288, 4_194_304]
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
-  shape: 'snapshot-3',
+  shape: 'snapshot-4',
 })
 const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-2' })
 
@@ -61,7 +61,7 @@ async function streamEvent($: EngineInterface, dir: string, thread: string, pid:
 }
 
 function lastActivityMs(files: Map<Suffix, number>): number {
-  return files.get('log') ?? files.get('id') ?? 0
+  return files.get('log') ?? files.get('id') ?? files.get('active') ?? 0
 }
 
 async function threadRow(
@@ -77,6 +77,7 @@ async function threadRow(
     rounds: Number((await readText($, `${dir}/${name}.rounds`)).replace(/\D/g, '')) || 0,
     lastActivityMs: lastActivityMs(files),
     isBusy: false,
+    pid,
     startedAtMs: null,
     event: null,
     preview: null,
@@ -137,6 +138,7 @@ async function scan($: EngineInterface, dir: string | null, atMs: number, pinned
     reviews.push({
       name,
       status: state.status ?? '?',
+      round: state.round ? Number(state.round) : null,
       verdict: state.verdict ?? '-',
       isGateEligible: state.gate_eligible === 'true',
     })
@@ -240,11 +242,13 @@ async function followReply($: EngineInterface, shot: Snapshot, pinned: string | 
   await showReply($, shot.stateDir, open.thread, forMs)
 }
 
-function finishedLine(name: string, thread: ThreadRow | undefined, reviews: ReviewRow[]): string {
-  // A first dispatch that fails leaves no .id, so its thread drops out of the scan.
-  if (!thread) return `Codex ${name}: dispatch ended without a saved round`
-  const review = reviews.find(r => r.name === thread.name)
-  const verdict = review && review.verdict !== '-' ? ` · ${review.verdict}` : ''
+function finishedLine(before: ThreadRow, thread: ThreadRow | undefined, reviews: ReviewRow[], succeeded: boolean): string {
+  // Reading or redacting a preview can fail even after the driver saved its round.
+  if (!thread || thread.rounds <= before.rounds || (!succeeded && thread.lastActivityMs === before.lastActivityMs)) {
+    return `Codex ${before.name}: dispatch ended without a confirmed round`
+  }
+  const review = reviews.find(r => r.name === thread.name && r.round === thread.rounds)
+  const verdict = review && ['APPROVED', 'REQUEST_CHANGES', 'CAP_REACHED'].includes(review.status) && ['APPROVE', 'REQUEST_CHANGES'].includes(review.verdict) ? ` · ${review.verdict}` : ''
   return `Codex ${thread.name}: round ${thread.rounds} finished${verdict}`
 }
 
@@ -254,15 +258,19 @@ let ticks = 0
 let scanning: Promise<void> | null = null
 let timer: { cancel: () => void } | null = null
 
-async function resolveStateDir($: EngineInterface): Promise<string | null> {
+async function resolveStateDir($: EngineInterface, refresh: boolean): Promise<string | null> {
   const cwd = await $.session.cwd()
-  if (stateDir?.cwd === cwd) return stateDir.dir
+  if (!refresh && stateDir?.cwd === cwd) return stateDir.dir
   const run = await $.process.run(['bash', `${$.plugin.root}/scripts/state-dir.sh`, '--read-only'], {
     cwd,
     env: { CLAUDE_PROJECT_DIR: cwd },
     timeoutMs: 10_000,
   })
-  stateDir = { cwd, dir: run.exitCode === 0 ? run.stdout.trim() || null : null }
+  if (run.exitCode !== 0 || !run.stdout.trim()) {
+    stateDir = null
+    throw new Error(run.stderr.trim() || 'Could not resolve the thread directory')
+  }
+  stateDir = { cwd, dir: run.stdout.trim() }
   return stateDir.dir
 }
 
@@ -292,7 +300,7 @@ async function runTick($: EngineInterface, isForced: boolean) {
   const pinned = (await read($, reply))?.thread ?? null
   let next: Snapshot
   try {
-    next = await scan($, await resolveStateDir($), now, pinned)
+    next = await scan($, await resolveStateDir($, isForced), now, pinned)
   } catch (error) {
     // A failed scan says nothing about the threads: keep what was last seen, so
     // a running dispatch is neither dropped nor announced as finished.
@@ -301,8 +309,19 @@ async function runTick($: EngineInterface, isForced: boolean) {
     return
   }
   for (const before of previous?.threads ?? []) {
+    if (previous?.stateDir !== next.stateDir || !before.isBusy) continue
     const after = next.threads.find(t => t.name === before.name)
-    if (before.isBusy && !after?.isBusy) $.ui.toast(finishedLine(before.name, after, next.reviews), { timeoutMs: 8000 })
+    if (after?.isBusy && after.pid === before.pid && after.startedAtMs === before.startedAtMs) {
+      // The worker appends its result before it drops its lease. Keep the
+      // starting round through this window, including for the live band.
+      after.rounds = before.rounds
+      after.lastActivityMs = before.lastActivityMs
+    } else if (!after?.isBusy) {
+      const status = fields(await readText($, `${next.stateDir}/${before.name}.detach-status`))
+      const rc = status.pid === before.pid ? status.rc : undefined
+      const message = rc && rc !== '0' ? `Codex ${before.name}: dispatch exited ${rc}` : finishedLine(before, after, next.reviews, rc === '0')
+      $.ui.toast(message, { timeoutMs: 8000 })
+    }
   }
   await update($, snapshot, () => next)
   await followReply($, next, pinned)

@@ -1,6 +1,6 @@
 ---
 description: Reviews existing code, a diff, a branch or a pasted third-party review with a persistent Codex thread. Use --required only when an owning workflow needs machine-checked approval for one exact clean candidate. For a plan or design not yet implemented use /plan; for a question about how code works use /ask.
-argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--cap N] [--background] [--model <m>] [--effort <e>] <intent or focus>'
+argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--background] [--model <m>] [--effort <e>] <intent or focus>'
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
@@ -10,20 +10,20 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
 
 ## Options
 
-- `--thread <name>`: explicit thread. Otherwise run
-  `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`.
+- Use `--thread <name>` or the ongoing review's known thread. For a new persistent
+  review, run `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`. Exit 8 lists
+  a legacy contract whose branch is uncertain. Ask once which thread to use.
+  An ephemeral call can use the name `review`.
 - `--lens correctness|security|performance|architecture|ux|quick`: default
   `correctness`. Read the matching short prompt from
   `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` on the
   initial round.
-- `--once`: one advisory pass. Without it, address validated blocking findings
-  and resume until `APPROVE` or the cap.
-- `--model <m>`, `--effort <e>`: forwarded when supplied; the skill defines how a thread keeps them.
-- `--cap N`: maximum claimed review attempts, default 5 (1–5 for `--required`).
-  `--cap` bounds claims, not Codex calls: a refunded dispatch may still have cost tokens.
-- `--background`: see the skill's Long dispatches; never gate-eligible.
-- `--required --base <ref> --spec <path>`: one foreground delivery-gate round.
-  It cannot combine with `--once` or `--background`.
+- Parse `--once`, `--oneshot` and `--background` as defined in the shared skill.
+  Set `ONESHOT=true` only for an ephemeral call. Forward explicit model and effort.
+- `--cap N` sets the budget. Default to 7 for new reviews. Required review pins
+  the original cap (1–7). Omit `--cap` on resume to reuse it.
+- `--required --base <ref> --spec <path>` selects the foreground exact-candidate
+  protocol. Reject `--required` combined with `--once`, `--oneshot` or `--background` before dispatch.
 
 ## Advisory review
 
@@ -31,11 +31,13 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
    and ask Codex to re-check earlier findings before looking for new ones.
    A pasted third-party review follows the skill's Reviews section (one classification pass).
 
-2. Dispatch in the foreground:
+2. Use Bash with `run_in_background: true` when requested. Run this recipe once per pass:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
+   ephemeral=()
+   if [[ "$ONESHOT" == true ]]; then ephemeral=(--oneshot); fi
+   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" ${ephemeral[@]+"${ephemeral[@]}"} \
      ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
@@ -45,10 +47,10 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
    valid findings. Push back with file:line evidence when a claim is wrong.
    Follow the shared skill's ownership contract for fixes, missing decisions and evidence.
 
-4. Iterate within the authorized budget. At the cap, return outstanding findings and
+4. Finish on `APPROVE`, on `COMMENT` with no blockers, or after one pass with `--once` or `--oneshot`. Otherwise iterate within the remaining budget. At the cap, return outstanding findings and
    continue safe repairs; a required review follows "At the cap" in required-review.md.
 
 ## Required review
 
 Read `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`
-for `--required`. It owns the claim/dispatch/record/check sequence and recovery.
+for `--required`. Record each completed verdict on the reviewed SHA before the first edit or commit, including `REQUEST_CHANGES`.

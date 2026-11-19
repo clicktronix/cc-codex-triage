@@ -110,7 +110,7 @@ usage; dollar cost stays unknown. Diagnostic tails mask API keys and tokens.
 | `status`, `thread-list`, `thread-new` | yes | yes |
 
 Tested in CI on Linux and macOS. Windows is untested (no `setsid`; the Python fallback would run).
-The merge boundary lives in the host plugin (`cc-tuner`), not here.
+The invoking workflow owns publication and merge decisions.
 
 ## Permissions
 
