@@ -26,7 +26,7 @@ permission question. Repository context is optional.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --read-only --search \
-     ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$OPENING"
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$OPENING"
    ```
 
    Use the same route for rebuttals. Check claims, add evidence and reconsider your position

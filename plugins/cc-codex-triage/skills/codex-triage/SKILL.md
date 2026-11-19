@@ -32,15 +32,16 @@ however many findings there are, including regressions and dependencies acceptan
 Ask only for a missing product decision, access or waiver. Group related questions and continue
 available work.
 Reuse applicable test evidence; request a new check only for a concrete gap or changed inputs.
-Coordinate heavy checks with the owner; do not spawn nested reviewers or workers by default.
+Run requested checks within the delegated scope and budget. Send the relevant excerpt
+and its result. Acceptance, publication, waivers and changes to the goal belong to the owner.
 
 An owner that authorizes calls names the task, the purpose and the call budget; that
 authorization covers the bounded calls below without a question per invocation:
 
 - `/ask`, `/research`, `/reply`: one dispatch per call.
-- `/review`, `/plan`: iterate until `APPROVE` (for `/plan`, until only optional comments remain)
-  or the `--cap` (default 5); `--once` and `--oneshot` each force one pass (see Terms).
-- `/debate`: its own `--rounds` ceiling.
+- `/review` has a default ceiling of 7 calls. `/plan` and `/debate` default to 5.
+  An explicit smaller budget wins. Advisory review and plan finish on `APPROVE` or
+  `COMMENT` with no blockers. Required review follows its saved contract.
 
 The agent may inspect `/status` and `/thread-list`, and retire its own idle obsolete
 threads with `/thread-new`.
@@ -51,7 +52,7 @@ threads with `/thread-new`.
 - **attempt**: a claimed required-review round that counts against its cap.
 - `--once`: the command makes a single pass instead of iterating. `--oneshot`: the driver
   runs an ephemeral Codex session with no thread state, for a question with no follow-up.
-  They are independent and may be combined. `--background` changes where a call runs (see
+  Either flag ends the command after the first answer. Only persistent calls have a thread log. `--background` changes where a call runs (see
   Long dispatches), never how many passes follow.
 
 ## Threads
@@ -76,12 +77,11 @@ at creation (`/ask`, `/research`, `/debate`) makes every later call on it read-o
 configured sandbox. A call that passes `--read-only` applies it to that call only. A thread
 with no recorded sandbox resumes read-only.
 
-**Required-review threads.** Any dispatch to a thread that holds required-review state
-revokes its recorded approval, so advisory commands run
-`review-state.sh advisory-check "$THREAD" || exit $?` first. Skip it for `--oneshot` (no
-thread state), `/reply` (follows [required-review.md](references/required-review.md) for such
-a thread) and `/thread` (the user accepts the revocation). On `REQUIRED_THREAD_RESERVED` (exit 10) the caller
-targets a different `--thread`.
+**Required-review threads.** Persistent dispatches on a reserved name need a pending
+required claim. Advisory commands call `review-state.sh advisory-check "$THREAD"` before
+dispatch. Use a different name on `REQUIRED_THREAD_RESERVED` (exit 10).
+`--oneshot` skips this check. For `/reply`, `review-state.sh mode` routes a required
+thread to [required-review.md](references/required-review.md).
 
 **Recovery.** If resume exits 4, read the diagnostic and recover within existing
 authorization. When recovery needs a fresh session, retire an owned advisory thread with
@@ -109,10 +109,16 @@ On a non-zero exit, act per this table.
 | 20 | Long dispatch still running; the worker is unaffected | Run the printed `dispatch.sh --watch` command as a background task; do not dispatch the turn again |
 | 21 | Watched dispatch left no status record; outcome unconfirmed | Treat as failure; read `/status` and the thread log before retrying |
 
-**Long dispatches.** `/review`, `/plan`, `/research`, `/debate` and `/reply` call `dispatch.sh`,
-which already detaches long runs past the 600-second tool ceiling; `/ask` and `/thread` are short
-foreground calls. `--background` means running that `dispatch.sh` call as a Claude-managed
-background task, with no second detach layer around it.
+When invoking Bash, use the resolved plugin script path and concrete arguments from the
+recipe. Run a resolver or guard separately when the host cannot match a compound command
+to its tool permission. Continue only after the guard succeeds.
+
+**Long dispatches.** Run `dispatch.sh` with Bash timeout 600000. For `--background` set
+the Bash tool's `run_in_background: true` on that same invocation. A Claude task ID means
+wait for the host's completion notification. If the script exits 20, run its printed
+`dispatch.sh --watch` command for the same PID and offset. Another 20 continues the
+same watch. On 21, reconcile the lease, receipt and log before spending another call.
+A successful watch returns the original reply on stdout. Diagnostics go to stderr.
 
 ## Prompt boundary
 
@@ -125,8 +131,7 @@ and tests when a repository is part of the task. Send only what it cannot infer:
 - external evidence not present in the repository.
 
 For research, return cited conclusions and uncertainty. For review, show findings
-and the exact final verdict; after fixes, summarize the delta and link
-the full thread log. Never rewrite REQUEST_CHANGES into APPROVE.
+and the exact final verdict; after fixes, summarize the delta and link the log for persistent calls. Never rewrite REQUEST_CHANGES into APPROVE.
 
 ## Reviews
 

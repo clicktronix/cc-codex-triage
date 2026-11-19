@@ -31,12 +31,14 @@ Sends an informational question to a persistent Codex thread — the context-loc
    `--read-only` makes the thread read-only from creation (see the skill's Sandbox paragraph).
 
    ```bash
-   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check <THREAD> || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --read-only \
-     [--topic "<text>"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] <<< "$QUESTION"
+   ephemeral=()
+   if [[ "$ONESHOT" == true ]]; then ephemeral=(--oneshot); fi
+   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --read-only ${ephemeral[@]+"${ephemeral[@]}"} \
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$QUESTION"
    ```
 
-4. Answer with Codex's evidence and uncertainty; link the full log when summarizing.
+4. Answer with Codex's evidence and uncertainty; link the log for persistent calls.
 
 5. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
 

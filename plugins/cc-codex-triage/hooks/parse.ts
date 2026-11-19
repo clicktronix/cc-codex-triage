@@ -134,7 +134,7 @@ export function lastEvent(jsonl: string): string | null {
 // So does indented code: by CommonMark it starts after a blank line, at four columns past the list
 // item it sits in, and it runs on until a line is indented less.
 // Single `*` and `_` stay, being often part of a name (`__init__`, `snake_case`).
-const OPEN_FENCE = /^ {0,3}(`{3,}[^`]*|~{3,}.*)$/
+const OPEN_FENCE = /^(?:(`{3,})[^`]*|(~{3,}).*)$/
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/
 const CODE_INDENT = 4
 
@@ -150,6 +150,7 @@ function column(line: string): number {
 
 export function plainReply(lines: string[]): string[] {
   let fence: string | null = null
+  let fenceBase = 0
   let afterBreak = true
   let inCode = false
   const lists: number[] = []
@@ -157,27 +158,37 @@ export function plainReply(lines: string[]): string[] {
     while ((lists.at(-1) ?? 0) > at) lists.pop()
   }
   return lines.map(line => {
+    const at = column(line)
+    const content = line.replace(/^[ \t]+/, '')
+    // Dedenting ends the list item and any unclosed fence inside it.
+    if (fence && content && at < fenceBase) fence = null
     if (fence) {
-      const close = /^ {0,3}([`~]+) *$/.exec(line)?.[1] ?? ''
+      const close = at <= fenceBase + 3 ? /^([`~]+)[ \t]*$/.exec(content)?.[1] ?? '' : ''
       if (close.length >= fence.length && close === (fence[0] ?? '').repeat(close.length)) fence = null
       afterBreak = true
       inCode = false
       return fence ? line : ''
     }
-    const open = OPEN_FENCE.exec(line)?.[1]
-    if (open) {
-      leaveLists(column(line))
-      fence = open[0]?.repeat(/^([`~])\1*/.exec(open)?.[0].length ?? 3) ?? null
-      return ''
-    }
     if (line.trim() === '') {
       afterBreak = true
       return line
     }
-    const at = column(line)
     if (afterBreak) leaveLists(at)
     // A list item starts within three columns of its container; deeper, the marker is code or text.
     const item = at < (lists.at(-1) ?? 0) + CODE_INDENT ? LIST_ITEM.exec(line)?.[0] : undefined
+    const match = OPEN_FENCE.exec(item ? line.slice(item.length) : content)
+    if (match) {
+      leaveLists(at)
+      const container = lists.at(-1) ?? 0
+      if (at - container < CODE_INDENT) {
+        if (item) lists.push(column(item.replace(/\S/g, ' ')))
+        fenceBase = lists.at(-1) ?? 0
+        fence = match[1] ?? match[2] ?? null
+        afterBreak = true
+        inCode = false
+        return item?.trimEnd() ?? ''
+      }
+    }
     if (item) leaveLists(at)
     inCode = at >= (lists.at(-1) ?? 0) + CODE_INDENT && (inCode || (afterBreak && !item))
     afterBreak = false

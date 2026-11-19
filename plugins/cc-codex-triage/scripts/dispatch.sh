@@ -30,6 +30,7 @@ WATCHER="$SELF_DIR/detach-watch.sh"
 
 if [ "${1:-}" = --watch ]; then
   [ "$#" -eq 4 ] || { echo "usage: dispatch.sh --watch <thread> <pid> <log-offset>" >&2; exit 1; }
+  export CC_WATCH_PORCELAIN=1
   exec bash "$WATCHER" "$2" "$3" "$4"
 fi
 
@@ -68,9 +69,11 @@ fi
 
 # While a required claim is live on this thread, the prompt is checked against it before anything is
 # paid for — whatever the prompt's first line says. Without a claim this is a no-op.
-if ! printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null; then
-  echo "dispatch.sh: nothing was dispatched; the claim is still live. Build the header with review-state.sh header $THREAD and dispatch again." >&2
-  exit 14
+printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 14 ]; then echo "dispatch.sh: nothing was dispatched. Use review-state.sh header $THREAD and retry this claim." >&2; fi
+  exit "$rc"
 fi
 
 # Detach. A missing runtime cannot be repaired by retrying in the foreground.

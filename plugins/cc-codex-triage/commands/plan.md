@@ -1,5 +1,5 @@
 ---
-description: Stress-tests one plan or architecture decision in a persistent Codex thread, iterating until APPROVE (or one pass with --once). Use to find gaps, risks and sequencing problems in a plan before executing it. For code that already exists use /review; for choosing among several competing options use /debate or --lens alternatives.
+description: Stress-tests one plan or architecture decision in a persistent Codex thread, iterating until approval, optional comments or the round cap. Use to find gaps, risks and sequencing problems in a plan before executing it. For code that already exists use /review; for choosing among several competing options use /debate or --lens alternatives.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or question>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
@@ -24,13 +24,14 @@ optional comments remain, or the round cap is reached.
 3. Dispatch:
 
    ```bash
+   ephemeral=()
+   if [[ "$ONESHOT" == true ]]; then ephemeral=(--oneshot); fi
    [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
-     [--topic "$TOPIC"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] \
-     <<< "$PROMPT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" ${ephemeral[@]+"${ephemeral[@]}"} \
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
-4. Show findings and the exact verdict; link the full log. Validate objections before revising the plan. If a
+4. Show findings and the exact verdict; link the log for persistent calls. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around
    it. In an owning workflow return findings and let it continue the task.
 

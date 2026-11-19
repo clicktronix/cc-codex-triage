@@ -38,10 +38,9 @@ On follow-up rounds, first re-check the earlier findings, then review the change
 since the previous candidate. A new blocking finding outside that change needs a
 concrete failure scenario; otherwise it is a COMMENT. Do not repeat resolved prose.
 Honour applicable AGENTS.md/CLAUDE.md, their imports and scoped rules. Check the
-spec and affected consumers across file/repository boundaries. Reuse the supplied test evidence. You may run one targeted test when
-a claim depends on it; never run the full suite, e2e, builds or containers — name
-the check and what it would decide, and the owner runs it. Do not create issues,
-edit, or delegate workers.
+spec and affected consumers across file/repository boundaries. Reuse the supplied evidence. Prefer a focused check for an open question.
+Run the tests, e2e or build explicitly delegated within the task and budget.
+Return any remaining evidence gap to the owner.
 ```
 
 ## Plan focus

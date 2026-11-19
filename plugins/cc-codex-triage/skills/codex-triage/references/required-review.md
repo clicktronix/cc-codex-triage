@@ -13,17 +13,22 @@ and only `/thread-new` starts a new contract.
 
    ```bash
    BEGIN_RESULT=$("${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" begin "$THREAD" \
-     --base "$BASE" --spec "$SPEC_PATH" --cap "$CAP")
+     --base "$BASE" --spec "$SPEC_PATH" ${CAP:+--cap "$CAP"}) || exit $?
    CLAIM_TOKEN="${BEGIN_RESULT##* claim=}"
    CLAIM_TOKEN="${CLAIM_TOKEN%% *}"
    ```
 
+   Omit `--cap` to use 7 on a new thread or its pinned cap on resume (1–7).
+   A refused preflight costs zero. Each launch spends one call, including a failed dispatch,
+   `NO_FINDINGS` and integration. Each claim can launch once. If the first claim was interrupted,
+   repeat `begin` for the same candidate to finish it.
    A refusal blocks this review attempt and delivery, not unrelated safe work.
    Preserve WIP; let the owner prepare a clean candidate instead of downgrading the gate.
 
    After integrating the target into an approved candidate (a merge whose first parent is that
    candidate, nothing else), add `--integration`: the round reviews the integration and does not
-   spend an attempt. Anything else is a normal round.
+   spend an attempt. A technical failure can retry the same merge. After blocking
+   findings, use a normal round, including after a budget renewal.
 
 2. The prompt must begin with the four header lines, once each. Generate them; do not type them:
 
@@ -70,23 +75,27 @@ and only `/thread-new` starts a new contract.
    During a long-dispatch handoff the claim stays live; wait for its watcher
    before recording.
 
-4. Record the completed round and re-check approval:
+4. Record immediately, before any edit or commit, including after `REQUEST_CHANGES`.
+   On approval, check the exact candidate:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" record "$THREAD" "$CLAIM_TOKEN"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" record "$THREAD" "$CLAIM_TOKEN" || exit $?
    "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" check "$THREAD"
    ```
 
-   Only the final command's exact marker authorizes the owning workflow:
+   The final command prints review evidence for the owner's candidate:
 
    ```text
    CC_CODEX_REQUIRED_REVIEW APPROVE thread=<thread> head=<sha> tree=<sha> base_sha=<sha> spec_path=<path>
    ```
 
+   The final `spec_path=` value occupies the rest of the line and can contain spaces and Unicode.
+   The owner applies its separate publication permissions.
+
 ## Outcomes
 
 - `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
-  attempt was returned. Begin again and ask for the findings with their locations.
+  attempt was returned. Retry only with remaining calls.
 - `NO_DECISION`: the final line was neither `APPROVE` nor `REQUEST_CHANGES` (`COMMENT`
   included). The attempt is spent. Begin again with the exact-verdict instruction.
 - `REQUEST_CHANGES`: return the validated findings to the owning workflow. This command
@@ -102,11 +111,13 @@ needs user authorization; once given, renew it on the same thread. That keeps ba
 the Codex conversation and records who authorized it:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "<who>"
+"${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "$OWNER" --rounds "$AUTHORIZED_CALLS"
 ```
 
-Reuse a decision already given. Resetting or renaming a thread to get a budget loses the
-pinned contract; `/thread-new` is for a user-authorized change of base, spec or cap, or
+Omitting `--rounds` grants one call. Replaying a grant preserves the balance. For a
+distinct later decision with the same owner and amount, pass `--grant <decision-id>`
+and reuse that ID on retries. After an approved HEAD moves, an exhausted grant can be
+renewed directly. Renaming or resetting the thread loses the pinned contract; `/thread-new` is for a user-authorized change of base, spec or cap, or
 for the Recovery below.
 
 ## Candidate stability
@@ -114,7 +125,7 @@ for the Recovery below.
 The driver checks the actual clean HEAD/tree before and after the call and records a
 completion receipt. These are endpoint checks, not proof of an immutable filesystem
 throughout the call. The owner must keep the candidate stable while it is reviewed.
-A later reply or failed dispatch revokes earlier delivery permission.
+Claiming a new round supersedes the earlier approval. A rejected advisory call preserves it.
 
 Keep the initial literal base SHA when the target branch advances: integrate the target
 in the owning workflow, refresh affected evidence, and review the new candidate in this
