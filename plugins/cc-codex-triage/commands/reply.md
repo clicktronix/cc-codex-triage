@@ -17,14 +17,14 @@ Continue the existing conversation under the shared skill's Ownership and Prompt
 2. Resolve `STATE_DIR` with `state-dir.sh --read-only` and run `review-state.sh mode "$THREAD"`. For `required`, use the saved base and spec from
    `$STATE_DIR/$THREAD.review-loop` and follow
    `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`.
-   Reconcile a pending claim first. Resume a renewed grant on the same thread.
+   Reconcile a pending claim first. Resume a renewed review on the same thread.
    For `advisory` continue below.
 
 3. Recover Codex's last message: read the tail of `$STATE_DIR/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 
 4. Classify what Codex's last message needs:
    - **Question** → answer it from project state (native task list, plan, recent conversation).
-   - **Tool request** (run a test, show a file, grep) → run checks inside the owner's delegated scope and budget. Return the relevant result and excerpt.
+   - **Tool request** (run a test, show a file, grep) → run one targeted check or lookup inside the owner's delegated scope and return the relevant result and excerpt. The full suite, e2e, builds and containers stay with the owner: name the check and what it would decide.
    - **Options A/B/C** → state the user's choice (from the directive) with a one-line reason; ask Codex to detail it.
    - **Finding you disagree with** → push back with file:line evidence.
 

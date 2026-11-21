@@ -10,7 +10,7 @@ Retires the named thread's session so the next dispatch starts fresh. Plugin sta
 
 ## Steps
 
-1. Parse the first token of `$ARGUMENTS` as the thread name and validate `[a-zA-Z0-9_.-]+`. Extra text is refused: this command resets state and starts no paid dispatch.
+1. Parse the first token of `$ARGUMENTS` as the thread name and validate `[a-zA-Z0-9_.-]+`. Extra text is refused: this command resets state and starts no dispatch.
 
 2. Inspect the thread's topic, log and task state first, and reset one thread at a time. Run:
 

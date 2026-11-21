@@ -97,7 +97,7 @@ nothing deletes them.
 `--model` and `--effort` are accepted by every dispatching command and, like the sandbox,
 are recorded per thread (see the skill's Threads section).
 `<thread>.last-usage.json` and `<thread>.usage.jsonl` hold requested controls and token
-usage; dollar cost stays unknown. Diagnostic tails mask API keys and tokens.
+usage. Diagnostic tails mask API keys and tokens.
 
 ## What works where
 

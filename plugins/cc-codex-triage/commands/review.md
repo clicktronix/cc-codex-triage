@@ -20,7 +20,7 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
   initial round.
 - Parse `--once`, `--oneshot` and `--background` as defined in the shared skill.
   Set `ONESHOT=true` only for an ephemeral call. Forward explicit model and effort.
-- `--cap N` sets the budget. Default to 7 for new reviews. Required review pins
+- `--cap N` sets the round limit. Default to 7 for new reviews. Required review pins
   the original cap (1–7). Omit `--cap` on resume to reuse it.
 - `--required --base <ref> --spec <path>` selects the foreground exact-candidate
   protocol. Reject `--required` combined with `--once`, `--oneshot` or `--background` before dispatch.
@@ -47,7 +47,7 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
    valid findings. Push back with file:line evidence when a claim is wrong.
    Follow the shared skill's ownership contract for fixes, missing decisions and evidence.
 
-4. Finish on `APPROVE`, on `COMMENT` with no blockers, or after one pass with `--once` or `--oneshot`. Otherwise iterate within the remaining budget. At the cap, return outstanding findings and
+4. Finish on `APPROVE`, on `COMMENT` with no blockers, or after one pass with `--once` or `--oneshot`. Otherwise iterate within the remaining rounds. At the cap, return outstanding findings and
    continue safe repairs; a required review follows "At the cap" in required-review.md.
 
 ## Required review

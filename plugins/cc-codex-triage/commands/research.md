@@ -54,5 +54,5 @@ APPROVE loop or delivery marker.
    synthesis with supporting links and remaining uncertainty; retain the full thread
    log. For a requested report, the owner uses the requested destination or the applicable
    documentation location. Continue implementation only when it is already authorized.
-   Follow up with `/research --thread <same-name>` and the remaining question; spend
-   another pass only for a concrete evidence gap within the authorized task/budget.
+   Follow up with `/research --thread <same-name>` and the remaining question; run
+   another pass only for a concrete evidence gap within the authorized task.

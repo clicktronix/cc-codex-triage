@@ -8,7 +8,7 @@ allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash
 
 Use when competing positions deserve adversarial examination. Follow
 `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/SKILL.md` for ownership and recovery.
-The owner may initiate this within an authorized task and budget without a new
+The owner may initiate this within an authorized task and round limit without a new
 permission question. Repository context is optional.
 
 1. Parse `--rounds N` as a total dispatch ceiling (default 5, maximum 15), including
@@ -38,4 +38,4 @@ permission question. Repository context is optional.
 For an agent-initiated debate, show the reason and the conclusion; keep the full
 exchange in the thread log and show it in full only when the user asks to watch.
 
-Honor an already-authorized budget; request expansion only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
+Honor an already-authorized round limit; request more rounds only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

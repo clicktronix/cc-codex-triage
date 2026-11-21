@@ -28,7 +28,7 @@ for path in "$STATE_DIR"/*.id "$STATE_DIR"/*.active; do
 done
 
 if [ "$mode" = --resolve ]; then
-  # A failed first launch can leave a renewable contract without a session UUID.
+  # A failed first launch can leave a required contract without a session UUID.
   for path in "$STATE_DIR"/*.review-loop; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     file="${path##*/}"; name="${file%.review-loop}"

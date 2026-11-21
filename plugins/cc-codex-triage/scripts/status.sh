@@ -63,7 +63,7 @@ for STATE_FILE in "$STATE_DIR"/*.review-state; do
     "$NAME" "${STATUS:-?}" "${ELIGIBLE:-?}" "${VERDICT:--}"
   case "$STATUS" in
     APPROVED) echo "      authoritative check: review-state.sh check $NAME" ;;
-    CAP_REACHED) echo "      review budget exhausted; see \"At the cap\" in references/required-review.md" ;;
+    CAP_REACHED) echo "      round limit reached; see \"At the cap\" in references/required-review.md" ;;
     PENDING) echo "      one required-review round is claimed" ;;
   esac
 done
