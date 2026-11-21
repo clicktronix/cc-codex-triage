@@ -1,5 +1,5 @@
 ---
-description: Sends a reply from Claude Code into an existing Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback. Continues a conversation that already exists; to start a new one use /ask, /review or /plan.
+description: Replies in an existing Codex thread when Codex asked a question, requested a tool action, proposed options, or made a finding that needs pushback.
 argument-hint: "[--thread <name> | thread-name] [--model <m>] [--effort <e>] <directive or position>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---

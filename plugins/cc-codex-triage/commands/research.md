@@ -1,5 +1,5 @@
 ---
-description: Researches a question with Codex using live web search, library documentation and optional local context, and returns cited conclusions. Use for current external evidence, checking documentation, or a sourced comparison of approaches before deciding. For a question answerable from the repository alone use /ask; for contested positions use /debate.
+description: Researches a question with Codex using live web search and library documentation, and returns cited conclusions. Use for current external evidence or a sourced comparison of approaches. For a question the repository alone answers use /ask.
 argument-hint: '[--thread <name>] [--model <m>] [--effort <e>] [--background] <question or decision>'
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---

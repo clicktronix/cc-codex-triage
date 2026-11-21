@@ -1,5 +1,5 @@
 ---
-description: Runs a bounded multi-round debate between Claude Code and Codex over two or more defensible positions, then synthesizes the evidence and the remaining disagreement. Use when a decision has competing options worth contesting, such as a design choice with real trade-offs. For a factual or sourced answer use /research; for one plan to stress-test use /plan. Available to an owning agent during an authorized task.
+description: Runs a bounded debate between Claude Code and Codex over two or more defensible positions, then synthesizes the evidence and the remaining disagreement. Use for a design choice with real trade-offs.
 argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] [--model <m>] [--effort <e>] <question or decision>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---

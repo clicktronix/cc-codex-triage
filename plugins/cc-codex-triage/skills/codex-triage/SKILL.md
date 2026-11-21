@@ -1,7 +1,7 @@
 ---
 name: codex-triage
 user-invocable: false
-description: Shared rules for every cc-codex-triage command - ownership, threads, model and effort, evidence handling, exit codes. Use when routing a request for a Codex second opinion, research or review to a command, or when a command points here. Each command's own description decides which command fits; this skill never starts a Codex call itself.
+description: Shared rules for every cc-codex-triage command: ownership, threads, model and effort, evidence handling, exit codes. Use when a command points here, or to route a request for a Codex opinion, research or review to a command.
 ---
 
 # Codex Triage

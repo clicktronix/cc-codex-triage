@@ -1,11 +1,9 @@
 ---
-description: Lists active named Codex threads in the current context with rounds, log size, last activity, topic, and a busy marker for a thread with a dispatch in flight. Use to pick a thread to reuse or retire.
+description: Lists this context's Codex threads, to pick one to reuse or retire.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh *)
 ---
 
 # /thread-list
-
-Lists threads in the current context's plugin state directory.
 
 ## Steps
 

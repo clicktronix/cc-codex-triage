@@ -1,5 +1,5 @@
 ---
-description: Reviews existing code, a diff, a branch or a pasted third-party review with a persistent Codex thread. Use --required only when an owning workflow needs machine-checked approval for one exact clean candidate. For a plan or design not yet implemented use /plan; for a question about how code works use /ask.
+description: Reviews existing code, a diff, a branch or a pasted third-party review in a persistent Codex thread. Use --required only when an owning workflow needs machine-checked approval for one exact clean candidate.
 argument-hint: '[--required --base <ref> --spec <path>] [--lens <name>] [--thread <name>] [--once] [--oneshot] [--cap N] [--background] [--model <m>] [--effort <e>] <intent or focus>'
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
