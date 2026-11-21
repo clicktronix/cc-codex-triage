@@ -1555,10 +1555,10 @@ for cmd in ask plan review; do
   rm -rf "$SD"; mkdir -p "$SD"
   printf 'status=PENDING\n' > "$SD/rsv.review-state"
   before="$(ls -A "$SD")"
-  for ephemeral in false true; do
+  for ephemeral in '' 1; do
     OUT="$(cd "$REPO" && CLAUDE_PLUGIN_ROOT="$ROOT_PLUGIN" THREAD=rsv ONESHOT="$ephemeral" QUESTION=q PROMPT=q \
       bash -c "$recipe" 2>"$T/err")"; RC=$?
-    if [ "$ephemeral" = false ]; then
+    if [ -z "$ephemeral" ]; then
       [[ "$RC" -eq 10 ]] && ok "$cmd refuses the reserved name" || bad "$cmd persistent rc=$RC"
     else
       [[ "$RC" -eq 0 && "$OUT" = FAKE_REPLY && "$(ls -A "$SD")" = "$before" ]] \

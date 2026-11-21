@@ -19,7 +19,7 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
   `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` on the
   initial round.
 - Parse `--once`, `--oneshot` and `--background` as defined in the shared skill.
-  Set `ONESHOT=true` only for an ephemeral call. Forward explicit model and effort.
+  Set `ONESHOT=1` for an ephemeral call and leave it empty otherwise. Forward explicit model and effort.
 - `--cap N` sets the round limit. Default to 7 for new reviews. Required review pins
   the original cap (1–7). Omit `--cap` on resume to reuse it.
 - `--required --base <ref> --spec <path>` selects the foreground exact-candidate
@@ -34,10 +34,8 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
 2. Use Bash with `run_in_background: true` when requested. Run this recipe once per pass:
 
    ```bash
-   ephemeral=()
-   if [[ "$ONESHOT" == true ]]; then ephemeral=(--oneshot); fi
-   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" ${ephemeral[@]+"${ephemeral[@]}"} \
+   [[ -n "$ONESHOT" ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" ${ONESHOT:+--oneshot} \
      ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 

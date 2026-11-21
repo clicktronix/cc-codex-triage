@@ -262,7 +262,7 @@ while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
     def test_reply_resumes_known_plan_and_status_shows_log_activity(self):
         self.assertEqual(self.dispatch().returncode, 0)
         name = 'plan-legacy'
-        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent), THREAD=name, ONESHOT='false',
+        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent), THREAD=name, ONESHOT='',
                         PROMPT='Review the design', REPLY_TEXT='Here is the clarification')
         def recipe(command):
             doc = (SCRIPTS.parent/'commands'/f'{command}.md').read_text()
