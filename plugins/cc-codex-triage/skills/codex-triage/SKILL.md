@@ -35,8 +35,8 @@ Reuse applicable test evidence; request a new check only for a concrete gap or c
 Coordinate heavy checks with the owner; do not spawn nested reviewers or workers by default.
 Acceptance, publication, waivers and changes to the goal belong to the owner.
 
-An owner that authorizes calls names the task, the purpose and the round limit; that
-authorization covers the bounded calls below without a question per invocation:
+An owner that authorizes calls names the task and the purpose; that authorization covers
+the bounded calls below without a question per invocation:
 
 - `/ask`, `/research`, `/reply`: one dispatch per call.
 - `/review` has a default limit of 7 rounds. `/plan` and `/debate` default to 5.
