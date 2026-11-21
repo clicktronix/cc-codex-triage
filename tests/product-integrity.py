@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Cross-component regressions using real drivers and a strictly offline CLI."""
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -91,63 +90,28 @@ class ProductIntegrity(unittest.TestCase):
         self.assertIn('attempt=1/1', retry.stdout)
         self.assertIn('PENDING', self.gate(*args).stderr)
 
-    def test_default_seven_and_exact_renewal(self):
+    def test_default_seven_and_repeated_renewal(self):
         args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md')
         self.env['VERDICT'] = 'subject.py:1 fix this\nREQUEST_CHANGES'
-        for n in range(1, 8):
-            claim = self.gate(*args)
-            self.assertIn(f'attempt={n}/7', claim.stdout, claim.stderr)
-            self.assertEqual(self.dispatch().returncode, 0)
-            self.assertEqual(self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1]).returncode, 10)
-        self.assertIn('CAP_REACHED', self.gate(*args).stderr)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            grants = [pool.submit(self.gate, 'renew', 'review', '--by', "Иван (on-call), #14",
-                                  '--rounds', '3') for _ in range(2)]
-            for grant in grants:
-                result = grant.result()
-                self.assertIn('remaining=3', result.stdout, result.stderr)
-        self.assertIn('renewals=1\n', (self.sd/'review.review-loop').read_text())
-        self.assertEqual(self.gate('advisory-check', 'review').returncode, 10)
-        for _ in range(3):
-            claim = self.gate(*args)
-            self.assertEqual(claim.returncode, 0, claim.stderr)
-            self.assertEqual(self.dispatch().returncode, 0)
-            self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1])
-        self.assertIn('CAP_REACHED', self.gate(*args).stderr)
+        owner = "Иван (on-call), #14"
+        for renewal in (1, 2):
+            for n in range(1, 8):
+                claim = self.gate(*args)
+                self.assertIn(f'attempt={n}/7', claim.stdout, claim.stderr)
+                self.assertEqual(self.dispatch().returncode, 0)
+                self.assertEqual(self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1]).returncode, 10)
+            self.assertIn('CAP_REACHED', self.gate(*args).stderr)
+            renewed = self.gate('renew', 'review', '--by', owner)
+            self.assertEqual(renewed.returncode, 0, renewed.stderr)
+            self.assertTrue(renewed.stdout.startswith('RENEWED review:'), renewed.stdout)
+            loop = (self.sd/'review.review-loop').read_text()
+            self.assertIn(f'renewals={renewal}\n', loop)
+            self.assertIn(f'renewed_by={owner}\n', loop)
+            self.assertEqual(self.gate('advisory-check', 'review').returncode, 10)
+        claim = self.gate(*args)
+        self.assertIn('attempt=1/7', claim.stdout, claim.stderr)
 
-        duplicate = self.gate('renew', 'review', '--by', "Иван (on-call), #14", '--rounds', '3')
-        self.assertIn('remaining=0', duplicate.stdout, duplicate.stderr)
-        self.assertIn('remaining=3', self.gate('renew', 'review', '--by', "Иван (on-call), #14",
-                                               '--rounds', '3', '--grant', 'second decision').stdout)
-
-    def test_legacy_orphan_uses_existing_dispatch_evidence(self):
-        self.sd.mkdir(parents=True)
-        for name, failed in [('unlaunched', False), ('captured', False), ('failed', True)]:
-            if name == 'captured':
-                self.assertEqual(self.gate('begin', name, '--base', self.base, '--spec', 'spec.md',
-                                           '--cap', '1').returncode, 0)
-                (self.sd/(name+'.review-state')).unlink()
-            (self.sd/(name+'.review-loop')).write_text(
-                f'version=1\nbase_sha={self.base}\nspec_path=spec.md\ncap=1\nstart_round=0\nattempts=1\n')
-            if failed:
-                (self.sd/(name+'.last-error.jsonl')).write_text('{"type":"error"}\n')
-            claim = self.gate('begin', name, '--base', self.base, '--spec', 'spec.md')
-            if failed:
-                self.assertIn('CAP_REACHED', claim.stderr)
-            else:
-                self.assertIn('attempt=1/1', claim.stdout, claim.stderr)
-
-    def test_legacy_stale_charge_counts_one_failed_launch(self):
-        token = self.begin()
-        loop = self.sd/'review.review-loop'
-        loop.write_text(f'version=1\nbase_sha={self.base}\nspec_path=spec.md\ncap=3\nstart_round=0\nattempts=1\n')
-        (self.sd/'review.review-state').write_text('status=STALE\nreason=round_counter_mismatch\n')
-        (self.sd/'review.dispatch-receipt').write_text(f'claim_token={token}\nstatus=started\n')
-        retry = self.gate('begin', 'review', '--base', self.base, '--spec', 'spec.md')
-        self.assertIn('attempt=2/3', retry.stdout, retry.stderr)
-        self.assertIn('launches=1\n', loop.read_text())
-
-    def test_missing_loop_cannot_reissue_budget(self):
+    def test_missing_loop_cannot_reissue_rounds(self):
         token = self.begin()
         self.env['VERDICT'] = 'REQUEST_CHANGES'
         self.assertEqual(self.dispatch().returncode, 0)
@@ -165,7 +129,7 @@ class ProductIntegrity(unittest.TestCase):
                 output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record])
                 self.assertEqual(output.returncode, expected, output.stderr)
 
-    def test_default_review_name_keeps_legacy_grant(self):
+    def test_default_review_name_keeps_legacy_contract(self):
         self.git('checkout', '-qb', 'feature/billing')
         old = 'review-feature-billing'
         args = ('--base', self.base, '--spec', 'spec.md')
@@ -191,12 +155,6 @@ class ProductIntegrity(unittest.TestCase):
             claim = self.gate('begin', thread, *args, '--cap', str(cap))
             token = re.search(r'claim=(\w+)', claim.stdout)[1]
             self.assertIn('ABORTED', self.gate('abort', thread, 'dispatch-failure', token).stderr)
-            if cap == 5:
-                # A v1 loop from a saved conversation has no launch counters.
-                path = self.sd/(thread+'.review-loop')
-                lines = [line for line in path.read_text().splitlines()
-                         if line.split('=')[0] in ('base_sha','spec_path','cap','start_round','attempts','renewals')]
-                path.write_text('version=1\n'+'\n'.join(lines)+'\n')
             rounds = cap if cap in (3, 7) else 1
             for n in range(1, rounds+1):
                 claim = self.gate('begin', thread, *args)
@@ -211,19 +169,20 @@ class ProductIntegrity(unittest.TestCase):
             else:
                 self.assertEqual(self.gate('check', thread).returncode, 0)
 
-    def test_no_findings_spends_one_call(self):
+    def test_no_findings_returns_the_attempt(self):
         args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
         self.env['VERDICT'] = 'REQUEST_CHANGES'
         claim = self.gate(*args)
         self.assertEqual(self.dispatch().returncode, 0)
         self.assertIn('NO_FINDINGS', self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1]).stderr)
-        self.assertIn('CAP_REACHED', self.gate(*args).stderr)
         for script in ['codex-thread.sh', 'dispatch.sh']:
-            spent = self.run_cmd([SCRIPTS/script, 'review'], 'follow up')
-            self.assertEqual(spent.returncode, 10, spent.stderr)
-        self.assertIn('remaining=1', self.gate('renew', 'review', '--by', 'owner').stdout)
-        self.assertEqual(self.dispatch().returncode, 10)
+            refused = self.run_cmd([SCRIPTS/script, 'review'], 'follow up')
+            self.assertEqual(refused.returncode, 10, refused.stderr)
+            self.assertIn('REQUIRED_THREAD_RESERVED', refused.stderr)
         self.assertEqual(self.gate('mode', 'review').stdout.strip(), 'required')
+        again = self.gate(*args)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn('attempt=1/1', again.stdout)
 
     def test_watch_handoff_keeps_worker_and_stdout(self):
         barrier = self.root/'release'
@@ -273,7 +232,7 @@ while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
         self.assertNotIn('nothing was dispatched', invalid.stderr)
         self.assertFalse((self.root/'calls').exists())
 
-    def test_record_keeps_paid_reply_when_parser_is_unavailable(self):
+    def test_record_keeps_the_reply_when_parser_is_unavailable(self):
         claim = self.begin()
         self.env['VERDICT'] = 'subject.py:1 finding\nREQUEST_CHANGES'
         self.assertEqual(self.dispatch().returncode, 0)
@@ -285,19 +244,17 @@ while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
         self.assertIn('status=PENDING', (self.sd/'review.review-state').read_text())
         broken.unlink()
         self.assertIn('REQUEST_CHANGES', self.gate('record', 'review', claim).stderr)
-        self.assertIn('launches=1', (self.sd/'review.review-loop').read_text())
 
-    def test_a_failed_launch_spends_its_call(self):
+    def test_failed_first_dispatch_keeps_a_resolvable_contract(self):
         args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
         claim = self.gate(*args)
         token = re.search(r'claim=(\w+)', claim.stdout)[1]
         binary = self.root/'bin/codex'
         binary.write_text(FAKE.replace('sys.stdin.read()', 'sys.stdin.read(); sys.exit(3)'))
         self.assertEqual(self.dispatch().returncode, 3)
-        self.assertIn('ALREADY_DISPATCHED', self.dispatch().stderr)
         self.assertIn('ABORTED', self.gate('abort', 'review', 'dispatch-failure', token).stderr)
-        self.assertIn('CAP_REACHED', self.gate(*args).stderr)
-        self.assertIn('remaining=1', self.gate('renew', 'review', '--by', 'owner').stdout)
+        again = self.gate(*args)
+        self.assertIn('attempt=1/1', again.stdout, again.stderr)
         self.assertFalse((self.sd/'review.id').exists())
         result = self.run_cmd([SCRIPTS/'thread-index.sh', '--resolve'])
         self.assertEqual(result.stdout.strip(), 'review', result.stderr)
@@ -450,7 +407,7 @@ while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
         self.assertIn('dispatch_incomplete', p.stderr)
         self.assertNotEqual(self.gate('check', 'review').returncode, 0)
 
-    def test_corrupt_claim_does_not_destroy_budget_and_saved_state_can_recover(self):
+    def test_corrupt_claim_does_not_destroy_the_loop_and_saved_state_can_recover(self):
         claim = self.begin()
         candidate = self.sd/'review.candidate'
         saved = candidate.read_text()
@@ -466,7 +423,7 @@ while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
         self.assertEqual(self.dispatch('--strict').returncode, 0)
         self.assertEqual(self.gate('record', 'review', claim).returncode, 0)
         self.assertEqual(self.gate('check', 'review').returncode, 0)
-        self.assertIn('launches=1', (self.sd/'review.review-loop').read_text())
+        self.assertEqual((self.sd/'review.review-loop').read_bytes(), loop)
 
     def test_standalone_maintenance_reports_broken_python_without_touching_state(self):
         context = self.root/'standalone'; context.mkdir()

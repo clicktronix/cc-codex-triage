@@ -25,18 +25,28 @@ required_dispatch_start() {
   for path in "$REQUIRED_RECEIPT" "$STATE_DIR/$THREAD.approved" "$candidate" "$STATE_DIR/$THREAD.last-usage.json" "$STATE_DIR/$THREAD.last-usage.json.tmp"; do
     [[ ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || return 7
   done
-  # The review mutex serializes the charge with begin, even for an ordinary
-  # dispatch racing the first claim. The worker already owns the dispatch lease.
-  local decision
-  decision="$(CC_REVIEW_WORKER_PID="$$" bash "$SELF_DIR/review-state.sh" charge "$THREAD" <<< "$PROMPT")" || return $?
-  if [[ "$decision" == NO_REQUIRED_CLAIM ]]; then
-    rm -f "$STATE_DIR/$THREAD.approved" "$REQUIRED_RECEIPT" || return 7
-    return 0
+  # A thread with required state takes only its pending claim, so a direct or /thread dispatch
+  # is refused here, before it could revoke the recorded approval.
+  if [[ "$(required_field "$STATE_DIR/$THREAD.review-state" status)" != PENDING ]]; then
+    local mode
+    mode="$(bash "$SELF_DIR/review-state.sh" mode "$THREAD")" || return $?
+    if [[ "$mode" == required ]]; then
+      echo "REQUIRED_THREAD_RESERVED: use the required review protocol for this thread" >&2
+      return 10
+    fi
   fi
-  REQUIRED_CLAIM="$(required_field "$REQUIRED_RECEIPT" claim_token)"
-  REQUIRED_HEAD="$(required_field "$REQUIRED_RECEIPT" head)"
-  REQUIRED_TREE="$(required_field "$REQUIRED_RECEIPT" tree)"
-  [[ -n "$REQUIRED_CLAIM" && -n "$REQUIRED_HEAD" && -n "$REQUIRED_TREE" ]] || return 7
+  # Even a failed new reply makes the previous permission to deliver obsolete.
+  rm -f "$STATE_DIR/$THREAD.approved" "$REQUIRED_RECEIPT" || return 7
+  [[ -f "$candidate" ]] || return 0
+  [[ "$(required_field "$STATE_DIR/$THREAD.review-state" status)" == PENDING ]] || return 0
+  REQUIRED_CLAIM="$(required_field "$candidate" claim_token)"
+  REQUIRED_HEAD="$(required_field "$candidate" head)"
+  REQUIRED_TREE="$(required_field "$candidate" tree)"
+  if [[ -z "$REQUIRED_CLAIM" ]] || ! required_identity_matches; then
+    echo "STALE: required dispatch does not match the claimed clean candidate; abort this attempt and prepare the candidate" >&2
+    return 11
+  fi
+  required_receipt_write started
 }
 required_dispatch_finish() {
   [[ -n "$REQUIRED_CLAIM" ]] || return 0
