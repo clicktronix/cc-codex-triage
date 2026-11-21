@@ -70,14 +70,46 @@ Endpoint checks do not prove the filesystem was immutable during the call, so th
 must keep the candidate stable. The full protocol is in
 [required-review.md](skills/codex-triage/references/required-review.md).
 
-The only delivery marker is:
+An owning workflow must run `scripts/review-state.sh check <thread>` and compare
+the marker's `head` with its candidate. `/status` is informational.
+
+## Contract for callers
+
+Another tool may call `scripts/review-state.sh` by its install path. The verbs below, their
+exit codes, the usage line and the approval marker are a public contract: a change to any of
+them is a breaking change.
+
+- `begin`, `header`, `record`, `abort`: one required round, as
+  [required-review.md](skills/codex-triage/references/required-review.md) runs it.
+- `check <thread>`: prints the approval marker when an approval covers the current clean
+  HEAD/tree.
+- `renew <thread> --by <who>`: after `CAP_REACHED`, starts a new set of rounds on the same
+  thread; `<who>` names the person who authorized it.
+- `mode <thread>`: prints `required` or `advisory`; reads only.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Usage or argument error; the usage line is printed |
+| 2 | Python unavailable to resolve state outside Git (`mode`) |
+| 7 | Unsafe or unreadable state, lock busy, no Git repository, Python unavailable in `record` |
+| 10 | Refusal named on stderr (`CAP_REACHED`, `NO_APPROVAL`, `RENEW_REFUSED`, `REQUIRED_THREAD_RESERVED`, …) |
+| 11 | `STALE`: the approval or claim no longer matches the clean candidate |
+| 13 | Candidate not clean, spec untracked or a symlink, no HEAD |
+| 14 | Prompt header differs from the claim; nothing was dispatched |
+
+The usage line is one line on stderr and keeps `--integration`, `check <thread>` and
+`renew <thread> --by <who>`.
+
+The approval marker is the only line `check` prints, with exit 0:
 
 ```text
 CC_CODEX_REQUIRED_REVIEW APPROVE thread=<thread> head=<sha> tree=<sha> base_sha=<sha> spec_path=<path>
 ```
 
-An owning workflow must run `scripts/review-state.sh check <thread>` and compare
-the marker's `head` with its candidate. `/status` is informational.
+It is seven fields separated by single spaces. `<thread>` matches `[a-zA-Z0-9_.-]+`, each
+`<sha>` is a full object ID, and `<path>` is repository-relative and matches
+`[a-zA-Z0-9_./-]+`, so no field contains a space.
 
 ## State
 

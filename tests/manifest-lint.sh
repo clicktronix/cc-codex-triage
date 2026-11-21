@@ -145,6 +145,19 @@ else
   ok
 fi
 
+echo "== the plugin names no other plugin =="
+# Callers depend on this plugin's public contract (AGENTS.md); it never depends on them, so no file
+# names another plugin or uses its identifiers. Released history (CHANGELOG.md, wiki/ARCHIVE/) may.
+# Each pattern is bracketed so this file does not match itself.
+FOREIGN='cc[-]tuner|codex[-]tuner|codex[-]cc-triage|CC[_]TUNER|CODEX[_]TUNER|CODEX[_]CC_|heavy[.]sh|merge[.]sh|claude[-]thread'
+FOREIGN_HITS="$(git -C "$ROOT" grep --untracked -nIiE "$FOREIGN" -- . ':!CHANGELOG.md' ':!wiki/ARCHIVE/')"
+case "$?" in
+  1) ok ;;
+  0) bad "another plugin is named outside CHANGELOG.md and wiki/ARCHIVE/:
+$FOREIGN_HITS" ;;
+  *) bad "cannot scan the repository for other plugins' names" ;;
+esac
+
 echo "== every dispatching command exposes --model / --effort =="
 # The driver has parsed both flags on every path since 0.12.0 and applies them on resume.
 # A command that dispatches but hides them in its hint leaves the user with no way to pick
