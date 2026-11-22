@@ -107,9 +107,11 @@ The approval marker is the only line `check` prints, with exit 0:
 CC_CODEX_REQUIRED_REVIEW APPROVE thread=<thread> head=<sha> tree=<sha> base_sha=<sha> spec_path=<path>
 ```
 
-It is seven fields separated by single spaces. `<thread>` matches `[a-zA-Z0-9_.-]+`, each
-`<sha>` is a full object ID, and `<path>` is repository-relative and matches
-`[a-zA-Z0-9_./-]+`, so no field contains a space.
+It is six fields separated by single spaces, then `spec_path=<path>` to the end of the line.
+`<thread>` matches `[a-zA-Z0-9_.-]+` and each `<sha>` is a full object ID. `<path>` is
+repository-relative, may contain spaces and non-ASCII characters, has no control characters
+and neither starts nor ends with a space. Read it as the rest of the line after the first
+` spec_path=`.
 
 ## State
 
