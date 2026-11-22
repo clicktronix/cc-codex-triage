@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.19.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.18.1...v0.19.0) (2026-11-22)
+
+
+### Features
+
+* accept spec paths with spaces and non-ASCII characters ([#27](https://github.com/clicktronix/cc-codex-triage/issues/27)) ([2b0c711](https://github.com/clicktronix/cc-codex-triage/commit/2b0c71113db09aacd25d2fde372f7b5d58234f7d))
+
+
+### Bug Fixes
+
+* keep review rounds and thread continuity without call accounting ([#25](https://github.com/clicktronix/cc-codex-triage/issues/25)) ([9b37f4e](https://github.com/clicktronix/cc-codex-triage/commit/9b37f4e57324d6bf80a7f000bfadf400b9a95f0c))
+
 ## [0.18.1](https://github.com/clicktronix/cc-codex-triage/compare/v0.18.0...v0.18.1) (2026-11-07)
 
 
