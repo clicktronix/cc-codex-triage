@@ -1,19 +1,19 @@
 ---
-description: Asks Codex a read-only informational question in a persistent thread, answered from the local repository and general knowledge. Use for "how does X work here", "is there already a Y", "what is the idiomatic way to Z". For current external sources or a sourced comparison of approaches use /research; for critique of code use /review; for a plan use /plan. Pass --thread to keep a feature's questions together.
+description: Asks Codex a read-only question answered from the local repository and general knowledge: how something works here, whether a helper already exists, the idiomatic way to do it. For current external sources use /research.
 argument-hint: '[--thread <name>] [--topic <text>] [--oneshot] [--model <m>] [--effort <e>] <question>'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh *)
 ---
 
 # /ask
 
-Sends an informational question to a persistent Codex thread — the context-local `ask` thread by default, or a named one via `--thread`. Follow-up questions continue the same thread, so Codex retains prior Q&A. Use `--oneshot` for a throwaway question that leaves no thread state.
+Follow-up questions on a thread continue it, so Codex keeps the earlier answers.
 
 ## Steps
 
 1. Parse `$ARGUMENTS`:
    - `--thread <name>` → target thread (must match `[a-zA-Z0-9_.-]+`). **Default: `ask`**, a single context-wide thread for one-off questions.
    - `--topic <text>` → one-line label recorded when the thread is CREATED, so `/thread-list` and a later agent can tell what it holds. Ignored on an existing thread.
-   - `--oneshot` → strip it, set `ONESHOT=true` (else `ONESHOT=false`), and pass `--oneshot` to the driver. Ephemeral calls skip the advisory guard (skill: Required-review threads).
+   - `--oneshot` → strip it and set `ONESHOT=1`; without it leave `ONESHOT` empty. The recipe then skips the advisory guard and passes `--oneshot` to the driver (skill: Required-review threads).
    - `--model <m>`, `--effort <e>` → pass through when supplied; the skill's Threads section defines how a thread keeps them.
    The rest is the question. See **Thread choice** below for which thread to target.
 
@@ -31,12 +31,12 @@ Sends an informational question to a persistent Codex thread — the context-loc
    `--read-only` makes the thread read-only from creation (see the skill's Sandbox paragraph).
 
    ```bash
-   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check <THREAD> || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" <THREAD> --read-only \
-     [--topic "<text>"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] <<< "$QUESTION"
+   [[ -n "$ONESHOT" ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   "${CLAUDE_PLUGIN_ROOT}/scripts/codex-thread.sh" "$THREAD" --read-only ${ONESHOT:+--oneshot} \
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$QUESTION"
    ```
 
-4. Answer with Codex's evidence and uncertainty; link the full log when summarizing.
+4. Answer with Codex's evidence and uncertainty; link the log for persistent calls.
 
 5. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
 

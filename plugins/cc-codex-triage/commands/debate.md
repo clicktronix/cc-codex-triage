@@ -1,5 +1,5 @@
 ---
-description: Runs a bounded multi-round debate between Claude Code and Codex over two or more defensible positions, then synthesizes the evidence and the remaining disagreement. Use when a decision has competing options worth contesting, such as a design choice with real trade-offs. For a factual or sourced answer use /research; for one plan to stress-test use /plan. Available to an owning agent during an authorized task.
+description: Runs a bounded debate between Claude Code and Codex over two or more defensible positions, then synthesizes the evidence and the remaining disagreement. Use for a design choice with real trade-offs.
 argument-hint: "[--rounds N] [--thread <name>] [--topic <text>] [--model <m>] [--effort <e>] <question or decision>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
@@ -8,7 +8,7 @@ allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash
 
 Use when competing positions deserve adversarial examination. Follow
 `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/SKILL.md` for ownership and recovery.
-The owner may initiate this within an authorized task and budget without a new
+The owner may initiate this within an authorized task and round limit without a new
 permission question. Repository context is optional.
 
 1. Parse `--rounds N` as a total dispatch ceiling (default 5, maximum 15), including
@@ -26,7 +26,7 @@ permission question. Repository context is optional.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
    "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --read-only --search \
-     ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$OPENING"
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$OPENING"
    ```
 
    Use the same route for rebuttals. Check claims, add evidence and reconsider your position
@@ -38,4 +38,4 @@ permission question. Repository context is optional.
 For an agent-initiated debate, show the reason and the conclusion; keep the full
 exchange in the thread log and show it in full only when the user asks to watch.
 
-Honor an already-authorized budget; request expansion only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.
+Honor an already-authorized round limit; request more rounds only when necessary. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

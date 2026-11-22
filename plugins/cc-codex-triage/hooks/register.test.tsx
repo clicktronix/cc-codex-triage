@@ -36,6 +36,7 @@ const BAND = {
   plugin: 'cc-codex-triage',
   component: 'AbovePrompt',
   props: {
+    isCollapsed: false,
     hasSurvey: false,
     isWorking: false,
     maxRows: 3,
@@ -58,6 +59,7 @@ function logOf(...replies: string[]): string {
 
 type Faults = {
   isListBroken: boolean
+  resolveDir?: () => string | null
   links?: string[]
   // Runs before a log is read; 'deny' fails that read.
   beforeLogRead?: (path: string) => Promise<'deny' | void>
@@ -133,7 +135,10 @@ function world(
     const done = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
-    if (cmd === 'bash' && arg?.endsWith('/scripts/state-dir.sh')) return done(`${DIR}\n`)
+    if (cmd === 'bash' && arg?.endsWith('/scripts/state-dir.sh')) {
+      const dir = faults.resolveDir ? faults.resolveDir() : DIR
+      return dir ? done(dir) : done('', 7)
+    }
     // redact.sh's bearer rule: a token shorter than twelve characters is left alone.
     if (cmd === 'bash' && arg?.endsWith('/scripts/redact.sh')) {
       return done((e.init?.stdin ?? '').replace(/([Bb]earer )[A-Za-z0-9._~+/-]{12,}=*/g, '$1[redacted]'))
@@ -198,7 +203,16 @@ describe('parse', () => {
       '',
       'after',
     ])
+    expect(plainReply(['10. item', '    ```sh', '    # keep **literal**', '    ```', '# Title'])).toEqual([
+      '10. item', '', '    # keep **literal**', '', 'Title',
+    ])
     expect(plainReply(['~~~', '`x`', '~~~'])).toEqual(['', '`x`', ''])
+    expect(plainReply(['10. item', '    ~~~', '    # literal', '# Outside'])).toEqual([
+      '10. item', '', '    # literal', 'Outside',
+    ])
+    expect(plainReply(['10. ```python', '    # keep', '    ```', '**after**'])).toEqual([
+      '10.', '    # keep', '', 'after',
+    ])
     expect(plainReply(['Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', '**after**'])).toEqual([
       'Code:', '', '    # keep', '    merged = {**a, **b}', '', '    `x`', '', 'after',
     ])
@@ -505,11 +519,49 @@ describe('mod', () => {
 
     alive.delete('4242')
     await clock.advance(2000)
-    expect(toasts).toEqual(['Codex review-a.b: round 2 finished'])
+    expect(toasts).toEqual(['Codex review-a.b: dispatch ended without a confirmed round'])
 
     const idle = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await idle.find({ type: 'Text', text: /Codex/ })).toBeUndefined()
     await idle.unmount()
+  })
+
+  test('a later saved round does not inherit an earlier verdict', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const alive = new Set(['4242'])
+    const files = { ...FILES, 'review-a.b.review-state': 'round=2\nstatus=APPROVED\nverdict=APPROVE' }
+    const toasts = world(on, files, alive, true, EVENTS, {
+      isListBroken: false, beforeLogRead: async () => 'deny',
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    files['review-a.b.rounds'] = '3'
+    files['review-a.b.log'] = logOf('one', 'two', 'new result')
+    await clock.advance(2000) // the driver published output while it still owns the lease
+    alive.clear()
+    await clock.advance(2000)
+    expect(toasts).toEqual(['Codex review-a.b: round 3 finished'])
+  })
+
+  test('resolver retries failure and rechecks the same cwd when the pane opens', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    let calls = 0
+    let dir: string | null = null
+    world(on, FILES, new Set(), true, EVENTS, { isListBroken: false, resolveDir: () => { calls++; return dir } })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    dir = '/xdg/standalone'
+    await clock.advance(2000)
+    const cached = calls
+    await clock.advance(2000)
+    expect(calls).toBe(cached)
+    dir = DIR
+    const result = await $.command.run({
+      command: 'codex-pane', args: 'plan-x', origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    })
+    expect(result.text).toBe('Opened the reply view for plan-x.')
+    expect(calls).toBeGreaterThan(cached)
   })
 
   test('a first dispatch shows before its thread has an .id', async ($, on) => {
@@ -593,7 +645,25 @@ describe('mod', () => {
     release()
     await call
     await clock.advance(1)
-    expect(toasts).toEqual(['Codex review-a.b: round 2 finished'])
+    expect(toasts).toEqual(['Codex review-a.b: dispatch ended without a confirmed round'])
+  })
+
+  test('a background Bash dispatch reaches the host exactly once', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, FILES, new Set(), false)
+    const modes: boolean[] = []
+    on('tool.call', { tool: 'Bash' }, (_, event) => {
+      modes.push(event.run_in_background === true)
+      return { result: { task_id: 'review-task' } }
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const response = await $.tool.call({
+      tool: 'Bash', command: '/plugins/cc-codex-triage/scripts/dispatch.sh review', run_in_background: true,
+    })
+    expect(response.result).toEqual({ task_id: 'review-task' })
+    expect(modes).toEqual([true])
+    await clock.advance(1)
   })
 
   test('a first dispatch that ends without an .id still reports its end', async ($, on) => {
@@ -608,7 +678,7 @@ describe('mod', () => {
     delete files['fresh.active']
     delete files['fresh.stream']
     await clock.advance(2000)
-    expect(toasts).toEqual(['Codex fresh: dispatch ended without a saved round'])
+    expect(toasts).toEqual(['Codex fresh: dispatch ended without a confirmed round'])
   })
 
   test('the lease is read as the driver reads it: no trimming beyond trailing newlines', async ($, on) => {

@@ -1,5 +1,5 @@
 ---
-description: Stress-tests one plan or architecture decision in a persistent Codex thread, iterating until APPROVE (or one pass with --once). Use to find gaps, risks and sequencing problems in a plan before executing it. For code that already exists use /review; for choosing among several competing options use /debate or --lens alternatives.
+description: Stress-tests one plan or architecture decision that is not implemented yet, in a persistent Codex thread: gaps, risks and sequencing problems before executing it.
 argument-hint: "[--lens <name>] [--thread <name>] [--topic <text>] [--once] [--oneshot] [--cap N] [--model <m>] [--effort <e>] [--background] <plan or question>"
 allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
@@ -14,7 +14,7 @@ optional comments remain, or the round cap is reached.
 1. Parse leading flags. The default thread comes from
    `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh plan`; default lens is
    `stress-test`; default cap is 5. Iteration, `--once`, `--oneshot` and `--background`
-   follow the skill's owner-call rules. Set `ONESHOT=true` if `--oneshot` was passed (it skips the advisory guard below), else `ONESHOT=false`. A clearly different artifact needs a new thread.
+   follow the skill's owner-call rules. Set `ONESHOT=1` if `--oneshot` was passed (it skips the advisory guard below and makes the call ephemeral); otherwise leave `ONESHOT` empty. A clearly different artifact needs a new thread.
 
 2. On the initial dispatch, read the selected plan focus and output contract from
    `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md` and
@@ -24,13 +24,12 @@ optional comments remain, or the round cap is reached.
 3. Dispatch:
 
    ```bash
-   [[ "$ONESHOT" == true ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" \
-     [--topic "$TOPIC"] [--oneshot] [--model "$MODEL"] [--effort "$EFFORT"] \
-     <<< "$PROMPT"
+   [[ -n "$ONESHOT" ]] || "${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" advisory-check "$THREAD" || exit $?
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" ${ONESHOT:+--oneshot} \
+     ${TOPIC:+--topic "$TOPIC"} ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$PROMPT"
    ```
 
-4. Show findings and the exact verdict; link the full log. Validate objections before revising the plan. If a
+4. Show findings and the exact verdict; link the log for persistent calls. Validate objections before revising the plan. If a
    claim is wrong, refute it with evidence rather than reshaping the plan around
    it. In an owning workflow return findings and let it continue the task.
 

@@ -38,20 +38,19 @@ fi
 
 echo
 echo "Threads:"
-ANY=0
-for ID_FILE in "$STATE_DIR"/*.id; do
-  [ -f "$ID_FILE" ] || continue
-  ANY=1
-  NAME="$(basename "$ID_FILE" .id)"
-  ROUNDS="$(cat "$STATE_DIR/$NAME.rounds" 2>/dev/null || echo 0)"
-  SIZE="$(wc -c < "$STATE_DIR/$NAME.log" 2>/dev/null | tr -d ' ')"
-  printf '  %-30s rounds=%-3s size=%-8s last=%-16s\n' \
-    "$NAME" "$ROUNDS" "${SIZE:-0}" "$(_mtime "$ID_FILE")"
-done
-[ "$ANY" = 1 ] || echo "  (none)"
+rows="$(bash "$SELF_DIR/thread-index.sh" --tsv)" || exit $?
+if [ -z "$rows" ]; then
+  echo "  (none)"
+else
+  while IFS=$'\t' read -r name topic rounds size last busy; do
+    [ "$busy" = busy ] || busy=""
+    printf '  %-30s rounds=%-3s size=%-8s last=%-16s %s\n' "$name" "$rounds" "$size" "$last" "$busy"
+  done <<< "$rows"
+fi
 
 echo
 echo "Required review:"
+shopt -s dotglob
 ANY=0
 for STATE_FILE in "$STATE_DIR"/*.review-state; do
   [ -f "$STATE_FILE" ] || continue
@@ -64,7 +63,7 @@ for STATE_FILE in "$STATE_DIR"/*.review-state; do
     "$NAME" "${STATUS:-?}" "${ELIGIBLE:-?}" "${VERDICT:--}"
   case "$STATUS" in
     APPROVED) echo "      authoritative check: review-state.sh check $NAME" ;;
-    CAP_REACHED) echo "      review budget exhausted; see \"At the cap\" in references/required-review.md" ;;
+    CAP_REACHED) echo "      round limit reached; see \"At the cap\" in references/required-review.md" ;;
     PENDING) echo "      one required-review round is claimed" ;;
   esac
 done

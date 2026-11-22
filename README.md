@@ -42,7 +42,7 @@ tests/
   product-integrity.py
   run.sh
   scenarios/
-wiki/PLANS/
+wiki/ARCHIVE/PLANS/   # completed plans
 ```
 
 The scenario files are historical prompt evidence. Deterministic shell tests

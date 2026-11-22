@@ -145,6 +145,19 @@ else
   ok
 fi
 
+echo "== the plugin names no other plugin =="
+# Callers depend on this plugin's public contract (AGENTS.md); it never depends on them, so no file
+# names another plugin or uses its identifiers. Released history (CHANGELOG.md, wiki/ARCHIVE/) may.
+# Each pattern is bracketed so this file does not match itself.
+FOREIGN='cc[-]tuner|codex[-]tuner|codex[-]cc-triage|CC[_]TUNER|CODEX[_]TUNER|CODEX[_]CC_|heavy[.]sh|merge[.]sh|claude[-]thread'
+FOREIGN_HITS="$(git -C "$ROOT" grep --untracked -nIiE "$FOREIGN" -- . ':!CHANGELOG.md' ':!wiki/ARCHIVE/')"
+case "$?" in
+  1) ok ;;
+  0) bad "another plugin is named outside CHANGELOG.md and wiki/ARCHIVE/:
+$FOREIGN_HITS" ;;
+  *) bad "cannot scan the repository for other plugins' names" ;;
+esac
+
 echo "== every dispatching command exposes --model / --effort =="
 # The driver has parsed both flags on every path since 0.12.0 and applies them on resume.
 # A command that dispatches but hides them in its hint leaves the user with no way to pick
@@ -187,12 +200,14 @@ ASK_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:
   || bad "commands/ask.md must grant only the driver and the advisory-check it executes"
 
 REPLY_ALLOWED="$(awk 'NR>1 && /^---$/{exit} /^allowed-tools:/{sub(/^allowed-tools:[[:space:]]*/, ""); print; exit}' "$ROOT/plugins/cc-codex-triage/commands/reply.md")"
-EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
+EXPECTED_REPLY='Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)'
 [[ "$REPLY_ALLOWED" == "$EXPECTED_REPLY" ]] \
   && ok \
   || bad "commands/reply.md must retain Read plus its advisory/required product-route scripts"
 
 REVIEW_COMMAND="$ROOT/plugins/cc-codex-triage/commands/review.md"
+grep -Eq 'run_in_background: *true' "$REVIEW_COMMAND" \
+  && ok || bad "advisory --background must select the Bash tool's background mode"
 grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/review-lenses.md' "$REVIEW_COMMAND" \
   && ok \
   || bad "commands/review.md must resolve its lens reference from CLAUDE_PLUGIN_ROOT"
@@ -212,9 +227,9 @@ else
 fi
 
 THREAD_COMMAND="$ROOT/plugins/cc-codex-triage/commands/thread.md"
-grep -q 'Parse leading `--oneshot`, `--topic <text>`, `--model <m>` and `--effort <e>` flags, in any' "$THREAD_COMMAND" \
-  && ok \
-  || bad "commands/thread.md must parse all four advertised leading flags"
+for flag in --oneshot --topic --model --effort; do
+  awk '/^argument-hint:/{print; exit}' "$THREAD_COMMAND" | grep -qF -- "$flag" && ok || bad "thread hint lacks $flag"
+done
 THREAD_NEW="$ROOT/plugins/cc-codex-triage/commands/thread-new.md"
 if grep -q -- '--reset-only' "$THREAD_NEW" && ! grep -q -- ' --new ' "$THREAD_NEW"; then
   ok

@@ -178,7 +178,7 @@ begin empty-findings 2
   || bad "after empty findings: rc=$BRC out=$BOUT"
 append_reply empty-findings REQUEST_CHANGES
 "$STATE" record empty-findings "$CLAIM" >/dev/null 2>&1
-[[ "$(field "$SD/empty-findings.review-state" status)" == REQUEST_CHANGES ]] \
+[[ "$(field "$SD/empty-findings.review-state" status)" == REQUEST_CHANGES && "$(field "$SD/empty-findings.review-loop" attempts)" == 1 ]] \
   && ok "a blocking verdict with a located finding still counts" \
   || bad "located finding status: $(field "$SD/empty-findings.review-state" status)"
 "$STATE" reset empty-findings >/dev/null 2>&1
@@ -206,7 +206,7 @@ CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 append_reply integ APPROVE
 IOUT="$("$STATE" record integ "$CLAIM" 2>&1)"; IRC=$?
 [[ "$IRC" -eq 0 && "$IOUT" == "APPROVE head=$(git rev-parse HEAD)"* && "$(field "$SD/integ.review-loop" attempts)" == 1 ]] \
-  && ok "the integrated candidate is approved without spending the budget" \
+  && ok "the integrated candidate is approved without spending an attempt" \
   || bad "integration record rc=$IRC out=$IOUT attempts=$(field "$SD/integ.review-loop" attempts)"
 "$STATE" reset integ >/dev/null 2>&1
 BOUT="$("$STATE" begin integ --base HEAD --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
@@ -231,6 +231,78 @@ begin renew-route 1
 "$STATE" abort renew-route dispatch-failure "$CLAIM" >/dev/null 2>&1
 "$STATE" reset renew-route >/dev/null 2>&1
 
+echo "== consecutive authorized renewals each start a new set of rounds =="
+begin renew-twice 1
+append_reply renew-twice REQUEST_CHANGES
+"$STATE" record renew-twice "$CLAIM" >/dev/null 2>&1
+"$STATE" renew renew-twice --by owner >/dev/null 2>&1
+begin renew-twice 1
+append_reply renew-twice REQUEST_CHANGES
+"$STATE" record renew-twice "$CLAIM" >/dev/null 2>&1
+[[ "$BRC" -eq 0 && "$(field "$SD/renew-twice.review-state" status)" == CAP_REACHED ]] \
+  && ok "the first renewal's round reaches the cap again" || bad "first renewed round rc=$BRC status=$(field "$SD/renew-twice.review-state" status)"
+ROUT="$("$STATE" renew renew-twice --by owner 2>&1)"; RRC=$?
+[[ "$RRC" -eq 0 && "$ROUT" == RENEWED* && "$(field "$SD/renew-twice.review-loop" renewals)" == 2 ]] \
+  && ok "the same owner's second renewal is recorded" || bad "second renew rc=$RRC out=$ROUT renewals=$(field "$SD/renew-twice.review-loop" renewals)"
+begin renew-twice 1
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1"* ]] \
+  && ok "the round after the second renewal is claimed" || bad "after second renew rc=$BRC out=$BOUT err=$(cat "$T/err")"
+"$STATE" abort renew-twice dispatch-failure "$CLAIM" >/dev/null 2>&1
+"$STATE" reset renew-twice >/dev/null 2>&1
+
+echo "== a renewal without a round in between is refused =="
+begin renew-idle 1
+append_reply renew-idle REQUEST_CHANGES
+"$STATE" record renew-idle "$CLAIM" >/dev/null 2>&1
+"$STATE" renew renew-idle --by owner >/dev/null 2>&1
+ROUT="$("$STATE" renew renew-idle --by owner 2>&1)"; RRC=$?
+[[ "$RRC" -eq 10 && "$ROUT" == *RENEW_REFUSED* && "$(field "$SD/renew-idle.review-loop" renewals)" == 1 ]] \
+  && ok "a repeated renew grants nothing and says so" || bad "idle second renew rc=$RRC out=$ROUT renewals=$(field "$SD/renew-idle.review-loop" renewals)"
+"$STATE" reset renew-idle >/dev/null 2>&1
+
+echo "== renew takes only --by, and the usage line keeps the verbs callers match =="
+begin renew-flags 1
+append_reply renew-flags REQUEST_CHANGES
+"$STATE" record renew-flags "$CLAIM" >/dev/null 2>&1
+for flag in "--rounds 3" "--grant x"; do
+  # shellcheck disable=SC2086 # the flag and its value are two words
+  "$STATE" renew renew-flags --by owner $flag >/dev/null 2>&1; RC=$?
+  [[ "$RC" -eq 1 && "$(field "$SD/renew-flags.review-state" status)" == CAP_REACHED ]] \
+    && ok "renew $flag is a usage error" || bad "renew $flag rc=$RC"
+done
+"$STATE" reset renew-flags >/dev/null 2>&1
+USAGE="$("$STATE" 2>&1)"
+[[ "$USAGE" == *--integration* && "$USAGE" == *"check <thread>"* && "$USAGE" == *"renew <thread> --by"* \
+   && "$USAGE" != *--rounds* && "$USAGE" != *--grant* ]] \
+  && ok "usage names --integration, check and renew --by, and no removed flag" || bad "usage: $USAGE"
+
+echo "== the loop file stays version 1 through every transition =="
+V1_FIELDS="version base_sha spec_path cap start_round attempts renewals renewed_by timestamp "
+V1_BAD=""
+loop_v1() { # label
+  [[ "$(field "$SD/v1-loop.review-loop" version)" == 1 \
+     && "$(sed -n 's/=.*//p' "$SD/v1-loop.review-loop" | tr '\n' ' ')" == "$V1_FIELDS" ]] || V1_BAD="$V1_BAD $1"
+}
+begin v1-loop 2; loop_v1 begin
+"$STATE" abort v1-loop dispatch-failure "$CLAIM" >/dev/null 2>&1; loop_v1 abort
+begin v1-loop 2
+FAKE_REVIEW_BODY="no location here" append_reply v1-loop REQUEST_CHANGES
+"$STATE" record v1-loop "$CLAIM" >/dev/null 2>&1; loop_v1 no-findings
+begin v1-loop 2
+append_reply v1-loop REQUEST_CHANGES
+"$STATE" record v1-loop "$CLAIM" >/dev/null 2>&1; loop_v1 request-changes
+begin v1-loop 2
+append_reply v1-loop COMMENT
+"$STATE" record v1-loop "$CLAIM" >/dev/null 2>&1; loop_v1 cap-reached
+"$STATE" renew v1-loop --by owner >/dev/null 2>&1; loop_v1 renew
+begin v1-loop 2
+append_reply v1-loop APPROVE
+"$STATE" record v1-loop "$CLAIM" >/dev/null 2>&1; loop_v1 approve
+[[ -z "$V1_BAD" && "$(field "$SD/v1-loop.review-state" status)" == APPROVED ]] \
+  && ok "begin, abort, record of each verdict and renew write the v1 loop field set" \
+  || bad "non-v1 loop after:$V1_BAD; status=$(field "$SD/v1-loop.review-state" status)"
+"$STATE" reset v1-loop >/dev/null 2>&1
+
 echo "== a finding in a file without an extension is a finding =="
 begin extless 2
 FAKE_REVIEW_BODY="Dockerfile:3 copies a missing artifact and the build fails" append_reply extless REQUEST_CHANGES
@@ -238,6 +310,33 @@ FAKE_REVIEW_BODY="Dockerfile:3 copies a missing artifact and the build fails" ap
 [[ "$(field "$SD/extless.review-state" status)" == REQUEST_CHANGES && "$(field "$SD/extless.review-loop" attempts)" == 1 ]] \
   && ok "Dockerfile:3 counts as a located finding" || bad "extensionless status: $(field "$SD/extless.review-state" status)"
 "$STATE" reset extless >/dev/null 2>&1
+
+echo "== Unicode findings; the spec path keeps the marker's seven fields =="
+printf 'spec\n' > 'docs/План работ.md'
+printf 'entry\n' > Словарь
+git add -- 'docs/План работ.md' Словарь && git commit -qm 'Add Unicode fixture'
+for verdict in REQUEST_CHANGES APPROVE; do
+  BOUT="$("$STATE" begin unicode --base HEAD --spec docs/spec.md)"
+  CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+  HDR="$("$STATE" header unicode)"
+  FAKE_REVIEW_BODY="Словарь:1 correct the entry" FAKE_REVIEW_VERDICT="$verdict" "$DISPATCH" unicode --strict <<< "$HDR" >/dev/null
+  "$STATE" record unicode "$CLAIM" >/dev/null 2>&1
+  status="$(field "$SD/unicode.review-state" status)"
+  if [ "$verdict" = REQUEST_CHANGES ]; then
+    [[ "$status" = REQUEST_CHANGES ]] && ok "Unicode file:line remains actionable" || bad "Unicode finding: $status"
+  fi
+done
+marker="$("$STATE" check unicode)"
+expected="CC_CODEX_REQUIRED_REVIEW APPROVE thread=unicode head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$(git rev-parse HEAD) spec_path=docs/spec.md"
+read -ra marker_fields <<< "$marker"
+[[ "$marker" = "$expected" && "${#marker_fields[@]}" -eq 7 ]] \
+  && ok "the approval marker splits into exactly seven fields" || bad "marker: $marker (${#marker_fields[@]} fields)"
+"$STATE" begin spaced --base HEAD --spec 'docs/План работ.md' 2>"$T/err"; RC=$?
+[[ "$RC" -eq 1 ]] && grep -qF '[a-zA-Z0-9_./-]' "$T/err" \
+  && ok "a spec path outside [a-zA-Z0-9_./-] is refused until callers parse spec_path to the line end" \
+  || bad "spaced spec rc=$RC err=$(cat "$T/err")"
+"$STATE" begin newline --base HEAD --spec $'line\nbreak' 2>"$T/err" && bad "multiline spec accepted"
+grep -q 'one line' "$T/err" && ok "multiline spec rejected at begin" || bad "multiline spec diagnostic"
 
 echo "== a live claim is checked even when the prompt drops its first line =="
 begin nomarker 2
@@ -260,8 +359,11 @@ append_reply retry-integ APPROVE
 "$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
 RB="$(field "$SD/retry-integ.candidate" base_sha)"
 git merge -q --no-ff --no-edit retry-target
-BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"
+APPROVED_AT_CAP="$(git rev-parse HEAD^1)"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1 integration_of=$APPROVED_AT_CAP"* ]] \
+  && ok "an integration round after an approval at the cap claims without a renewal" || bad "integration at the cap rc=$BRC out=$BOUT"
 "$STATE" abort retry-integ dispatch-failure "$CLAIM" >/dev/null 2>&1
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
@@ -276,9 +378,16 @@ append_reply retry-integ REQUEST_CHANGES
 "$STATE" record retry-integ "$CLAIM" >/dev/null 2>&1
 BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --cap 1 --integration 2>&1)"; BRC=$?
 [[ "$BRC" -ne 0 && ( "$BOUT" == *INTEGRATION_REFUSED* || "$BOUT" == *CAP_REACHED* ) && "$BOUT" != *attempt=* ]] \
-  && ok "a real REQUEST_CHANGES at the budget edge ends the loop instead of reopening the exception" || bad "after real RC rc=$BRC out=$BOUT"
+  && ok "a real REQUEST_CHANGES at the cap ends the loop instead of reopening the exception" || bad "after real RC rc=$BRC out=$BOUT"
+"$STATE" renew retry-integ --by owner >/dev/null 2>&1 || bad "renew review after blocking findings"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md --integration 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "renewal after findings requires a normal round" || bad "integration after blocking findings: $BOUT"
+BOUT="$("$STATE" begin retry-integ --base "$RB" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 && "$BOUT" == *attempt=1/1* ]] \
+  && ok "the authorized normal round remains available" || bad "normal round after renewal: $BOUT"
 "$STATE" reset retry-integ >/dev/null 2>&1
-# With budget left, a real REQUEST_CHANGES in an integration round is refused as an integration.
+# With rounds left, a real REQUEST_CHANGES in an integration round is refused as an integration.
 git reset -q --hard HEAD^1
 begin retry-integ2 2
 append_reply retry-integ2 APPROVE
@@ -291,7 +400,7 @@ append_reply retry-integ2 REQUEST_CHANGES
 "$STATE" record retry-integ2 "$CLAIM" >/dev/null 2>&1
 BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
 [[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
-  && ok "a real REQUEST_CHANGES with budget left does not reopen the integration exception" || bad "after real RC with budget rc=$BRC out=$BOUT"
+  && ok "a real REQUEST_CHANGES with rounds left does not reopen the integration exception" || bad "after real RC with rounds left rc=$BRC out=$BOUT"
 "$STATE" reset retry-integ2 >/dev/null 2>&1
 git checkout -q main
 

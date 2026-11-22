@@ -25,6 +25,16 @@ required_dispatch_start() {
   for path in "$REQUIRED_RECEIPT" "$STATE_DIR/$THREAD.approved" "$candidate" "$STATE_DIR/$THREAD.last-usage.json" "$STATE_DIR/$THREAD.last-usage.json.tmp"; do
     [[ ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || return 7
   done
+  # A thread with required state takes only its pending claim, so a direct or /thread dispatch
+  # is refused here, before it could revoke the recorded approval.
+  if [[ "$(required_field "$STATE_DIR/$THREAD.review-state" status)" != PENDING ]]; then
+    local mode
+    mode="$(bash "$SELF_DIR/review-state.sh" mode "$THREAD")" || return $?
+    if [[ "$mode" == required ]]; then
+      echo "REQUIRED_THREAD_RESERVED: use the required review protocol for this thread" >&2
+      return 10
+    fi
+  fi
   # Even a failed new reply makes the previous permission to deliver obsolete.
   rm -f "$STATE_DIR/$THREAD.approved" "$REQUIRED_RECEIPT" || return 7
   [[ -f "$candidate" ]] || return 0

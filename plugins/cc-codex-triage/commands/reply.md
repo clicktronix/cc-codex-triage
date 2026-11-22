@@ -1,28 +1,30 @@
 ---
-description: Sends a reply from Claude Code into an existing Codex thread. Use when Codex asked a question, requested a tool action (run a test, show a file), proposed options, or made a finding that needs pushback. Continues a conversation that already exists; to start a new one use /ask, /review or /plan.
-argument-hint: "[thread-name] [--model <m>] [--effort <e>] <directive or position>"
-allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
+description: Replies in an existing Codex thread when Codex asked a question, requested a tool action, proposed options, or made a finding that needs pushback.
+argument-hint: "[--thread <name> | thread-name] [--model <m>] [--effort <e>] <directive or position>"
+allowed-tools: Read, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/state-dir.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/thread-index.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh *)
 ---
 
 # /reply
 
-Sends a reply from Claude Code into an existing Codex thread. Follow the skill's prompt-boundary and evidence rules: represent the user's position, execute tool requests for real, and push back with evidence.
+Continue the existing conversation under the shared skill's Ownership and Prompt boundary rules.
 
-## Steps
+1. Prefer the explicitly requested name (`--thread NAME` or a named positional thread), then the thread
+   used in this Claude conversation. Pass that name to `thread-index.sh --resolve NAME`. With neither,
+   run `thread-index.sh --resolve` for the sole thread in this worktree. Exit 8 lists the candidates:
+   ask once which to continue. Exit 6 reports a missing thread and the available names.
+   Ordinary reply text is the directive. Preserve an explicitly named missing target.
 
-1. Resolve `STATE_DIR` with `state-dir.sh`. If the first token names an existing thread (`$STATE_DIR/<token>.id`), use it. Otherwise use `${CLAUDE_PLUGIN_ROOT}/scripts/thread-name.sh review`. If that thread does not exist, stop and ask the user to start one with `/ask`, `/review`, or `/plan`.
-
-2. If `$STATE_DIR/<thread>.candidate` exists, read its canonical base/spec/cap and
-   follow `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`
-   with this follow-up included in the new required prompt. Reconcile any pending
-   attempt first; never reset or treat an ordinary reply as fresh gate approval.
-   For advisory threads continue below.
+2. Resolve `STATE_DIR` with `state-dir.sh --read-only` and run `review-state.sh mode "$THREAD"`. For `required`, use the saved base and spec from
+   `$STATE_DIR/$THREAD.review-loop` and follow
+   `${CLAUDE_PLUGIN_ROOT}/skills/codex-triage/references/required-review.md`.
+   Reconcile a pending claim first. Resume a renewed review on the same thread.
+   For `advisory` continue below.
 
 3. Recover Codex's last message: read the tail of `$STATE_DIR/<thread>.log` (the most recent `REPLY:` block). If the log has rotated, the latest entry is in the current `.log`; older history is in `.log.1`.
 
 4. Classify what Codex's last message needs:
    - **Question** → answer it from project state (native task list, plan, recent conversation).
-   - **Tool request** (run a test, show a file, grep) → actually DO it with your tools, capture verbatim output, include it.
+   - **Tool request** (run a test, show a file, grep) → run one targeted check or lookup inside the owner's delegated scope and return the relevant result and excerpt. The full suite, e2e, builds and containers stay with the owner: name the check and what it would decide.
    - **Options A/B/C** → state the user's choice (from the directive) with a one-line reason; ask Codex to detail it.
    - **Finding you disagree with** → push back with file:line evidence.
 
@@ -32,8 +34,8 @@ Sends a reply from Claude Code into an existing Codex thread. Follow the skill's
    `--model` / `--effort` are forwarded when supplied:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" <THREAD> --require-existing \
-     [--model "$MODEL"] [--effort "$EFFORT"] <<< "$REPLY_TEXT"
+   "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" "$THREAD" --require-existing \
+     ${MODEL:+--model "$MODEL"} ${EFFORT:+--effort "$EFFORT"} <<< "$REPLY_TEXT"
    ```
 
 6. Show the updated findings/verdict and link the full log. On a non-zero exit, act per the Exit codes table of the skill `codex-triage`.

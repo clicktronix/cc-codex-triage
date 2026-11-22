@@ -76,6 +76,209 @@ class ProductIntegrity(unittest.TestCase):
         p=self.gate('record','review',claim); self.assertEqual(p.returncode,0,p.stderr)
         self.assertEqual(self.gate('check','review').returncode,0)
 
+    def test_first_claim_can_resume_after_interruption(self):
+        hook = self.root/'interrupt.sh'
+        hook.write_text('exit 92\n')
+        args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
+        self.env['CC_REVIEW_STATE_TEST_AFTER_LOOP_HOOK'] = str(hook)
+        self.assertEqual(self.gate(*args).returncode, 92)
+        del self.env['CC_REVIEW_STATE_TEST_AFTER_LOOP_HOOK']
+        # The journal alone survives a crash before the first loop rename.
+        (self.sd/'review.review-loop').unlink()
+        retry = self.gate(*args[:-2])
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn('attempt=1/1', retry.stdout)
+        self.assertIn('PENDING', self.gate(*args).stderr)
+
+    def test_default_seven_and_repeated_renewal(self):
+        args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md')
+        self.env['VERDICT'] = 'subject.py:1 fix this\nREQUEST_CHANGES'
+        owner = "Иван (on-call), #14"
+        for renewal in (1, 2):
+            for n in range(1, 8):
+                claim = self.gate(*args)
+                self.assertIn(f'attempt={n}/7', claim.stdout, claim.stderr)
+                self.assertEqual(self.dispatch().returncode, 0)
+                self.assertEqual(self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1]).returncode, 10)
+            self.assertIn('CAP_REACHED', self.gate(*args).stderr)
+            renewed = self.gate('renew', 'review', '--by', owner)
+            self.assertEqual(renewed.returncode, 0, renewed.stderr)
+            self.assertTrue(renewed.stdout.startswith('RENEWED review:'), renewed.stdout)
+            loop = (self.sd/'review.review-loop').read_text()
+            self.assertIn(f'renewals={renewal}\n', loop)
+            self.assertIn(f'renewed_by={owner}\n', loop)
+            self.assertEqual(self.gate('advisory-check', 'review').returncode, 10)
+        claim = self.gate(*args)
+        self.assertIn('attempt=1/7', claim.stdout, claim.stderr)
+
+    def test_missing_loop_cannot_reissue_rounds(self):
+        token = self.begin()
+        self.env['VERDICT'] = 'REQUEST_CHANGES'
+        self.assertEqual(self.dispatch().returncode, 0)
+        self.assertIn('NO_FINDINGS', self.gate('record', 'review', token).stderr)
+        (self.sd/'review.review-loop').unlink()
+        retry = self.gate('begin', 'review', '--base', self.base, '--spec', 'spec.md')
+        self.assertIn('INVALID_CLAIM_STATE', retry.stderr)
+        self.assertFalse((self.sd/'review.review-loop').exists())
+
+    def test_finding_locations_preserve_unicode_and_ignore_numeric_endpoints(self):
+        record = self.root/'reply.log'
+        for reply, expected in [('café:1', 0), ('cafe\u0301:1', 0), ('Could not connect to 127.0.0.1:5432.', 10)]:
+            with self.subTest(reply=reply):
+                record.write_text(f'REPLY:\n  {reply}\n  REQUEST_CHANGES\n---\n')
+                output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record])
+                self.assertEqual(output.returncode, expected, output.stderr)
+
+    def test_default_review_name_keeps_legacy_contract(self):
+        self.git('checkout', '-qb', 'feature/billing')
+        old = 'review-feature-billing'
+        args = ('--base', self.base, '--spec', 'spec.md')
+        result = self.gate('begin', old, *args, '--cap', '1')
+        token = re.search(r'claim=(\w+)', result.stdout)[1]
+        self.env['VERDICT'] = 'subject.py:1 fix\nREQUEST_CHANGES'
+        self.assertEqual(self.run_cmd([SCRIPTS/'codex-thread.sh', old], self.prompt).returncode, 0)
+        self.assertIn('CAP_REACHED', self.gate('record', old, token).stderr)
+        name = self.run_cmd([SCRIPTS/'thread-name.sh', 'review'])
+        self.assertEqual(name.stdout.strip(), old, name.stderr)
+        self.assertIn('CAP_REACHED', self.gate('begin', name.stdout.strip(), *args).stderr)
+        self.git('checkout', '-qb', 'feature-billing')
+        ambiguous = self.run_cmd([SCRIPTS/'thread-name.sh', 'review'])
+        self.assertEqual((ambiguous.returncode, ambiguous.stdout), (8, ''))
+        self.assertIn(old, ambiguous.stderr)
+
+    def test_seventh_round_can_approve_and_older_cap_stays_pinned(self):
+        args = ('--base', self.base, '--spec', 'spec.md')
+        for cap in ['0','8']:
+            self.assertEqual(self.gate('begin', 'bad', *args, '--cap', cap).returncode, 1)
+        for cap in [3, 5, 6, 7]:
+            thread = 'cap-' + str(cap)
+            claim = self.gate('begin', thread, *args, '--cap', str(cap))
+            token = re.search(r'claim=(\w+)', claim.stdout)[1]
+            self.assertIn('ABORTED', self.gate('abort', thread, 'dispatch-failure', token).stderr)
+            rounds = cap if cap in (3, 7) else 1
+            for n in range(1, rounds+1):
+                claim = self.gate('begin', thread, *args)
+                self.assertIn(f'attempt={n}/{cap}', claim.stdout)
+                self.env['VERDICT'] = 'APPROVE' if n == 7 or cap in (5, 6) else 'subject.py:1 finding\nREQUEST_CHANGES'
+                result = self.run_cmd([SCRIPTS/'codex-thread.sh', thread], self.prompt)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                token = re.search(r'claim=(\w+)', claim.stdout)[1]
+                self.gate('record', thread, token)
+            if cap == 3:
+                self.assertIn('CAP_REACHED', self.gate('begin', thread, *args).stderr)
+            else:
+                self.assertEqual(self.gate('check', thread).returncode, 0)
+
+    def test_no_findings_returns_the_attempt(self):
+        args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
+        self.env['VERDICT'] = 'REQUEST_CHANGES'
+        claim = self.gate(*args)
+        self.assertEqual(self.dispatch().returncode, 0)
+        self.assertIn('NO_FINDINGS', self.gate('record', 'review', re.search(r'claim=(\w+)', claim.stdout)[1]).stderr)
+        for script in ['codex-thread.sh', 'dispatch.sh']:
+            refused = self.run_cmd([SCRIPTS/script, 'review'], 'follow up')
+            self.assertEqual(refused.returncode, 10, refused.stderr)
+            self.assertIn('REQUIRED_THREAD_RESERVED', refused.stderr)
+        self.assertEqual(self.gate('mode', 'review').stdout.strip(), 'required')
+        again = self.gate(*args)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn('attempt=1/1', again.stdout)
+
+    def test_watch_handoff_keeps_worker_and_stdout(self):
+        barrier = self.root/'release'
+        calls = self.root/'launches'
+        program = FAKE.replace('sys.stdin.read()', """sys.stdin.read()
+with open(os.environ['LAUNCHES'], 'a') as out: print('call', file=out)
+while not pathlib.Path(os.environ['RELEASE']).exists(): time.sleep(.05)""")
+        (self.root/'bin/codex').write_text(program)
+        self.env.update(CC_DISPATCH_WAIT='0', CC_DETACH_WATCH_TIMEOUT='0',
+                        LAUNCHES=str(calls), RELEASE=str(barrier), VERDICT='first line\nsecond line')
+        route = [SCRIPTS/'dispatch.sh']
+        try:
+            start = self.run_cmd([*route, 'slow'], 'question')
+            self.assertEqual((start.returncode, start.stdout), (20, ''), start.stderr)
+            pid, offset = re.search(r'--watch slow (\d+) (\d+)', start.stderr).groups()
+            watch = [*route, '--watch', 'slow', pid, offset]
+            waiting = self.run_cmd(watch)
+            self.assertEqual((waiting.returncode, waiting.stdout), (20, ''), waiting.stderr)
+        finally:
+            barrier.touch()
+        self.env['CC_DETACH_WATCH_TIMEOUT'] = '10'
+        landed = self.run_cmd(watch)
+        self.assertEqual(landed.returncode, 0, landed.stderr)
+        self.assertEqual(landed.stdout, self.env['VERDICT']+'\n')
+        self.assertEqual(calls.read_text().splitlines(), ['call'])
+        unknown = self.run_cmd([*route, '--watch', 'slow', '999999999', offset])
+        self.assertEqual((unknown.returncode, unknown.stdout), (21, ''))
+        for rc in (3, 4, 5):
+            (self.sd/'slow.detach-status').write_text(f'pid={pid}\nrc={rc}\n')
+            failed = self.run_cmd(watch)
+            self.assertEqual((failed.returncode, failed.stdout), (rc, ''))
+            self.assertIn('FAILED', failed.stderr)
+
+    def test_wrapper_preserves_preflight_diagnostics(self):
+        self.begin()
+        route = [SCRIPTS/'dispatch.sh', 'review']
+        wrong = self.run_cmd(route, 'incorrect header')
+        self.assertEqual(wrong.returncode, 14)
+        self.assertIn('nothing was dispatched', wrong.stderr)
+        (self.sd/'review.active').write_text(str(os.getpid()))
+        busy = self.run_cmd(route, self.prompt)
+        self.assertEqual(busy.returncode, 10)
+        self.assertNotIn('nothing was dispatched', busy.stderr)
+        self.env['CLAUDE_PROJECT_DIR'] = str(self.root/'missing')
+        invalid = self.run_cmd(route, self.prompt)
+        self.assertEqual(invalid.returncode, 7)
+        self.assertNotIn('nothing was dispatched', invalid.stderr)
+        self.assertFalse((self.root/'calls').exists())
+
+    def test_record_keeps_the_reply_when_parser_is_unavailable(self):
+        claim = self.begin()
+        self.env['VERDICT'] = 'subject.py:1 finding\nREQUEST_CHANGES'
+        self.assertEqual(self.dispatch().returncode, 0)
+        broken = self.root/'bin/python3'
+        broken.write_text('#!/bin/sh\nexit 127\n')
+        broken.chmod(0o755)
+        result = self.gate('record', 'review', claim)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn('status=PENDING', (self.sd/'review.review-state').read_text())
+        broken.unlink()
+        self.assertIn('REQUEST_CHANGES', self.gate('record', 'review', claim).stderr)
+
+    def test_failed_first_dispatch_keeps_a_resolvable_contract(self):
+        args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
+        claim = self.gate(*args)
+        token = re.search(r'claim=(\w+)', claim.stdout)[1]
+        binary = self.root/'bin/codex'
+        binary.write_text(FAKE.replace('sys.stdin.read()', 'sys.stdin.read(); sys.exit(3)'))
+        self.assertEqual(self.dispatch().returncode, 3)
+        self.assertIn('ABORTED', self.gate('abort', 'review', 'dispatch-failure', token).stderr)
+        again = self.gate(*args)
+        self.assertIn('attempt=1/1', again.stdout, again.stderr)
+        self.assertFalse((self.sd/'review.id').exists())
+        result = self.run_cmd([SCRIPTS/'thread-index.sh', '--resolve'])
+        self.assertEqual(result.stdout.strip(), 'review', result.stderr)
+
+    def test_reply_resumes_known_plan_and_status_shows_log_activity(self):
+        self.assertEqual(self.dispatch().returncode, 0)
+        name = 'plan-legacy'
+        self.env.update(CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent), THREAD=name, ONESHOT='',
+                        PROMPT='Review the design', REPLY_TEXT='Here is the clarification')
+        def recipe(command):
+            doc = (SCRIPTS.parent/'commands'/f'{command}.md').read_text()
+            return doc.split('\x60\x60\x60bash\n', 1)[1].split('\x60\x60\x60', 1)[0]
+        self.assertEqual(self.run_cmd(['bash','-c',recipe('plan')]).returncode, 0)
+        self.assertEqual(self.run_cmd([SCRIPTS/'thread-index.sh','--resolve',name]).stdout.strip(), name)
+        self.assertEqual(self.run_cmd(['bash','-c',recipe('reply')]).returncode, 0)
+        self.assertEqual((self.sd/'review.rounds').read_text().strip(), '1')
+        self.assertEqual((self.sd/(name+'.rounds')).read_text().strip(), '2')
+        os.utime(self.sd/(name+'.id'), (946684800, 946684800))
+        os.utime(self.sd/(name+'.log'), (1577836800, 1577836800))
+        for script in ['thread-index.sh', 'status.sh']:
+            rows = self.run_cmd([SCRIPTS/script]).stdout.splitlines()
+            row = next(r for r in rows if name in r)
+            self.assertRegex(row, '2019|2020')
+
     def test_changed_input_never_reaches_callee_or_earns_approval(self):
         claim=self.begin()
         (self.repo/'subject.py').write_text('VALUE = 1\n')
@@ -87,14 +290,48 @@ class ProductIntegrity(unittest.TestCase):
 
     def test_later_negative_reply_revokes_approval_preserving_history(self):
         self.approve(); session=(self.sd/'review.id').read_text()
-        self.env['VERDICT']='REQUEST_CHANGES'
-        p=self.dispatch('--require-existing',prompt='Re-evaluate this candidate.\n')
+        self.assertEqual(self.dispatch('--require-existing', prompt='ordinary reply').returncode, 10)
+        self.assertEqual(self.gate('check', 'review').returncode, 0)
+        claim=self.begin()
+        self.env['VERDICT']='subject.py:1 finding\nREQUEST_CHANGES'
+        p=self.dispatch('--require-existing')
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertIn('REQUEST_CHANGES',p.stdout)
+        self.assertEqual(self.gate('record','review',claim).returncode,10)
         self.assertNotEqual(self.gate('check','review').returncode,0)
         self.assertEqual((self.sd/'review.id').read_text(),session)
         self.assertIn('APPROVE',(self.sd/'review.log').read_text())
         self.assertIn('REQUEST_CHANGES',(self.sd/'review.log').read_text())
+
+    def test_branch_and_detached_names_are_distinct(self):
+        names = []
+        for branch in ['feature/billing', 'feature-billing', 'detached']:
+            self.git('checkout', '-qb', branch)
+            names.append(self.run_cmd([SCRIPTS/'thread-name.sh', 'plan']).stdout.strip())
+        for sha in [self.base, self.head]:
+            self.git('checkout', '--detach', sha)
+            names.append(self.run_cmd([SCRIPTS/'thread-name.sh', 'plan']).stdout.strip())
+        self.assertEqual(len(set(names)), 5, names)
+
+    def test_first_lease_status_and_reply_choice(self):
+        self.sd.mkdir(parents=True)
+        (self.sd/'ask.active').write_text(str(os.getpid()))
+        (self.sd/'dead.active').write_text('999999999')
+        for script in ['thread-index.sh', 'status.sh']:
+            result = self.run_cmd([SCRIPTS/script])
+            self.assertIn('ask', result.stdout)
+            self.assertNotIn('dead', result.stdout)
+        (self.sd/'ask.active').unlink()
+        self.assertEqual(self.run_cmd([SCRIPTS/'codex-thread.sh', 'ask'], 'question').returncode, 0)
+        def resolve(*names):
+            return self.run_cmd([SCRIPTS/'thread-index.sh', '--resolve', *names])
+        self.assertEqual(resolve().stdout.strip(), 'ask')
+        self.assertEqual(self.dispatch().returncode, 0)
+        self.assertEqual(resolve().returncode, 8)
+        self.assertEqual(resolve('ask').stdout.strip(), 'ask')
+        self.assertEqual(resolve('missing').returncode, 6)
+        self.assertEqual(self.run_cmd([SCRIPTS/'codex-thread.sh', '.legacy-topic'], 'history').returncode, 0)
+        self.assertEqual(resolve('.legacy-topic').stdout.strip(), '.legacy-topic')
 
     def test_controls_apply_to_resumed_conversation(self):
         self.assertEqual(self.dispatch().returncode,0)
@@ -147,7 +384,7 @@ class ProductIntegrity(unittest.TestCase):
         # The long-call wrapper must not retry the same missing dependency.
         self.env['PY_PROBES'] = str(self.root/'python-probes')
         interpreter.write_text('#!/bin/sh\necho probe >> "$PY_PROBES"\nexit 127\n')
-        p = self.run_cmd(['bash', SCRIPTS/'dispatch.sh', 'review'], self.prompt)
+        p = self.run_cmd(['bash', SCRIPTS/'dispatch.sh', 'runtime-check'], self.prompt)
         self.assertEqual(p.returncode, 2, p.stderr)
         self.assertEqual((self.root/'python-probes').read_text().splitlines(), ['probe'])
         self.assertEqual({p.name: p.read_bytes() for p in self.sd.iterdir()}, before)
@@ -170,7 +407,7 @@ class ProductIntegrity(unittest.TestCase):
         self.assertIn('dispatch_incomplete', p.stderr)
         self.assertNotEqual(self.gate('check', 'review').returncode, 0)
 
-    def test_corrupt_claim_does_not_destroy_budget_and_saved_state_can_recover(self):
+    def test_corrupt_claim_does_not_destroy_the_loop_and_saved_state_can_recover(self):
         claim = self.begin()
         candidate = self.sd/'review.candidate'
         saved = candidate.read_text()
@@ -253,7 +490,7 @@ class ProductIntegrity(unittest.TestCase):
             if resumed:
                 self.assertLess(args.index('web_search="live"'),args.index('resume'))
             self.assertIn('Recommendation with sources',p.stdout)
-        thread='research-feature-research'
+        thread=self.run_cmd([SCRIPTS/'thread-name.sh', 'research']).stdout.strip()
         self.assertEqual((self.sd/(thread+'.rounds')).read_text().strip(),'2')
         self.assertTrue((self.sd/(thread+'.id')).is_file())
         self.assertFalse((self.sd/(thread+'.candidate')).exists())
@@ -324,10 +561,12 @@ class ProductIntegrity(unittest.TestCase):
     def test_debate_recipe_runs_outside_git(self):
         context=self.root/'general-debate';context.mkdir()
         self.env.update(CLAUDE_PROJECT_DIR=str(context),XDG_STATE_HOME=str(self.root/'state'),
-                        CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),THREAD='debate-topic',OPENING='Compare these positions.')
+                        CLAUDE_PLUGIN_ROOT=str(SCRIPTS.parent),THREAD='debate-topic',TOPIC='Two options',OPENING='Compare these positions.')
         recipe=(SCRIPTS.parent/'commands/debate.md').read_text().split('```bash\n',1)[1].split('```',1)[0]
         p=self.run_cmd(['bash','-c',recipe]);self.assertEqual(p.returncode,0,p.stderr)
         args=json.loads((self.root/'calls').read_text())
+        index = self.run_cmd([SCRIPTS/'thread-index.sh', '--tsv'])
+        self.assertIn('debate-topic\tTwo options\t1\t', index.stdout)
         self.assertIn('--skip-git-repo-check',args)
         self.assertEqual(args[args.index('-s')+1],'read-only')
         self.assertEqual(list(context.iterdir()),[])

@@ -780,7 +780,7 @@ if $FORCE_NEW || $RESET_ONLY; then
   # Preserve old state before an explicit new lifecycle, while owning the lease.
   ARCHIVE=""
   ARCHIVE_FILES=()
-  for suffix in id log log.1 rounds topic candidate review-state review-loop approved dispatch-receipt last-usage.json usage.jsonl profile; do
+  for suffix in id log log.1 rounds topic claim-prep candidate review-state review-loop approved dispatch-receipt last-usage.json usage.jsonl profile; do
     source_file="$STATE_DIR/$THREAD.$suffix"
     [[ ! -L "$source_file" ]] || { echo "refusing symlinked reset source: $source_file" >&2; exit 7; }
     [[ -f "$source_file" ]] || continue

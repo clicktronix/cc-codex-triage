@@ -4,6 +4,7 @@ export type ThreadRow = {
   rounds: number
   lastActivityMs: number
   isBusy: boolean
+  pid: string | null
   startedAtMs: number | null
   event: string | null
   preview: string | null
@@ -13,6 +14,7 @@ export type ThreadRow = {
 export type ReviewRow = {
   name: string
   status: string
+  round: number | null
   verdict: string
   isGateEligible: boolean
 }
