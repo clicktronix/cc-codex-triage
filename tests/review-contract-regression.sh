@@ -311,10 +311,12 @@ FAKE_REVIEW_BODY="Dockerfile:3 copies a missing artifact and the build fails" ap
   && ok "Dockerfile:3 counts as a located finding" || bad "extensionless status: $(field "$SD/extless.review-state" status)"
 "$STATE" reset extless >/dev/null 2>&1
 
-echo "== Unicode findings; the spec path keeps the marker's seven fields =="
+echo "== Unicode findings; a plain spec path gives a seven-field marker =="
 printf 'spec\n' > 'docs/План работ.md'
 printf 'entry\n' > Словарь
-git add -- 'docs/План работ.md' Словарь && git commit -qm 'Add Unicode fixture'
+printf 'spec\n' > ' lead.md'
+printf 'spec\n' > 'docs/trail.md '
+git add -- 'docs/План работ.md' Словарь ' lead.md' 'docs/trail.md ' && git commit -qm 'Add Unicode fixture'
 for verdict in REQUEST_CHANGES APPROVE; do
   BOUT="$("$STATE" begin unicode --base HEAD --spec docs/spec.md)"
   CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
@@ -331,10 +333,25 @@ expected="CC_CODEX_REQUIRED_REVIEW APPROVE thread=unicode head=$(git rev-parse H
 read -ra marker_fields <<< "$marker"
 [[ "$marker" = "$expected" && "${#marker_fields[@]}" -eq 7 ]] \
   && ok "the approval marker splits into exactly seven fields" || bad "marker: $marker (${#marker_fields[@]} fields)"
-"$STATE" begin spaced --base HEAD --spec 'docs/План работ.md' 2>"$T/err"; RC=$?
-[[ "$RC" -eq 1 ]] && grep -qF '[a-zA-Z0-9_./-]' "$T/err" \
-  && ok "a spec path outside [a-zA-Z0-9_./-] is refused until callers parse spec_path to the line end" \
-  || bad "spaced spec rc=$RC err=$(cat "$T/err")"
+
+echo "== a spec path with spaces ends the marker as spec_path=<rest of line> =="
+SPACED='docs/План работ.md'
+BOUT="$("$STATE" begin spaced --base HEAD --spec "$SPACED" 2>"$T/err")"; RC=$?
+CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+"$STATE" header spaced 2>/dev/null | FAKE_REVIEW_VERDICT=APPROVE "$DISPATCH" spaced --strict >/dev/null 2>&1
+"$STATE" record spaced "$CLAIM" >/dev/null 2>&1
+marker="$("$STATE" check spaced 2>/dev/null)"
+prefix="CC_CODEX_REQUIRED_REVIEW APPROVE thread=spaced head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$(git rev-parse HEAD)"
+read -ra prefix_fields <<< "${marker%% spec_path=*}"
+[[ "$RC" -eq 0 && "$marker" = "$prefix spec_path=$SPACED" && "${#prefix_fields[@]}" -eq 6 ]] \
+  && ok "six fields, then the spaced Unicode path to the end of the line" \
+  || bad "spaced spec rc=$RC marker=$marker err=$(cat "$T/err")"
+for edge in ' lead.md' 'docs/trail.md '; do
+  "$STATE" begin edge --base HEAD --spec "$edge" 2>"$T/err"; RC=$?
+  [[ "$RC" -eq 1 ]] && grep -q 'start or end with a space' "$T/err" \
+    && ok "tracked spec '$edge' is refused: the marker's last field has no outer spaces" \
+    || bad "outer-space spec '$edge' rc=$RC err=$(cat "$T/err")"
+done
 "$STATE" begin newline --base HEAD --spec $'line\nbreak' 2>"$T/err" && bad "multiline spec accepted"
 grep -q 'one line' "$T/err" && ok "multiline spec rejected at begin" || bad "multiline spec diagnostic"
 
