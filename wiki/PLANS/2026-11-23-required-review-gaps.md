@@ -25,13 +25,13 @@ review rows.
    the next one counts: it is recorded as `REQUEST_CHANGES` with reason `unlocated_findings`, or
    at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. An integration
    round reserves no attempt: its first such reply is free, its second is `REQUEST_CHANGES`, and
-   neither spends the attempt a normal round may have returned. A location is `name:line` where
-   the name, read as a path from the repository root (an absolute path inside the worktree and a
-   leading `./` included), is a file of the candidate or base tree, or is unknown to those trees
-   and has a directory part. So `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory
-   under any spelling are not locations, while `C++.md:1`, `(app.txt:1)` and
-   `app/(auth)/[id]/page.tsx:12` are. A name with spaces is read inside a code span, around the
-   name or around the whole citation; outside one it is not recognized.
+   neither spends the attempt a normal round may have returned. A location is `<path>:<line>`
+   where `<path>` is a file tracked in the candidate or in its base, or a file outside those
+   trees that exists, written absolute or from the repository root with `../` (a finding in a
+   consumer repository). The reply is searched for the tracked paths themselves, so a code span,
+   brackets, quotes, a leading `./`, an absolute spelling and composed or decomposed marks all
+   cite the same file. A directory, a path to nothing, `localhost:3000`, `node:20`, `sha256:1`
+   and `step:2` name no file.
 5. `footer <thread>` prints the closing lines of a required prompt. While a claim is pending,
    `preflight` (and so `dispatch.sh`) exits 14 without dispatching unless the prompt ends with
    exactly those lines, and `record` refuses a round whose logged prompt does not, as it does for
@@ -70,6 +70,10 @@ The usage line stays one line and keeps `--integration`, `check <thread>` and
 
 ## Not in scope
 
+- Recognizing a path by its shape. It was tried and dropped: three review rounds each found a
+  spelling it misread. A location is now a file the reviewed trees track or the disk holds; of 72
+  real `REQUEST_CHANGES` replies whose trees still exist, all 72 cite one, nine of them only in
+  a sibling repository.
 - A header or footer check inside the driver. Required rounds are dispatched through
   `dispatch.sh`, whose preflight runs before the paid call; a round that reached the driver
   another way is refused by `record`.

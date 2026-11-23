@@ -124,10 +124,12 @@ class ProductIntegrity(unittest.TestCase):
 
     def test_finding_locations_preserve_unicode_and_ignore_numeric_endpoints(self):
         record = self.root/'reply.log'
+        (self.repo/'café').write_text('menu\n')
+        self.git('add', 'café'); self.git('commit', '-qm', 'menu')
         for reply, expected in [('café:1', 0), ('cafe\u0301:1', 0), ('Could not connect to 127.0.0.1:5432.', 10)]:
             with self.subTest(reply=reply):
                 record.write_text(f'REPLY:\n  {reply}\n  REQUEST_CHANGES\n---\n')
-                output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record])
+                output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record, 'HEAD'])
                 self.assertEqual(output.returncode, expected, output.stderr)
 
     def test_default_review_name_keeps_legacy_contract(self):
