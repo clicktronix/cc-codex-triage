@@ -25,15 +25,17 @@ review rows.
    the next one counts: it is recorded as `REQUEST_CHANGES` with reason `unlocated_findings`, or
    at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. An integration
    round reserves no attempt: its first such reply is free, its second is `REQUEST_CHANGES`, and
-   neither spends the attempt a normal round may have returned. A location is `<path>:<line>`
-   where `<path>` is a file tracked in the candidate or in its base and written from the
-   repository root (bare, after `./`, or after the worktree's absolute path), or a file outside
-   the worktree that exists, written absolute or from the root with `../` (a finding in a
-   consumer repository); such a spelling that leads back into the worktree counts only for a
-   tracked file, so an ignored build file is no location under any spelling. The reply is searched for the tracked paths themselves, so a code span,
-   brackets, quotes and composed or decomposed marks all cite the same file. A directory, a
-   submodule, a path to nothing, a tracked name behind another directory (`missing/app.txt:1`),
-   `localhost:3000`, `node:20`, `sha256:1` and `step:2` name no file.
+   neither spends the attempt a normal round may have returned. A location is a citation
+   `<path>:<line>` whose path names a file. The path is taken whole: the content of a code span
+   that holds the citation or ends right before the colon, otherwise the word before the colon
+   without the brackets, quotes and Markdown link text that open it; a name with spaces is read
+   inside a code span. It names a file when it is tracked in the candidate or in its base
+   (written from the repository root, after `./`, or by any spelling that leads into the
+   worktree), or when it lies outside the worktree, exists, and is written absolute or with `..`
+   (a finding in a consumer repository). A directory, a submodule, an ignored file, a link
+   address, a path to nothing, a tracked name that is only the end of the cited one
+   (`missing/app.txt:1`, `missing+app.txt:1`), `localhost:3000`, `node:20`, `sha256:1` and
+   `step:2` name no file.
 5. `footer <thread>` prints the closing lines of a required prompt. While a claim is pending,
    `preflight` (and so `dispatch.sh`) exits 14 without dispatching unless the prompt ends with
    exactly those lines, and `record` refuses a round whose logged prompt does not, as it does for
@@ -72,10 +74,11 @@ The usage line stays one line and keeps `--integration`, `check <thread>` and
 
 ## Not in scope
 
-- Recognizing a path by its shape. It was tried and dropped: three review rounds each found a
-  spelling it misread. A location is now a file the reviewed trees track or the disk holds; of 73
-  real `REQUEST_CHANGES` replies whose trees still exist, all 73 cite one, nine of them only in
-  a sibling repository.
+- Recognizing a path by its shape, or a tracked name anywhere in the text. Both were tried and
+  dropped: each review round found a spelling they misread. The citation's path is now taken
+  whole and looked up; of 74 real `REQUEST_CHANGES` replies whose trees still exist, all 74 cite
+  a location, nine of them only in a sibling repository.
+- A name with spaces outside a code span, and `file://` addresses.
 - A header or footer check inside the driver. Required rounds are dispatched through
   `dispatch.sh`, whose preflight runs before the paid call; a round that reached the driver
   another way is refused by `record`.

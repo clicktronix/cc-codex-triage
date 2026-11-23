@@ -274,15 +274,32 @@ NOUT="$("$STATE" record nf-cap "$CLAIM" 2>&1)"; NRC=$?
   || bad "unlocated at the cap rc=$NRC out=$NOUT"
 "$STATE" reset nf-cap >/dev/null 2>&1
 
-echo "== a location is a tracked file with a line, under any spelling =="
+echo "== a location is a whole cited path that names a file =="
+NFD_REPO="$T/cafe$(printf '\xcc\x81')-repo"; mkdir -p "$NFD_REPO/vendor/widget" && (
+  cd "$NFD_REPO" && git init -q -b main . && git config user.name test && git config user.email test@example.com \
+    && printf 'team\n' > "owners'" && printf 'old\n' > legacy.txt && git add "owners'" legacy.txt && git commit -qm base \
+    && git rm -q legacy.txt && git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),vendor/widget" && git commit -qm candidate
+)
+NFD_ROOT="$(cd "$NFD_REPO" && pwd -P)"
+NFC_ROOT="$T/caf$(printf '\xc3\xa9')-repo"
+loc_rc() { printf 'REPLY:\n  %s\n  REQUEST_CHANGES\n' "$1" > "$T/loc.log"; (cd "$NFD_REPO" && python3 "$PLUGIN/scripts/finding-location.py" "$T/loc.log" HEAD HEAD^); echo $?; }
+[[ "$(loc_rc 'vendor/widget:12 pins an old commit')" == 10 ]] \
+  && ok "a submodule entry is not a file" || bad "submodule counted as a location"
+[[ "$(loc_rc "\`owners':12\` lists a former member")" == 0 && "$(loc_rc "owners':12 lists a former member")" == 0 ]] \
+  && ok "a name that ends in a quote is read as written before quotes are taken for formatting" || bad "owners' not recognized"
+[[ "$(loc_rc "$NFD_ROOT/legacy.txt:1 was still needed")" == 0 && "$(loc_rc "$NFC_ROOT/legacy.txt:1 was still needed")" == 0 ]] \
+  && ok "a deleted file is found by its absolute path, whichever way the worktree's name is composed" \
+  || bad "absolute path to a deleted file in a decomposed worktree: $(loc_rc "$NFD_ROOT/legacy.txt:1 x") $(loc_rc "$NFC_ROOT/legacy.txt:1 x")"
 for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" \
     "see http://example.com:8080/x" "docs:12 is a directory" "docs/deep:12 is a directory too" "(docs/deep:12) is one in brackets" \
     "$REPO/docs/deep:12 is one by its absolute path" "$(pwd -P)/docs/deep:12 is one by its physical path" "./docs/deep/:12 is one with a dot" \
-    "$REPO:12 is the worktree itself" "\`x ? b:1 : c\` is code, not a path" "../other-repo/missing.py:12 does not exist" "$T/other-repo:12 is a directory elsewhere" \
-    "/no/such/dir/api.py:12 does not exist" "see other-repo/api.py:12 with no way to find it" \
-    "myapp.txt:1 only ends like a tracked name" "untracked.txt:1 was never committed" \
-    "missing/app.txt:12 is no path of the tree" "https://example.com/app.txt:12 is a link" \
-    "build.ignored:1 is not tracked" "$REPO/build.ignored:1 is not tracked under its absolute path either"; do
+    "$REPO:12 is the worktree itself" "\`x ? b:1 : c\` is code, not a path" "../other-repo/missing.py:12 does not exist" \
+    "$T/other-repo:12 is a directory elsewhere" "/no/such/dir/api.py:12 does not exist" "see other-repo/api.py:12 with no way to find it" \
+    "myapp.txt:1 only ends like a tracked name" "untracked.txt:1 was never committed" "missing/app.txt:12 is no path of the tree" \
+    "https://example.com/app.txt:12 is a link" "https:/$T/other-repo/api.py:12 is a link whose path exists on disk" \
+    "\`missing+app.txt:12\` only ends like a tracked name" "\`My app.txt:12\` is another file's name" "call(app.txt:12 is not a citation" \
+    "build.ignored:1 is not tracked" "$REPO/build.ignored:1 is not tracked under its absolute path either" \
+    "docs/Plan Notes.md:12 has spaces and no code span" "app.txt/:1 is spelled as a directory"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -290,16 +307,19 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     && ok "'$body' is not a located finding" || bad "'$body' counted as a location: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
-for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 drops a step" "docs/Plan Notes.md:12 drops a step" \
+for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 drops a step" \
     "Use \`review\` after node:20. Fix \`docs/Plan Notes.md:12\`." "\`first\` and app.txt:1 between two \`spans\`" \
     "./app.txt:1 has the wrong word" "$REPO/app.txt:1 by its absolute path" "C++.md:1 names the wrong standard" \
-    "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "app/(auth)/[id]/page.tsx:12 skips the guard" \
-    "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" \
-    "\`app.txt\`:1 has the wrong word" "deep-link:1 points at the wrong directory" "$REPO/deep-link:1 by its absolute path" \
-    "../repo/app.txt:1 reaches the tracked file the long way round" "../other-repo/api.py:12 still calls the removed field" "$T/other-repo/api.py:12 still calls the removed field" \
-    "[client.py]($T/other-repo/src dir/client.py:7) reads the old shape" \
-    "app.txt:12-15 repeats the block" "app.txt:3:7 has a stray character" "**app.txt**:1 has the wrong word" \
-    "\"docs/Plan Notes.md\":12 drops a step"; do
+    "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "[app.txt:1]($REPO/app.txt:1) has the wrong word" \
+    "app/(auth)/[id]/page.tsx:12 skips the guard" "(app/(auth)/[id]/page.tsx:12) skips the guard" \
+    "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "$REPO/legacy.txt:1 was deleted by the candidate" \
+    "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "**app.txt**:1 has the wrong word" "**\`app.txt\`**:1 has the wrong word" \
+    "deep-link:1 points at the wrong directory" "$REPO/deep-link:1 by its absolute path" \
+    "../repo/app.txt:1 reaches the tracked file the long way round" "docs/../app.txt:1 too" \
+    "../other-repo/api.py:12 still calls the removed field" "$T/other-repo/api.py:12 still calls the removed field" \
+    "docs/../../other-repo/api.py:12 leaves the worktree on the way" \
+    "\`$T/other-repo/src dir/client.py:7\` reads the old shape" \
+    "app.txt:12-15 repeats the block" "app.txt:3:7 has a stray character"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -307,18 +327,6 @@ for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 
     && ok "'$body' is a located finding" || bad "'$body' not recognized: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
-
-# A submodule is a directory, and a quote can be the last character of a file name.
-LOCREPO="$T/loc-repo"; mkdir -p "$LOCREPO/vendor/widget" && (
-  cd "$LOCREPO" && git init -q -b main . && git config user.name test && git config user.email test@example.com \
-    && printf 'team\n' > "owners'" && git add "owners'" && git commit -qm base \
-    && git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),vendor/widget" && git commit -qm "add a submodule entry"
-)
-loc_rc() { printf 'REPLY:\n  %s\n  REQUEST_CHANGES\n' "$1" > "$T/loc.log"; (cd "$LOCREPO" && python3 "$PLUGIN/scripts/finding-location.py" "$T/loc.log" HEAD); echo $?; }
-[[ "$(loc_rc 'vendor/widget:12 pins an old commit')" == 10 ]] \
-  && ok "a submodule entry is not a file" || bad "submodule counted as a location"
-[[ "$(loc_rc "\`owners':12\` lists a former member")" == 0 ]] \
-  && ok "a name that ends in a quote is matched before quotes are taken for formatting" || bad "owners' not recognized"
 
 echo "== an integration round after an approval does not spend the cap =="
 git checkout -q -b integ-target
