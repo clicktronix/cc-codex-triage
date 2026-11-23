@@ -39,7 +39,8 @@ git config user.email test@example.com
 printf 'spec\n' > docs/spec.md
 printf 'FROM scratch\n' > Dockerfile
 printf 'removed by the candidate\n' > legacy.txt
-git add docs/spec.md Dockerfile legacy.txt
+printf 'a file named by digits\n' > 123
+git add docs/spec.md Dockerfile legacy.txt 123
 git commit -qm baseline
 BASE0="$(git rev-parse HEAD)"
 printf 'candidate\n' > app.txt
@@ -254,9 +255,19 @@ FAKE_REVIEW_BODY="unclear" append_reply nf-twice REQUEST_CHANGES
   && ok "a renewed set of rounds returns one again" \
   || bad "after renew status=$(field "$SD/nf-twice.review-state" status) attempts=$(field "$SD/nf-twice.review-loop" attempts)"
 "$STATE" reset nf-twice >/dev/null 2>&1
+begin nf-cap 1
+FAKE_REVIEW_BODY="looks wrong somehow" append_reply nf-cap REQUEST_CHANGES
+"$STATE" record nf-cap "$CLAIM" >/dev/null 2>&1
+begin nf-cap 1
+FAKE_REVIEW_BODY="still wrong" append_reply nf-cap REQUEST_CHANGES
+NOUT="$("$STATE" record nf-cap "$CLAIM" 2>&1)"; NRC=$?
+[[ "$NRC" -eq 10 && "$NOUT" == CAP_REACHED* && "$NOUT" == *"file:line"* && "$(field "$SD/nf-cap.review-state" verdict)" == REQUEST_CHANGES ]] \
+  && ok "at the cap the refusal still says the reply located nothing" \
+  || bad "unlocated at the cap rc=$NRC out=$NOUT"
+"$STATE" reset nf-cap >/dev/null 2>&1
 
 echo "== a location is a path, not a host, an image tag or a step =="
-for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x"; do
+for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x" "docs:12 is a directory"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -264,7 +275,7 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     && ok "'$body' is not a located finding" || bad "'$body' counted as a location: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
-for body in "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
+for body in "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -364,6 +375,9 @@ for flag in "--rounds 0" "--rounds 4" "--rounds two" "--grant x"; do
   [[ "$RC" -eq 1 && "$(field "$SD/renew-sized.review-state" status)" == CAP_REACHED && "$(field "$SD/renew-sized.review-loop" attempts)" == 3 ]] \
     && ok "renew $flag is refused and renews nothing" || bad "renew $flag rc=$RC"
 done
+"$STATE" renew renew-sized --by owner --rounds "" >/dev/null 2>&1; RC=$?
+[[ "$RC" -eq 1 && "$(field "$SD/renew-sized.review-loop" attempts)" == 3 ]] \
+  && ok "an empty --rounds is refused, not read as the whole cap" || bad "renew --rounds '' rc=$RC"
 ROUT="$("$STATE" renew renew-sized --by "owner: two more rounds" --rounds 2 2>&1)"; RRC=$?
 [[ "$RRC" -eq 0 && "$ROUT" == *"2 round(s)"* && "$(field "$SD/renew-sized.review-loop" attempts)" == 1 && "$(field "$SD/renew-sized.review-loop" cap)" == 3 ]] \
   && ok "renew --rounds 2 keeps the cap pinned and leaves two attempts" || bad "sized renew rc=$RRC out=$ROUT"
@@ -402,6 +416,35 @@ BOUT="$("$STATE" begin first-name-v2 --base "$BASE0" --spec docs/spec.md 2>&1)";
 [[ "$BRC" -eq 0 ]] && ok "after the holder is reset the name is free to claim" || bad "claim after reset rc=$BRC out=$BOUT"
 "$STATE" reset first-name-v2 >/dev/null 2>&1; "$STATE" reset other-task >/dev/null 2>&1
 git reset -q --hard HEAD^
+begin spelled 2
+[[ "$(field "$SD/spelled.review-loop" spec_path)" == docs/spec.md ]] || bad "setup: spec path of 'spelled'"
+BOUT="$("$STATE" begin respelled --base "$BASE0" --spec docs/./spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* ]] \
+  && ok "another spelling of the same spec path is the same contract" || bad "respelled spec rc=$BRC out=$BOUT"
+"$STATE" abort spelled dispatch-failure "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin spelled --base "$BASE0" --spec docs/./spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 && "$(field "$SD/spelled.candidate" spec_path)" == docs/spec.md ]] \
+  && ok "the claim records the tracked spelling of the spec path" || bad "canonical spec rc=$BRC out=$BOUT"
+"$STATE" reset spelled >/dev/null 2>&1
+BOUT="$("$STATE" begin holder.claim-prep --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+BOUT="$("$STATE" begin holder --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC2=$?
+[[ "$BRC" -eq 0 && "$BRC2" -eq 10 && "$BOUT" == *"thread holder.claim-prep "* ]] \
+  && ok "a holder whose name ends like a state file is still found" || bad "suffix-named holder rc=$BRC/$BRC2 out=$BOUT"
+"$STATE" reset holder.claim-prep >/dev/null 2>&1
+printf 'version=2\nhead=x\ntree=y\nbase_sha=%s\nspec_path=docs/spec.md\ncap=2\n' "$BASE0" > "$SD/publishing.claim-prep"
+printf '%s\n' "printf 'version=1\\nbase_sha=%s\\nspec_path=docs/spec.md\\ncap=2\\nattempts=1\\n' '$BASE0' > '$SD/publishing.review-loop'; rm -f '$SD/publishing.claim-prep'" > "$T/publish-hook"
+BOUT="$(CC_REVIEW_STATE_TEST_AFTER_JOURNALS_HOOK="$T/publish-hook" "$STATE" begin watcher --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *"thread publishing "* && ! -e "$SD/watcher.review-loop" ]] \
+  && ok "a holder that publishes while the scan runs is met as a loop" || bad "publish during scan rc=$BRC out=$BOUT"
+rm -f "$SD/publishing.review-loop"
+begin settled 2
+printf 'exit 9\n' > "$T/crash-hook"
+CC_REVIEW_STATE_TEST_AFTER_PREP_HOOK="$T/crash-hook" "$STATE" begin crashed --base "$BASE0" --spec docs/spec.md >/dev/null 2>&1
+[[ -f "$SD/crashed.claim-prep" ]] || bad "setup: the interrupted claim left no journal"
+BOUT="$("$STATE" begin crashed --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *"thread settled "* && ! -e "$SD/crashed.claim-prep" && ! -e "$SD/crashed.review-loop" ]] \
+  && ok "a first claim interrupted before its check is checked when it is repeated" || bad "recovered claim rc=$BRC out=$BOUT"
+"$STATE" abort settled dispatch-failure "$CLAIM" >/dev/null 2>&1; "$STATE" reset settled >/dev/null 2>&1
 printf 'version=2\nhead=x\ntree=y\nbase_sha=%s\nspec_path=docs/spec.md\ncap=2\n' "$BASE0" > "$SD/half-claimed.claim-prep"
 BOUT="$("$STATE" begin racer --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
 [[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *half-claimed* && ! -e "$SD/racer.claim-prep" ]] \
@@ -634,6 +677,13 @@ printf 'dirty\n' >> app.txt
   && ok "a dirty worktree cannot inherit approval, and the refusal names the path" \
   || bad "dirty candidate rc=$RC reason=$(field "$SD/dirty.review-state" reason)"
 git restore app.txt
+begin crowded 3
+append_reply crowded APPROVE
+for n in $(seq 1 25); do : > "left-$n.tmp"; done
+"$STATE" record crowded "$CLAIM" >/dev/null 2>"$T/err"
+[[ "$(grep -c '^?? left-' "$T/err")" -eq 20 ]] && grep -q '5 more' "$T/err" \
+  && ok "a long list of paths is cut with the count of the rest" || bad "crowded worktree: $(cat "$T/err")"
+rm -f left-*.tmp
 
 begin moved 3
 OLD_HEAD="$(git rev-parse HEAD)"

@@ -3,8 +3,9 @@
 usage: finding-location.py <record> [<revision>...]
 
 A name with a directory part counts by its shape, so a path in another repository does too. A bare
-name counts when it is a file at the root of one of the revisions; `localhost:3000`, `node:20` and
-`step:2` are not. Without revisions there is no tree to ask and every alphabetic bare name counts.
+name counts when it is a file at the root of one of the revisions, whatever it is made of;
+`localhost:3000`, `node:20`, `step:2` and a directory are not. Without revisions there is no tree
+to ask and every alphabetic bare name counts.
 """
 import re
 import subprocess
@@ -18,8 +19,8 @@ revisions = sys.argv[2:]
 
 def at_root(name):
     return any(
-        subprocess.run(["git", "cat-file", "-e", f"{revision}:{name}"],
-                       stderr=subprocess.DEVNULL).returncode == 0
+        subprocess.run(["git", "cat-file", "-t", f"{revision}:{name}"], capture_output=True,
+                       text=True).stdout.strip() == "blob"
         for revision in revisions
     )
 
@@ -34,7 +35,7 @@ def has_location(line):
         name = line[match.start(1):match.end(1)].strip("`")
         if "/" in name.strip("/"):
             return True
-        if any(c.isalpha() or c == "_" for c in name) and (not revisions or at_root(name)):
+        if at_root(name) if revisions else any(c.isalpha() or c == "_" for c in name):
             return True
     return False
 

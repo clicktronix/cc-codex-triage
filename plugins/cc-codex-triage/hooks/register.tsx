@@ -144,7 +144,7 @@ async function scan($: EngineInterface, dir: string | null, atMs: number, pinned
       verdict: state.verdict ?? '-',
       isGateEligible: state.gate_eligible === 'true',
       head: state.head || null,
-      atMs: Date.parse(state.timestamp ?? '') || own.get('review-state') || 0,
+      atMs: own.get('review-state') ?? 0,
     })
   }
   reviews.sort((a, b) => b.atMs - a.atMs)
@@ -245,12 +245,6 @@ async function followReply($: EngineInterface, shot: Snapshot, pinned: string | 
   const forMs = row.lastActivityMs
   await update($, reply, now => (now?.thread === open.thread ? { ...now, forMs, status: 'loading' as const } : now))
   await showReply($, shot.stateDir, open.thread, forMs)
-}
-
-// An approval belongs to one commit, so the row names it: the reader compares it with their HEAD.
-function reviewLine(r: ReviewRow): string {
-  const status = r.status === 'APPROVED' && r.head ? `APPROVED ${r.head.slice(0, 7)}` : r.status
-  return `${r.name} · ${status} · ${r.verdict}${r.isGateEligible ? ' · gate' : ''}`
 }
 
 function finishedLine(before: ThreadRow, thread: ThreadRow | undefined, reviews: ReviewRow[], succeeded: boolean): string {
@@ -420,6 +414,13 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const width = Math.max(20, e.props.bodyColumns)
     const cut = (text: string) => fit(text, width)
+    // An approval belongs to one commit, so the row names it: the reader compares it with their
+    // HEAD. A long thread name gives way to the state, never the other way round.
+    const reviewLine = (r: ReviewRow) => {
+      const status = r.status === 'APPROVED' && r.head ? `APPROVED ${r.head.slice(0, 7)}` : r.status
+      const state = ` · ${status} · ${r.verdict}${r.isGateEligible ? ' · gate' : ''}`
+      return `${fit(r.name, width - cells(state))}${state}`
+    }
     // A reply worth opening: more lines than the preview, or a first line the pane cuts.
     const isExpandable = (t: ThreadRow) => t.moreLines > 0 || cells(`  ${t.preview ?? ''}`) > width
     const preview = (t: ThreadRow) => {
@@ -483,7 +484,7 @@ export const register: Register = on => {
             <Text weight="semibold">Required review</Text>
             {shot.reviews.slice(0, REVIEWS).map(r => (
               <Text color={r.status === 'APPROVED' ? 'green' : r.status === 'CAP_REACHED' ? 'red' : undefined}>
-                {cut(reviewLine(r))}
+                {reviewLine(r)}
               </Text>
             ))}
             {shot.reviews.length > REVIEWS && <Text dimColor>{cut(`+${shot.reviews.length - REVIEWS} older`)}</Text>}

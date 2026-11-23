@@ -94,8 +94,10 @@ and only `/thread-new` starts a new contract.
 
 - `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
   attempt was returned. Begin again and ask for the findings with their locations. One attempt
-  is returned per set of rounds: the next such reply is recorded as `REQUEST_CHANGES` and counts.
-- `STALE (dirty_worktree)`: the message lists the paths in the way. The attempt counts. Remove or
+  is returned per set of rounds: the next such reply is recorded as `REQUEST_CHANGES` and counts,
+  and at the cap it ends the set like any blocking verdict.
+- `STALE (dirty_worktree)`: the message lists the paths in the way, the first twenty and a
+  count of the rest. The attempt counts. Remove or
   ignore a file the reviewer's command left behind before the next round.
 - `NO_DECISION`: the final line was neither `APPROVE` nor `REQUEST_CHANGES` (`COMMENT`
   included). The attempt counts. Begin again with the exact-verdict instruction.

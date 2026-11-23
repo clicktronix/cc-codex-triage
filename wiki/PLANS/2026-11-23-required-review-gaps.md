@@ -14,18 +14,22 @@ review rows.
 2. `renew <thread> --by <who> [--rounds N]` starts a set of N rounds, N from 1 to the pinned cap;
    without the flag the set is the whole cap. The cap stays pinned and `.review-loop` keeps its
    version 1 field set.
-3. One required contract exists per base SHA and spec path in a state directory. `begin` on a
-   second thread answers `CONTRACT_EXISTS` (exit 10), names the holder and leaves no state. Two
-   first claims that race do not both succeed. A reset of the holder frees the contract.
+3. One required contract exists per base SHA and spec path in a state directory. The spec path
+   is compared and stored as Git tracks it, so `docs/./spec.md` and `docs/spec.md` are one
+   contract. `begin` on a second thread answers `CONTRACT_EXISTS` (exit 10), names the holder
+   and leaves no state. Two first claims that race do not both succeed, and a first claim
+   interrupted before its check is checked when it is repeated. A reset of the holder frees the
+   contract.
 4. A `REQUEST_CHANGES` reply without a located finding returns its attempt once per set of rounds;
-   the next one is recorded as `REQUEST_CHANGES` with reason `unlocated_findings` and counts. A
-   location is a name with a directory part, or a file at the root of the candidate or base tree:
-   `localhost:3000`, `node:20`, `sha256:1` and `step:2` are not locations.
+   the next one counts: it is recorded as `REQUEST_CHANGES` with reason `unlocated_findings`, or
+   at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. A location is
+   a name with a directory part, or a file at the root of the candidate or base tree:
+   `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory are not locations.
 5. `footer <thread>` prints the closing lines of a required prompt. While a claim is pending,
    `preflight` (and so `dispatch.sh`) exits 14 without dispatching unless the prompt ends with
    exactly those lines. `verdict.sh` ignores trailing spaces, tabs and CR on reply lines and
    still rejects a verdict line that carries anything else.
-6. `STALE (dirty_worktree)` lists the paths in the way. The footer asks the reviewer to leave the
+6. `STALE (dirty_worktree)` lists the paths in the way, twenty and a count of the rest. The footer asks the reviewer to leave the
    worktree as found. The sandbox of a required round is unchanged.
 7. `--integration` is accepted only for a merge whose tree equals the one
    `git merge-tree --write-tree` computes from its two parents. A resolved conflict, an edit added
@@ -35,8 +39,9 @@ review rows.
    section says how to finish a claim whose token was lost.
 10. `commands/review.md` says that an advisory review stores no round count and how to recount it
     from the thread log. No new state is kept for advisory reviews.
-11. The pane lists the five latest required-review states, a `+N older` line for the rest, and an
-    approval with the short SHA of its commit.
+11. The pane lists the five required-review states written last, by file time, a `+N older` line
+    for the rest, and an approval with the short SHA of its commit. A long thread name is cut
+    before the state is.
 
 The usage line stays one line and keeps `--integration`, `check <thread>` and
 `renew <thread> --by <who>`. The approval marker is unchanged.
@@ -57,6 +62,10 @@ The usage line stays one line and keeps `--integration`, `check <thread>` and
 
 ## Not in scope
 
+- A footer check inside the driver. The header is not checked there either: required rounds are
+  dispatched through `dispatch.sh`, whose preflight runs before the paid call, and a direct driver
+  call is the user-only `/thread`. A missing footer cannot produce an approval, since the verdict
+  parser stays strict; a missing header is refused by `record`.
 - A read-only sandbox for required rounds. Considered and declined by the owner: a reviewer's
   leftover file cost at most one round in 132.
 - Carrying a used-up cap across a reset. `/thread-new` stays the owner-authorized way to start a

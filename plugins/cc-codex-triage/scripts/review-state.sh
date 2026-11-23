@@ -209,15 +209,25 @@ approval_gap() {
 # The thread, other than this one, whose contract already covers this base and spec. The cap belongs
 # to the contract, so a second thread on the same base and spec would be a second cap: threads
 # named x, x-v2, x-v3 and x-v4 once ran ten rounds on a cap of three.
+same_contract() { # $1=state file $2=its thread
+  [ -f "$1" ] && [ ! -L "$1" ] && [ "$2" != "$THREAD" ] \
+    && [ "$(field "$1" base_sha)" = "$BASE_SHA" ] && [ "$(field "$1" spec_path)" = "$SPEC_PATH" ]
+}
 contract_holder() {
+  local path name journals
   shopt -s dotglob
-  for _other in "$STATE_DIR"/*.review-loop "$STATE_DIR"/*.claim-prep; do
-    [ -f "$_other" ] && [ ! -L "$_other" ] || continue
-    _name="${_other##*/}"; _name="${_name%.review-loop}"; _name="${_name%.claim-prep}"
-    [ "$_name" != "$THREAD" ] || continue
-    if [ "$(field "$_other" base_sha)" = "$BASE_SHA" ] && [ "$(field "$_other" spec_path)" = "$SPEC_PATH" ]; then
-      printf '%s\n' "$_name"; return 0
-    fi
+  # Journals are listed before loops. A claim writes its loop before it removes its journal, so a
+  # holder that publishes while this scan runs is met in one of the two listings; listed together,
+  # its journal could be gone and its loop not yet listed. The hook is the seam for that test.
+  journals=("$STATE_DIR"/*.claim-prep)
+  [ -z "${CC_REVIEW_STATE_TEST_AFTER_JOURNALS_HOOK:-}" ] || . "$CC_REVIEW_STATE_TEST_AFTER_JOURNALS_HOOK"
+  for path in "${journals[@]}"; do
+    name="${path##*/}"; name="${name%.claim-prep}"
+    if same_contract "$path" "$name"; then printf '%s\n' "$name"; return 0; fi
+  done
+  for path in "$STATE_DIR"/*.review-loop; do
+    name="${path##*/}"; name="${name%.review-loop}"
+    if same_contract "$path" "$name"; then printf '%s\n' "$name"; return 0; fi
   done
   return 1
 }
@@ -320,8 +330,12 @@ $FOOTER"
     case "$SPEC_PATH" in ' '*|*' ') echo "spec path must not start or end with a space" >&2; exit 1 ;; esac
     [ ! -L "$SPEC_PATH" ] || { echo "required review spec must not be a symlink: $SPEC_PATH" >&2; exit 13; }
     [ -f "$SPEC_PATH" ] || { echo "spec file not found: $SPEC_PATH" >&2; exit 1; }
-    git --literal-pathspecs ls-files --error-unmatch -- "$SPEC_PATH" >/dev/null 2>&1 \
-      || { echo "required review spec must be tracked in the clean candidate: $SPEC_PATH" >&2; exit 13; }
+    # The contract is keyed by the path as Git tracks it: `docs/./spec.md` and `docs/spec.md` are
+    # one spec, and compared as typed they opened two contracts.
+    SPEC_TYPED="$SPEC_PATH"
+    SPEC_PATH="$(git --literal-pathspecs ls-files -z --error-unmatch -- "$SPEC_TYPED" 2>/dev/null | tr -d '\0')"
+    [ -n "$SPEC_PATH" ] \
+      || { echo "required review spec must be tracked in the clean candidate: $SPEC_TYPED" >&2; exit 13; }
     BASE_SHA="$(git rev-parse --verify --end-of-options "$BASE_REF^{commit}" 2>/dev/null)" \
       || { echo "cannot resolve review base: $BASE_REF" >&2; exit 1; }
     clean_candidate || { echo "required review needs a clean candidate commit" >&2; exit 13; }
@@ -340,6 +354,8 @@ $FOOTER"
       for pair in "base_sha=$BASE_SHA" "spec_path=$SPEC_PATH" "cap=$CAP" "head=$HEAD_SHA" "tree=$TREE_SHA"; do
         grep -qxF -- "$pair" "$PREPARED" || die 10 "REVIEW_CONTRACT_CHANGED: recover the interrupted begin on its original candidate"
       done
+      # An interruption can fall between the journal and its contract check.
+      [ -f "$LOOP_STATE" ] || refuse_second_contract
       publish_claim; exit $?
     fi
     NEW_CONTRACT=false
@@ -365,6 +381,8 @@ $FOOTER"
       esac
       valid_decimal "$LOOP_START" 7 \
         || { echo "invalid required review loop state" >&2; exit 1; }
+      # A loop pinned before paths were stored as tracked keeps the spelling it was pinned with.
+      [ "$LOOP_SPEC_PATH" != "$SPEC_TYPED" ] || SPEC_PATH="$SPEC_TYPED"
       [ "$LOOP_BASE_SHA" = "$BASE_SHA" ] \
         && [ "$LOOP_SPEC_PATH" = "$SPEC_PATH" ] \
         && [ "$LOOP_CAP" = "$CAP" ] \
@@ -514,7 +532,10 @@ $FOOTER"
         # Name what is in the way: a file a reviewer's command left behind repeats every round
         # until it is ignored or removed, and the bare reason did not say which file.
         echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate; the worktree holds:" >&2
-        git status --porcelain -uall --ignore-submodules=none 2>/dev/null | head -n 10 >&2
+        DIRTY="$(git status --porcelain -uall --ignore-submodules=none 2>/dev/null)"
+        DIRTY_COUNT="$(printf '%s\n' "$DIRTY" | grep -c .)"
+        printf '%s\n' "$DIRTY" | head -n 20 >&2
+        [ "$DIRTY_COUNT" -le 20 ] || echo "... and $((DIRTY_COUNT - 20)) more" >&2
         echo "Remove or ignore what a reviewer's command left behind; your own edits wait until the round is recorded." >&2
       else
         echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
@@ -555,7 +576,11 @@ $FOOTER"
         fi
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
           write_state CAP_REACHED REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
-          echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
+          if [ "$BLOCKING_REASON" = unlocated_findings ]; then
+            echo "CAP_REACHED: REQUEST_CHANGES again without a file:line finding, in round $C_CAP of $C_CAP" >&2
+          else
+            echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
+          fi
           exit 10
         fi
         write_state REQUEST_CHANGES REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$(round_now)" "$BLOCKING_REASON" || exit 1
@@ -635,8 +660,9 @@ $FOOTER"
     [ $# -eq 2 ] || usage
     assert_no_live_dispatch
     GAP="$(approval_gap)" || { GAP_RC=$?; [ -z "$GAP" ] || echo "$GAP" >&2; exit "$GAP_RC"; }
-    HEAD_SHA="$(head_sha)"; TREE_SHA="$(tree_sha)"
-    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$HEAD_SHA tree=$TREE_SHA base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
+    # The marker is built from the record approval_gap compared with HEAD, never from a second
+    # reading of HEAD: one taken now could name a commit that was not checked.
+    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$(field "$APPROVED" head) tree=$(field "$APPROVED" tree) base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
     ;;
 
   renew)
@@ -650,7 +676,7 @@ $FOOTER"
     while [ $# -gt 0 ]; do
       case "$1" in
         --by) [ $# -ge 2 ] && [ -n "$2" ] || usage; R_BY="$2"; shift 2 ;;
-        --rounds) [ $# -ge 2 ] || usage; R_ROUNDS="$2"; shift 2 ;;
+        --rounds) [ $# -ge 2 ] && [ -n "$2" ] || usage; R_ROUNDS="$2"; shift 2 ;;
         *) usage ;;
       esac
     done
