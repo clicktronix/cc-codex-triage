@@ -324,6 +324,33 @@ describe('mod', () => {
     await ui.unmount()
   })
 
+  test('required reviews show the latest five, and an approval names its commit', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { ...FILES }
+    for (let day = 1; day <= 7; day++) {
+      files[`old-${day}.review-state`] = `status=CAP_REACHED\nverdict=REQUEST_CHANGES\ntimestamp=2026-09-0${day}T10:00:00Z\n`
+    }
+    files['fresh.review-state'] =
+      'status=APPROVED\nverdict=APPROVE\ngate_eligible=true\nhead=95d4d44175034d5fee898bc14bc8fb171149c2f2\ntimestamp=2026-11-22T12:00:00Z\n'
+    world(on, files, new Set(['4242']))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    const rows = texts.slice(texts.indexOf('Required review') + 1)
+    // A state with no timestamp line is placed by its file time, here the newest.
+    expect(rows).toEqual([
+      'review-a.b · PENDING · -',
+      'fresh · APPROVED 95d4d44 · APPROVE · gate',
+      'old-7 · CAP_REACHED · REQUEST_CHANGES',
+      'old-6 · CAP_REACHED · REQUEST_CHANGES',
+      'old-5 · CAP_REACHED · REQUEST_CHANGES',
+      '+4 older',
+    ])
+    await ui.unmount()
+  })
+
   test('the pane asks for a narrow dock when the person opens it', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     world(on, FILES, new Set(), false)
