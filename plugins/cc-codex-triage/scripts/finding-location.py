@@ -56,7 +56,9 @@ def names_file(path):
     if os.path.isabs(path):
         # The worktree's own path in front of a tracked one, also for a file the candidate deleted.
         for at in range(1, len(path)):
+            # The prefix names the worktree as written: `<worktree>/docs/..` is a spelling to resolve.
             if path[at] == "/" and composed(path[at + 1:]) in tracked \
+                    and not {".", ".."} & set(path[:at].split("/")) \
                     and os.path.isdir(path[:at]) and composed(os.path.realpath(path[:at])) == root:
                 return True
     if not os.path.isfile(path):

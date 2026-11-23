@@ -307,7 +307,8 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     "build.ignored:1 is not tracked" "$REPO/build.ignored:1 is not tracked under its absolute path either" \
     "docs/Plan Notes.md:12 has spaces and no code span" "app.txt/:1 is spelled as a directory" \
     "missing/../app.txt:1 crosses a directory that is not there" "app.txt/../app.txt:1 crosses a file" \
-    "$REPO/missing/../app.txt:1 crosses a missing directory by its absolute path" "docs/../legacy.txt:1 is deleted and cannot be resolved"; do
+    "$REPO/missing/../app.txt:1 crosses a missing directory by its absolute path" "docs/../legacy.txt:1 is deleted and cannot be resolved" \
+    "$REPO/docs/../legacy.txt:1 is deleted and cannot be resolved by its absolute path either" "$REPO/./docs/../legacy.txt:1 nor with a dot"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
