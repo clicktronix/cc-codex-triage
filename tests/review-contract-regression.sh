@@ -42,7 +42,8 @@ printf 'removed by the candidate\n' > legacy.txt
 printf 'a file named by digits\n' > 123
 printf 'notes\n' > 'C++.md'
 mkdir -p docs/deep && printf 'nested\n' > docs/deep/x.md
-git add docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md
+printf 'notes\n' > 'docs/Plan Notes.md'
+git add docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md 'docs/Plan Notes.md'
 git commit -qm baseline
 BASE0="$(git rev-parse HEAD)"
 printf 'candidate\n' > app.txt
@@ -270,7 +271,7 @@ NOUT="$("$STATE" record nf-cap "$CLAIM" 2>&1)"; NRC=$?
 "$STATE" reset nf-cap >/dev/null 2>&1
 
 echo "== a location is a path, not a host, an image tag or a step =="
-for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x" "docs:12 is a directory" "docs/deep:12 is a directory too" "(docs/deep:12) is one in brackets"; do
+for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x" "docs:12 is a directory" "docs/deep:12 is a directory too" "(docs/deep:12) is one in brackets" "$REPO/docs/deep:12 is one by its absolute path" "$(pwd -P)/docs/deep:12 is one by its physical path" "./docs/deep/:12 is one with a dot" "\`x ? b:1 : c\` is code, not a path"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -278,7 +279,7 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     && ok "'$body' is not a located finding" || bad "'$body' counted as a location: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
-for body in "C++.md:1 names the wrong standard" "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "app/(auth)/[id]/page.tsx:12 skips the guard" "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
+for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 drops a step" "\`first\` and app.txt:1 between two \`spans\`" "./app.txt:1 has the wrong word" "$REPO/app.txt:1 by its absolute path" "C++.md:1 names the wrong standard" "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "app/(auth)/[id]/page.tsx:12 skips the guard" "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -638,11 +639,13 @@ for expected in NO_FINDINGS REQUEST_CHANGES; do
   BOUT="$("$STATE" begin integ-refund --base "$RB3" --spec docs/spec.md --integration 2>&1)"
   CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
   FAKE_REVIEW_BODY="no location here" append_reply integ-refund REQUEST_CHANGES
-  "$STATE" record integ-refund "$CLAIM" >/dev/null 2>&1
+  IMSG="$("$STATE" record integ-refund "$CLAIM" 2>&1)"
   [[ "$(field "$SD/integ-refund.review-state" status)" == "$expected" ]] \
     && ok "an integration reply that locates nothing is $expected" \
     || bad "integration unlocated: wanted $expected, got $(field "$SD/integ-refund.review-state" status) ($BOUT)"
 done
+[[ "$IMSG" == *"normal round"* && "$IMSG" != *"attempt counts"* ]] \
+  && ok "the second one says the integration retry is used, not that an attempt was counted" || bad "integration retry message: $IMSG"
 begin integ-refund 2
 FAKE_REVIEW_BODY="no location here" append_reply integ-refund REQUEST_CHANGES
 "$STATE" record integ-refund "$CLAIM" >/dev/null 2>&1

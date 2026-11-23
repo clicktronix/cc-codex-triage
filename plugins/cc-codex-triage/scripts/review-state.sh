@@ -600,7 +600,9 @@ $FOOTER"
           exit 10
         fi
         write_state REQUEST_CHANGES REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$(round_now)" "$BLOCKING_REASON" || exit 1
-        if [ "$BLOCKING_REASON" = unlocated_findings ]; then
+        if [ "$BLOCKING_REASON" = unlocated_findings ] && [ -n "$(field "$CANDIDATE" integration_of)" ]; then
+          echo "REQUEST_CHANGES: again without a file:line finding, and the integration retry is used; take the reply as the review, then review this merge as a normal round" >&2
+        elif [ "$BLOCKING_REASON" = unlocated_findings ]; then
           echo "REQUEST_CHANGES: again without a file:line finding, so this attempt counts; take the reply as the review, then begin and review again" >&2
         else
           echo "REQUEST_CHANGES: resolve the findings, commit a new clean candidate when code changes, then begin and review again" >&2

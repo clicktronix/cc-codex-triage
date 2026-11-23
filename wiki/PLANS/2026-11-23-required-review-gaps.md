@@ -25,10 +25,13 @@ review rows.
    the next one counts: it is recorded as `REQUEST_CHANGES` with reason `unlocated_findings`, or
    at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. An integration
    round reserves no attempt: its first such reply is free, its second is `REQUEST_CHANGES`, and
-   neither spends the attempt a normal round may have returned. A location is a file of the
-   candidate or base tree, or a name those trees do not know that has a directory part:
-   `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory are not locations, while
-   `C++.md:1`, `(app.txt:1)` and `app/(auth)/[id]/page.tsx:12` are.
+   neither spends the attempt a normal round may have returned. A location is `name:line` where
+   the name, read as a path from the repository root (an absolute path inside the worktree and a
+   leading `./` included), is a file of the candidate or base tree, or is unknown to those trees
+   and has a directory part. So `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory
+   under any spelling are not locations, while `C++.md:1`, `(app.txt:1)` and
+   `app/(auth)/[id]/page.tsx:12` are. A name with spaces is read inside a code span, around the
+   name or around the whole citation; outside one it is not recognized.
 5. `footer <thread>` prints the closing lines of a required prompt. While a claim is pending,
    `preflight` (and so `dispatch.sh`) exits 14 without dispatching unless the prompt ends with
    exactly those lines, and `record` refuses a round whose logged prompt does not, as it does for
