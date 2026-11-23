@@ -19,6 +19,8 @@ awk '
   {
     if (substr($0, 1, 2) != "  ") { last="OTHER"; next }
     line=substr($0, 3)
+    # Invisible at the end of a line, so they must not turn a bare verdict into "no verdict".
+    sub(/[ \t\r]+$/, "", line)
     if (line == "") next
 
     probe=line; spaces=0

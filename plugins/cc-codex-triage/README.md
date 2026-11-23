@@ -38,7 +38,8 @@ widens or narrows it); on the main screen, or a terminal under 110 columns, it s
 prompt. It
 lists each thread with its rounds, last activity and topic; an in-flight dispatch comes
 first with its round, running time and what Codex is doing now (the program it runs, the
-file it edits, or that it is replying); required-review states follow. Under an idle
+file it edits, or that it is replying); the five latest required-review states follow, an
+approval with the commit it belongs to. Under an idle
 thread is the first line of its last reply, cut to the pane, with `+N lines` when there
 is more. `/codex-pane <thread>` opens that thread's whole reply in place and closes it on a
 second run, in either layout; in the docked pane a click on the thread or its line does the
@@ -79,12 +80,16 @@ Another tool may call `scripts/review-state.sh` by its install path. The verbs b
 exit codes, the usage line and the approval marker are a public contract: a change to any of
 them is a breaking change.
 
-- `begin`, `header`, `record`, `abort`: one required round, as
-  [required-review.md](skills/codex-triage/references/required-review.md) runs it.
+- `begin`, `header`, `footer`, `record`, `abort`: one required round, as
+  [required-review.md](skills/codex-triage/references/required-review.md) runs it. The prompt
+  of a round begins with the lines `header` prints and ends with the lines `footer` prints.
+  One contract of base and spec exists per worktree: `begin` on a second thread answers
+  `CONTRACT_EXISTS`.
 - `check <thread>`: prints the approval marker when an approval covers the current clean
   HEAD/tree.
-- `renew <thread> --by <who>`: after `CAP_REACHED`, starts a new set of rounds on the same
-  thread; `<who>` names the person who authorized it.
+- `renew <thread> --by <who> [--rounds N]`: after `CAP_REACHED`, starts a new set of rounds on
+  the same thread; `<who>` names the person who authorized it. `N` (1 up to the pinned cap) is
+  the number of rounds authorized; without it the set is the whole cap.
 - `mode <thread>`: prints `required` or `advisory`; reads only.
 
 | Exit | Meaning |
@@ -93,13 +98,13 @@ them is a breaking change.
 | 1 | Usage or argument error; the usage line is printed |
 | 2 | Python unavailable to resolve state outside Git (`mode`) |
 | 7 | Unsafe or unreadable state, lock busy, no Git repository, Python unavailable in `record` |
-| 10 | Refusal named on stderr (`CAP_REACHED`, `NO_APPROVAL`, `RENEW_REFUSED`, `REQUIRED_THREAD_RESERVED`, …) |
+| 10 | Refusal named on stderr (`CAP_REACHED`, `CONTRACT_EXISTS`, `NO_APPROVAL`, `RENEW_REFUSED`, `REQUIRED_THREAD_RESERVED`, …) |
 | 11 | `STALE`: the approval or claim no longer matches the clean candidate |
 | 13 | Candidate not clean, spec untracked or a symlink, no HEAD |
-| 14 | Prompt header differs from the claim; nothing was dispatched |
+| 14 | Prompt header or footer differs from the claim; nothing was dispatched |
 
-The usage line is one line on stderr and keeps `--integration`, `check <thread>` and
-`renew <thread> --by <who>`.
+The usage line is one line on stderr and keeps `--integration`, `check <thread>`,
+`footer <thread>` and `renew <thread> --by <who> [--rounds N]`.
 
 The approval marker is the only line `check` prints, with exit 0:
 

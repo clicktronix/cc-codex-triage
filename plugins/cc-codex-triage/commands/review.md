@@ -20,8 +20,10 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
   initial round.
 - Parse `--once`, `--oneshot` and `--background` as defined in the shared skill.
   Set `ONESHOT=1` for an ephemeral call and leave it empty otherwise. Forward explicit model and effort.
-- `--cap N` sets the round limit. Default to 7 for new reviews. Required review pins
-  the original cap (1–7). Omit `--cap` on resume to reuse it.
+- `--cap N` sets the round limit, 7 by default. Required review pins its first cap (1–7):
+  omit `--cap` on resume. An advisory review stores no count: count this invocation's rounds,
+  and after a lost context recount them in the thread log as the round headers since the last
+  reply that ended in `APPROVE` or `COMMENT` (`/status` prints the state directory).
 - `--required --base <ref> --spec <path>` selects the foreground exact-candidate
   protocol. Reject `--required` combined with `--once`, `--oneshot` or `--background` before dispatch.
 

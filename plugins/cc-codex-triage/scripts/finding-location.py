@@ -1,18 +1,40 @@
-"""Recognize a source location in the recorded reply, including deleted files."""
+"""Recognize a source location in the recorded reply, including deleted files.
+
+usage: finding-location.py <record> [<revision>...]
+
+A name with a directory part counts by its shape, so a path in another repository does too. A bare
+name counts when it is a file at the root of one of the revisions; `localhost:3000`, `node:20` and
+`step:2` are not. Without revisions there is no tree to ask and every alphabetic bare name counts.
+"""
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
 
 location = re.compile(r"([\w./-]+|`[^`\n]+`):[1-9][0-9]*")
+revisions = sys.argv[2:]
+
+
+def at_root(name):
+    return any(
+        subprocess.run(["git", "cat-file", "-e", f"{revision}:{name}"],
+                       stderr=subprocess.DEVNULL).returncode == 0
+        for revision in revisions
+    )
 
 
 def has_location(line):
-    # Python's \w excludes combining marks in decomposed Git filenames.
+    # Python's \w excludes combining marks in decomposed Git filenames: match on a copy that
+    # replaces each with one character, and read the name from the original by position.
+    probe = line
     if not line.isascii():
-        line = "".join("_" if unicodedata.category(c).startswith("M") else c for c in line)
-    for name in location.findall(line):
-        if any(c.isalpha() or c == "_" for c in name) or "/" in name.strip("`/"):
+        probe = "".join("_" if unicodedata.category(c).startswith("M") else c for c in line)
+    for match in location.finditer(probe):
+        name = line[match.start(1):match.end(1)].strip("`")
+        if "/" in name.strip("/"):
+            return True
+        if any(c.isalpha() or c == "_" for c in name) and (not revisions or at_root(name)):
             return True
     return False
 

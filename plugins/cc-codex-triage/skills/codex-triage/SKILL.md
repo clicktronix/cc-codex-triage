@@ -104,7 +104,7 @@ On a non-zero exit, act per this table.
 | 9 | Detach handshake timed out on a live child | Read `<thread>.detach-output` and `.detach-stderr` |
 | 10 | Thread busy, or a `review-state.sh` refusal named on stderr | Wait, use another `--thread`, or follow the named marker |
 | 11 | `STALE`: candidate changed or dispatch incomplete | See required-review.md |
-| 14 | Prompt header differs from the claim; nothing was dispatched | Rebuild it with `review-state.sh header` |
+| 14 | Prompt header or footer differs from the claim; nothing was dispatched | Rebuild it with `review-state.sh header` and `footer` |
 | 20 | Long dispatch still running; the worker is unaffected | Run the printed `dispatch.sh --watch` command as a background task; do not dispatch the turn again |
 | 21 | Watched dispatch left no status record; outcome unconfirmed | Treat as failure; read `/status` and the thread log before retrying |
 

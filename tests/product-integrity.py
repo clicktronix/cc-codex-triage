@@ -168,6 +168,8 @@ class ProductIntegrity(unittest.TestCase):
                 self.assertIn('CAP_REACHED', self.gate('begin', thread, *args).stderr)
             else:
                 self.assertEqual(self.gate('check', thread).returncode, 0)
+            # One contract per base and spec: the next cap needs this thread retired.
+            self.assertEqual(self.gate('reset', thread).returncode, 0)
 
     def test_no_findings_returns_the_attempt(self):
         args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')

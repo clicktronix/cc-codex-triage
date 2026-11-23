@@ -72,7 +72,7 @@ fi
 printf '%s' "$PROMPT" | bash "$SELF_DIR/review-state.sh" preflight "$THREAD" >/dev/null
 rc=$?
 if [ "$rc" -ne 0 ]; then
-  if [ "$rc" -eq 14 ]; then echo "dispatch.sh: nothing was dispatched. Use review-state.sh header $THREAD and retry this claim." >&2; fi
+  if [ "$rc" -eq 14 ]; then echo "dispatch.sh: nothing was dispatched. Build the prompt from review-state.sh header $THREAD and footer $THREAD, then retry this claim." >&2; fi
   exit "$rc"
 fi
 

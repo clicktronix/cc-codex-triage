@@ -3,8 +3,8 @@
 Contents: [Review focus](#review-focus) · [Plan focus](#plan-focus)
 
 Read this file only for `/review` or `/plan`. Pick one focus line and append the
-matching output contract. Codex gathers repository context itself. A required review
-replaces the contract's verdict line as required-review.md says.
+matching output contract. Codex gathers repository context itself. A required review ends
+with its generated footer in place of the advisory verdict line, as required-review.md says.
 
 ## Review focus
 
@@ -27,8 +27,7 @@ For every review lens, add:
 ```text
 Report findings only. Cite file:line and explain impact and the smallest fix.
 Do not edit files. Search immediate sibling sites when one instance reveals a
-shared problem class. End with exactly one bare final verdict line:
-APPROVE, REQUEST_CHANGES, or COMMENT.
+shared problem class.
 A finding is blocking only when it breaks an acceptance criterion of the spec or a
 rule of the repository, or is a defect with a concrete failure scenario (input or
 state -> wrong result). Wording, style, naming and hardening beyond the spec are
@@ -42,6 +41,12 @@ spec and affected consumers across file/repository boundaries. Reuse the supplie
 a claim depends on it; never run the full suite, e2e, builds or containers — name
 the check and what it would decide, and the owner runs it. Do not create issues,
 edit, or delegate workers.
+```
+
+An advisory review then adds its verdict line:
+
+```text
+End with exactly one bare final verdict line: APPROVE, REQUEST_CHANGES, or COMMENT.
 ```
 
 ## Plan focus

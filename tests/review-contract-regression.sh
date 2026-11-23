@@ -37,15 +37,33 @@ git init -q -b main .
 git config user.name test
 git config user.email test@example.com
 printf 'spec\n' > docs/spec.md
-printf 'candidate\n' > app.txt
-git add docs/spec.md app.txt
+printf 'FROM scratch\n' > Dockerfile
+printf 'removed by the candidate\n' > legacy.txt
+git add docs/spec.md Dockerfile legacy.txt
 git commit -qm baseline
+BASE0="$(git rev-parse HEAD)"
+printf 'candidate\n' > app.txt
+git rm -q legacy.txt
+git add app.txt
+git commit -qm candidate
 SD="$REPO/.git/cc-codex-triage/threads"
 
 field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
+# One contract per base and spec: a section that starts on a new thread retires the earlier ones,
+# as the CONTRACT_EXISTS refusal tells a caller to.
+retire_others() { # thread
+  local loop name
+  for loop in "$SD"/*.review-loop; do
+    [ -f "$loop" ] || continue
+    name="$(basename "$loop" .review-loop)"
+    [ "$name" = "$1" ] || "$STATE" reset "$name" >/dev/null 2>&1
+  done
+}
+
 begin() { # thread cap
-  BOUT="$("$STATE" begin "$1" --base HEAD --spec docs/spec.md --cap "${2:-3}" 2>"$T/err")"
+  retire_others "$1"
+  BOUT="$("$STATE" begin "$1" --base "$BASE0" --spec docs/spec.md --cap "${2:-3}" 2>"$T/err")"
   BRC=$?
   CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
 }
@@ -93,6 +111,15 @@ awk '/^---$/{print "REPLY:\n  REQUEST_CHANGES\n---"} {print}' "$T/strict.log" > 
 "$VERDICT" "$T/duplicate.log" >/dev/null 2>&1 \
   && bad "strict accepted two verdicts" \
   || ok "strict rejects ambiguous duplicate verdicts"
+printf '[test]\nPROMPT:\n  x\nREPLY:\n  body\r\n  APPROVE \t\r\n  \t\n---\n' > "$T/invisible.log"
+VOUT="$("$VERDICT" "$T/invisible.log")"; VRC=$?
+[[ "$VRC" -eq 0 && "$VOUT" == APPROVE ]] \
+  && ok "trailing spaces, tabs and CR do not hide a bare verdict" \
+  || bad "invisible trailing characters rc=$VRC out=$VOUT"
+sed 's/^  APPROVE$/  APPROVE 0123456789abcdef0123456789abcdef01234567/' "$T/strict.log" > "$T/suffixed.log"
+"$VERDICT" "$T/suffixed.log" >/dev/null 2>&1 \
+  && bad "strict accepted a verdict followed by a hash" \
+  || ok "strict rejects a verdict line that carries anything else"
 "$VERDICT" informational "$T/strict.log" >/dev/null 2>&1 \
   && bad "removed display-only verdict policy is still callable" \
   || ok "the parser exposes no tolerant display policy"
@@ -105,7 +132,8 @@ ROUTE_PROMPT="REQUIRED_REVIEW
 BASE_SHA: $ROUTE_BASE
 CANDIDATE_SHA: $ROUTE_HEAD
 SPEC_PATH: docs/spec.md
-Review the candidate. End with one bare verdict."
+Review the candidate.
+$("$STATE" footer product-route)"
 ROUTE_OUT="$(CC_DISPATCH_WAIT=10 "$DISPATCH" product-route <<< "$ROUTE_PROMPT" 2>"$T/err")"; ROUTE_RC=$?
 [[ "$ROUTE_RC" -eq 0 && "$ROUTE_OUT" == *APPROVE ]] \
   && ok "dispatch writes the claimed round through the production driver" \
@@ -155,10 +183,28 @@ FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< 
 [[ "$RC" -eq 14 && ! -s "$T/calls" ]] \
   && ok "a header line repeated in the body is refused before dispatch" \
   || bad "duplicate header rc=$RC"
+FTR="$("$STATE" footer preflight-route 2>"$T/err")"
+[[ "$(printf '%s\n' "$FTR" | wc -l | tr -d ' ')" -eq 4 \
+   && "$(printf '%s\n' "$FTR" | tail -n 1)" == "End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES." ]] \
+  && ok "footer prints the closing instruction, the verdict sentence last" \
+  || bad "footer output: $FTR err=$(cat "$T/err")"
+FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$HDR
+Review the candidate." >/dev/null 2>"$T/err"; RC=$?
+[[ "$RC" -eq 14 && ! -s "$T/calls" ]] && grep -q "footer preflight-route" "$T/err" \
+  && ok "a prompt without the generated footer is refused before Codex is called" \
+  || bad "missing footer rc=$RC calls=$(wc -l < "$T/calls") err=$(cat "$T/err")"
+FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$HDR
+Review the candidate.
+$FTR
+Return exactly one verdict as the last line: APPROVE <candidate sha> or REQUEST_CHANGES <candidate sha>." >/dev/null 2>&1; RC=$?
+[[ "$RC" -eq 14 && ! -s "$T/calls" ]] \
+  && ok "an instruction typed after the footer is refused: the generated one has the last word" \
+  || bad "typed instruction after the footer rc=$RC"
 PF_OUT="$(FAKE_CODEX_CALLS="$T/calls" CC_DISPATCH_WAIT=10 "$DISPATCH" preflight-route <<< "$HDR
-Review the candidate." 2>"$T/err")"; RC=$?
+Review the candidate.
+$FTR" 2>"$T/err")"; RC=$?
 [[ "$RC" -eq 0 && -s "$T/calls" && "$PF_OUT" == *APPROVE ]] \
-  && ok "the generated header dispatches and the round records" \
+  && ok "the generated header and footer dispatch and the round records" \
   || bad "generated header rc=$RC out=$PF_OUT err=$(cat "$T/err")"
 "$STATE" record preflight-route "$CLAIM" >/dev/null 2>&1 \
   && ok "the round dispatched with the generated header is recordable" \
@@ -182,6 +228,50 @@ append_reply empty-findings REQUEST_CHANGES
   && ok "a blocking verdict with a located finding still counts" \
   || bad "located finding status: $(field "$SD/empty-findings.review-state" status)"
 "$STATE" reset empty-findings >/dev/null 2>&1
+
+echo "== only the first blocking verdict without findings is returned =="
+begin nf-twice 2
+FAKE_REVIEW_BODY="looks wrong somehow" append_reply nf-twice REQUEST_CHANGES
+"$STATE" record nf-twice "$CLAIM" >/dev/null 2>&1
+begin nf-twice 2
+FAKE_REVIEW_BODY="still wrong" append_reply nf-twice REQUEST_CHANGES
+NOUT="$("$STATE" record nf-twice "$CLAIM" 2>&1)"; NRC=$?
+[[ "$NRC" -eq 10 && "$NOUT" != *NO_FINDINGS* && "$(field "$SD/nf-twice.review-state" status)" == REQUEST_CHANGES \
+   && "$(field "$SD/nf-twice.review-state" reason)" == unlocated_findings && "$(field "$SD/nf-twice.review-loop" attempts)" == 1 ]] \
+  && ok "the retry that again names no location counts as REQUEST_CHANGES" \
+  || bad "second empty findings rc=$NRC out=$NOUT attempts=$(field "$SD/nf-twice.review-loop" attempts)"
+begin nf-twice 2
+FAKE_REVIEW_BODY="wrong again" append_reply nf-twice REQUEST_CHANGES
+"$STATE" record nf-twice "$CLAIM" >/dev/null 2>&1
+[[ "$(field "$SD/nf-twice.review-state" status)" == CAP_REACHED && "$(field "$SD/nf-twice.review-loop" attempts)" == 2 ]] \
+  && ok "a later one in the same set of rounds counts too and reaches the cap" \
+  || bad "third empty findings status=$(field "$SD/nf-twice.review-state" status) attempts=$(field "$SD/nf-twice.review-loop" attempts)"
+"$STATE" renew nf-twice --by owner >/dev/null 2>&1
+begin nf-twice 2
+FAKE_REVIEW_BODY="unclear" append_reply nf-twice REQUEST_CHANGES
+"$STATE" record nf-twice "$CLAIM" >/dev/null 2>&1
+[[ "$(field "$SD/nf-twice.review-state" status)" == NO_FINDINGS && "$(field "$SD/nf-twice.review-loop" attempts)" == 0 ]] \
+  && ok "a renewed set of rounds returns one again" \
+  || bad "after renew status=$(field "$SD/nf-twice.review-state" status) attempts=$(field "$SD/nf-twice.review-loop" attempts)"
+"$STATE" reset nf-twice >/dev/null 2>&1
+
+echo "== a location is a path, not a host, an image tag or a step =="
+for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x"; do
+  begin loc 2
+  FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
+  "$STATE" record loc "$CLAIM" >/dev/null 2>&1
+  [[ "$(field "$SD/loc.review-state" status)" == NO_FINDINGS ]] \
+    && ok "'$body' is not a located finding" || bad "'$body' counted as a location: $(field "$SD/loc.review-state" status)"
+  "$STATE" reset loc >/dev/null 2>&1
+done
+for body in "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
+  begin loc 2
+  FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
+  "$STATE" record loc "$CLAIM" >/dev/null 2>&1
+  [[ "$(field "$SD/loc.review-state" status)" == REQUEST_CHANGES ]] \
+    && ok "'${body%% *}' is a located finding" || bad "'$body' not recognized: $(field "$SD/loc.review-state" status)"
+  "$STATE" reset loc >/dev/null 2>&1
+done
 
 echo "== an integration round after an approval does not spend the cap =="
 git checkout -q -b integ-target
@@ -209,7 +299,8 @@ IOUT="$("$STATE" record integ "$CLAIM" 2>&1)"; IRC=$?
   && ok "the integrated candidate is approved without spending an attempt" \
   || bad "integration record rc=$IRC out=$IOUT attempts=$(field "$SD/integ.review-loop" attempts)"
 "$STATE" reset integ >/dev/null 2>&1
-BOUT="$("$STATE" begin integ --base HEAD --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
+retire_others integ
+BOUT="$("$STATE" begin integ --base "$BASE0" --spec docs/spec.md --cap 2 --integration 2>&1)"; BRC=$?
 [[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
   && ok "an integration round without a prior approval is refused" \
   || bad "no-approval integration rc=$BRC out=$BOUT"
@@ -260,21 +351,68 @@ ROUT="$("$STATE" renew renew-idle --by owner 2>&1)"; RRC=$?
   && ok "a repeated renew grants nothing and says so" || bad "idle second renew rc=$RRC out=$ROUT renewals=$(field "$SD/renew-idle.review-loop" renewals)"
 "$STATE" reset renew-idle >/dev/null 2>&1
 
-echo "== renew takes only --by, and the usage line keeps the verbs callers match =="
-begin renew-flags 1
-append_reply renew-flags REQUEST_CHANGES
-"$STATE" record renew-flags "$CLAIM" >/dev/null 2>&1
-for flag in "--rounds 3" "--grant x"; do
-  # shellcheck disable=SC2086 # the flag and its value are two words
-  "$STATE" renew renew-flags --by owner $flag >/dev/null 2>&1; RC=$?
-  [[ "$RC" -eq 1 && "$(field "$SD/renew-flags.review-state" status)" == CAP_REACHED ]] \
-    && ok "renew $flag is a usage error" || bad "renew $flag rc=$RC"
+echo "== a renewal can be sized to what was authorized =="
+begin renew-sized 3
+for _ in 1 2 3; do
+  append_reply renew-sized REQUEST_CHANGES
+  "$STATE" record renew-sized "$CLAIM" >/dev/null 2>&1
+  [[ "$(field "$SD/renew-sized.review-state" status)" == CAP_REACHED ]] || begin renew-sized 3
 done
-"$STATE" reset renew-flags >/dev/null 2>&1
+for flag in "--rounds 0" "--rounds 4" "--rounds two" "--grant x"; do
+  # shellcheck disable=SC2086 # the flag and its value are two words
+  "$STATE" renew renew-sized --by owner $flag >/dev/null 2>&1; RC=$?
+  [[ "$RC" -eq 1 && "$(field "$SD/renew-sized.review-state" status)" == CAP_REACHED && "$(field "$SD/renew-sized.review-loop" attempts)" == 3 ]] \
+    && ok "renew $flag is refused and renews nothing" || bad "renew $flag rc=$RC"
+done
+ROUT="$("$STATE" renew renew-sized --by "owner: two more rounds" --rounds 2 2>&1)"; RRC=$?
+[[ "$RRC" -eq 0 && "$ROUT" == *"2 round(s)"* && "$(field "$SD/renew-sized.review-loop" attempts)" == 1 && "$(field "$SD/renew-sized.review-loop" cap)" == 3 ]] \
+  && ok "renew --rounds 2 keeps the cap pinned and leaves two attempts" || bad "sized renew rc=$RRC out=$ROUT"
+begin renew-sized 3
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=2/3"* ]] && ok "the first renewed round is attempt 2 of 3" || bad "first sized round rc=$BRC out=$BOUT"
+append_reply renew-sized REQUEST_CHANGES
+"$STATE" record renew-sized "$CLAIM" >/dev/null 2>&1
+begin renew-sized 3
+append_reply renew-sized REQUEST_CHANGES
+"$STATE" record renew-sized "$CLAIM" >/dev/null 2>&1
+[[ "$BRC" -eq 0 && "$(field "$SD/renew-sized.review-state" status)" == CAP_REACHED ]] \
+  && ok "the second renewed round reaches the cap: two rounds were authorized, two ran" \
+  || bad "second sized round rc=$BRC status=$(field "$SD/renew-sized.review-state" status)"
+"$STATE" begin renew-sized --base "$BASE0" --spec docs/spec.md >/dev/null 2>&1 \
+  && bad "a third round ran on a renewal of two" || ok "a third round is refused"
+"$STATE" reset renew-sized >/dev/null 2>&1
 USAGE="$("$STATE" 2>&1)"
-[[ "$USAGE" == *--integration* && "$USAGE" == *"check <thread>"* && "$USAGE" == *"renew <thread> --by"* \
-   && "$USAGE" != *--rounds* && "$USAGE" != *--grant* ]] \
-  && ok "usage names --integration, check and renew --by, and no removed flag" || bad "usage: $USAGE"
+[[ "$USAGE" == *--integration* && "$USAGE" == *"check <thread>"* && "$USAGE" == *"renew <thread> --by <who> [--rounds N]"* \
+   && "$USAGE" == *"footer <thread>"* && "$USAGE" != *--grant* && "$(printf '%s\n' "$USAGE" | wc -l | tr -d ' ')" -eq 1 ]] \
+  && ok "the one-line usage names --integration, check, footer and renew --by [--rounds N]" || bad "usage: $USAGE"
+
+echo "== one required contract per base and spec =="
+begin first-name 2
+BOUT="$("$STATE" begin first-name-v2 --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *"thread first-name "* \
+   && -z "$(ls "$SD" | grep '^first-name-v2\.')" ]] \
+  && ok "a second thread on the same base and spec is refused and leaves no state" \
+  || bad "second contract rc=$BRC out=$BOUT files=$(ls "$SD" | grep '^first-name-v2\.' | tr '\n' ' ')"
+printf 'other spec\n' > docs/other-spec.md; git add docs/other-spec.md; git commit -qm "another spec"
+"$STATE" abort first-name dispatch-failure "$CLAIM" >/dev/null 2>&1
+BOUT="$("$STATE" begin other-task --base "$BASE0" --spec docs/other-spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 ]] && ok "another spec on the same base is another contract" || bad "other spec rc=$BRC out=$BOUT"
+"$STATE" abort other-task dispatch-failure "$(field "$SD/other-task.candidate" claim_token)" >/dev/null 2>&1
+"$STATE" reset first-name >/dev/null 2>&1
+BOUT="$("$STATE" begin first-name-v2 --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 ]] && ok "after the holder is reset the name is free to claim" || bad "claim after reset rc=$BRC out=$BOUT"
+"$STATE" reset first-name-v2 >/dev/null 2>&1; "$STATE" reset other-task >/dev/null 2>&1
+git reset -q --hard HEAD^
+printf 'version=2\nhead=x\ntree=y\nbase_sha=%s\nspec_path=docs/spec.md\ncap=2\n' "$BASE0" > "$SD/half-claimed.claim-prep"
+BOUT="$("$STATE" begin racer --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *half-claimed* && ! -e "$SD/racer.claim-prep" ]] \
+  && ok "a first claim still in its journal already holds the contract" || bad "journal holder rc=$BRC out=$BOUT"
+rm -f "$SD/half-claimed.claim-prep"
+printf '%s\n' "printf 'version=2\\nbase_sha=%s\\nspec_path=docs/spec.md\\n' '$BASE0' > '$SD/late.claim-prep'" > "$T/prep-hook"
+CC_REVIEW_STATE_TEST_AFTER_PREP_HOOK="$T/prep-hook" "$STATE" begin racer --base "$BASE0" --spec docs/spec.md >"$T/racer.out" 2>&1; echo $? > "$T/racer.rc"
+[[ "$(cat "$T/racer.rc")" -eq 10 && "$(cat "$T/racer.out")" == *CONTRACT_EXISTS* && ! -e "$SD/racer.claim-prep" && ! -e "$SD/racer.review-loop" ]] \
+  && ok "a claim that meets another journal after writing its own withdraws" \
+  || bad "late journal rc=$(cat "$T/racer.rc") out=$(cat "$T/racer.out")"
+rm -f "$SD/late.claim-prep"
 
 echo "== the loop file stays version 1 through every transition =="
 V1_FIELDS="version base_sha spec_path cap start_round attempts renewals renewed_by timestamp "
@@ -317,11 +455,12 @@ printf 'entry\n' > Словарь
 printf 'spec\n' > ' lead.md'
 printf 'spec\n' > 'docs/trail.md '
 git add -- 'docs/План работ.md' Словарь ' lead.md' 'docs/trail.md ' && git commit -qm 'Add Unicode fixture'
+retire_others unicode
 for verdict in REQUEST_CHANGES APPROVE; do
-  BOUT="$("$STATE" begin unicode --base HEAD --spec docs/spec.md)"
+  BOUT="$("$STATE" begin unicode --base "$BASE0" --spec docs/spec.md)"
   CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
   HDR="$("$STATE" header unicode)"
-  FAKE_REVIEW_BODY="Словарь:1 correct the entry" FAKE_REVIEW_VERDICT="$verdict" "$DISPATCH" unicode --strict <<< "$HDR" >/dev/null
+  FAKE_REVIEW_BODY="Словарь:1 correct the entry" FAKE_REVIEW_VERDICT="$verdict" "$DISPATCH" unicode --strict <<< "$HDR"$'\n'"$("$STATE" footer unicode)" >/dev/null
   "$STATE" record unicode "$CLAIM" >/dev/null 2>&1
   status="$(field "$SD/unicode.review-state" status)"
   if [ "$verdict" = REQUEST_CHANGES ]; then
@@ -329,30 +468,30 @@ for verdict in REQUEST_CHANGES APPROVE; do
   fi
 done
 marker="$("$STATE" check unicode)"
-expected="CC_CODEX_REQUIRED_REVIEW APPROVE thread=unicode head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$(git rev-parse HEAD) spec_path=docs/spec.md"
+expected="CC_CODEX_REQUIRED_REVIEW APPROVE thread=unicode head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$BASE0 spec_path=docs/spec.md"
 read -ra marker_fields <<< "$marker"
 [[ "$marker" = "$expected" && "${#marker_fields[@]}" -eq 7 ]] \
   && ok "the approval marker splits into exactly seven fields" || bad "marker: $marker (${#marker_fields[@]} fields)"
 
 echo "== a spec path with spaces ends the marker as spec_path=<rest of line> =="
 SPACED='docs/План работ.md'
-BOUT="$("$STATE" begin spaced --base HEAD --spec "$SPACED" 2>"$T/err")"; RC=$?
+BOUT="$("$STATE" begin spaced --base "$BASE0" --spec "$SPACED" 2>"$T/err")"; RC=$?
 CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
-"$STATE" header spaced 2>/dev/null | FAKE_REVIEW_VERDICT=APPROVE "$DISPATCH" spaced --strict >/dev/null 2>&1
+{ "$STATE" header spaced; "$STATE" footer spaced; } 2>/dev/null | FAKE_REVIEW_VERDICT=APPROVE "$DISPATCH" spaced --strict >/dev/null 2>&1
 "$STATE" record spaced "$CLAIM" >/dev/null 2>&1
 marker="$("$STATE" check spaced 2>/dev/null)"
-prefix="CC_CODEX_REQUIRED_REVIEW APPROVE thread=spaced head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$(git rev-parse HEAD)"
+prefix="CC_CODEX_REQUIRED_REVIEW APPROVE thread=spaced head=$(git rev-parse HEAD) tree=$(git rev-parse 'HEAD^{tree}') base_sha=$BASE0"
 read -ra prefix_fields <<< "${marker%% spec_path=*}"
 [[ "$RC" -eq 0 && "$marker" = "$prefix spec_path=$SPACED" && "${#prefix_fields[@]}" -eq 6 ]] \
   && ok "six fields, then the spaced Unicode path to the end of the line" \
   || bad "spaced spec rc=$RC marker=$marker err=$(cat "$T/err")"
 for edge in ' lead.md' 'docs/trail.md '; do
-  "$STATE" begin edge --base HEAD --spec "$edge" 2>"$T/err"; RC=$?
+  "$STATE" begin edge --base "$BASE0" --spec "$edge" 2>"$T/err"; RC=$?
   [[ "$RC" -eq 1 ]] && grep -q 'start or end with a space' "$T/err" \
     && ok "tracked spec '$edge' is refused: the marker's last field has no outer spaces" \
     || bad "outer-space spec '$edge' rc=$RC err=$(cat "$T/err")"
 done
-"$STATE" begin newline --base HEAD --spec $'line\nbreak' 2>"$T/err" && bad "multiline spec accepted"
+"$STATE" begin newline --base "$BASE0" --spec $'line\nbreak' 2>"$T/err" && bad "multiline spec accepted"
 grep -q 'one line' "$T/err" && ok "multiline spec rejected at begin" || bad "multiline spec diagnostic"
 
 echo "== a live claim is checked even when the prompt drops its first line =="
@@ -491,8 +630,8 @@ begin dirty 3
 append_reply dirty APPROVE
 printf 'dirty\n' >> app.txt
 "$STATE" record dirty "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
-[[ "$RC" -eq 11 && "$(field "$SD/dirty.review-state" reason)" == dirty_worktree ]] \
-  && ok "a dirty worktree cannot inherit approval" \
+[[ "$RC" -eq 11 && "$(field "$SD/dirty.review-state" reason)" == dirty_worktree ]] && grep -q ' M app.txt' "$T/err" \
+  && ok "a dirty worktree cannot inherit approval, and the refusal names the path" \
   || bad "dirty candidate rc=$RC reason=$(field "$SD/dirty.review-state" reason)"
 git restore app.txt
 
@@ -533,10 +672,10 @@ append_reply capped REQUEST_CHANGES
 [[ "$RC" -eq 10 && "$(field "$SD/capped.review-state" status)" == CAP_REACHED ]] \
   && ok "the configured cap is a hard stop" \
   || bad "cap rc=$RC status=$(field "$SD/capped.review-state" status)"
-"$STATE" begin capped --base HEAD --spec docs/spec.md --cap 1 >/dev/null 2>&1 \
+"$STATE" begin capped --base "$BASE0" --spec docs/spec.md --cap 1 >/dev/null 2>&1 \
   && bad "a capped thread restarted without reset" \
   || ok "a capped thread requires an explicit reset"
-CAPMSG="$("$STATE" begin capped --base HEAD --spec docs/spec.md --cap 1 2>&1 >/dev/null)"
+CAPMSG="$("$STATE" begin capped --base "$BASE0" --spec docs/spec.md --cap 1 2>&1 >/dev/null)"
 [[ "$CAPMSG" == *"At the cap"* && "$CAPMSG" == *required-review.md* && "$CAPMSG" != *"reset workaround"* ]] \
   && ok "the CAP_REACHED refusal points at the owner of the cap rules" || bad "cap refusal: $CAPMSG"
 RESMSG="$("$STATE" advisory-check capped 2>&1 >/dev/null)"; RESRC=$?
@@ -546,11 +685,89 @@ RESMSG="$("$STATE" advisory-check capped 2>&1 >/dev/null)"; RESRC=$?
   && ok "reset clears the hard stop" \
   || bad "reset failed: $(cat "$T/err")"
 
+echo "== a refused begin at the cap keeps a recorded approval =="
+begin keep 1
+append_reply keep APPROVE
+"$STATE" record keep "$CLAIM" >/dev/null 2>&1
+KEEP_HEAD="$(git rev-parse HEAD)"
+BOUT="$("$STATE" begin keep --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+"$STATE" check keep >/dev/null 2>&1; CRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CAP_REACHED* && "$CRC" -eq 0 ]] \
+  && ok "the approved candidate still passes check after the refusal" \
+  || bad "refused begin rc=$BRC out=$BOUT check=$CRC status=$(field "$SD/keep.review-state" status)"
+ROUT="$("$STATE" renew keep --by owner 2>&1)"; RRC=$?
+"$STATE" check keep >/dev/null 2>&1; CRC=$?
+[[ "$RRC" -eq 10 && "$ROUT" == *RENEW_REFUSED* && "$CRC" -eq 0 ]] \
+  && ok "renew is refused while the approval covers the candidate" \
+  || bad "renew over a live approval rc=$RRC out=$ROUT check=$CRC"
+printf 'follow-up\n' >> app.txt; git commit -qam "follow-up after the approval"
+BOUT="$("$STATE" begin keep --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CAP_REACHED* && "$(field "$SD/keep.review-state" status)" == APPROVED ]] \
+  && ok "a refused begin on a later candidate leaves the approval record an integration round needs" \
+  || bad "refused begin on a moved candidate rc=$BRC status=$(field "$SD/keep.review-state" status)"
+ROUT="$("$STATE" renew keep --by owner 2>&1)"; RRC=$?
+[[ "$RRC" -eq 0 && "$ROUT" == RENEWED* && ! -e "$SD/keep.approved" ]] \
+  && ok "an exhausted loop whose approval no longer covers the candidate is renewed" \
+  || bad "renew after the candidate moved rc=$RRC out=$ROUT"
+begin keep 1
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=1/1"* ]] \
+  && ok "the renewed thread claims the new candidate" || bad "begin after that renew rc=$BRC out=$BOUT"
+"$STATE" abort keep dispatch-failure "$CLAIM" >/dev/null 2>&1
+"$STATE" reset keep >/dev/null 2>&1
+git reset -q --hard "$KEEP_HEAD"
+
+echo "== a base equal to the candidate is refused =="
+BOUT="$("$STATE" begin empty-range --base HEAD --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 1 && "$BOUT" == *"nothing to review"* && ! -e "$SD/empty-range.review-loop" && ! -e "$SD/empty-range.candidate" ]] \
+  && ok "an empty range earns no claim" || bad "empty range rc=$BRC out=$BOUT"
+
+echo "== a pending claim says where its token is =="
+begin lost-token 2
+BOUT="$("$STATE" begin lost-token --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *PENDING* && "$BOUT" == *"lost-token.candidate"* && "$BOUT" == *claim_token* ]] \
+  && ok "the PENDING refusal names the claim record" || bad "pending refusal rc=$BRC out=$BOUT"
+"$STATE" abort lost-token dispatch-failure "$(field "$SD/lost-token.candidate" claim_token)" >/dev/null 2>&1
+[[ "$(field "$SD/lost-token.review-state" status)" == ABORTED ]] \
+  && ok "the token read from the claim record releases the claim" || bad "abort by recorded token: $(field "$SD/lost-token.review-state" status)"
+"$STATE" reset lost-token >/dev/null 2>&1
+
+echo "== an integration round is exempt only for a merge git reproduces =="
+begin integ-check 2
+append_reply integ-check APPROVE
+"$STATE" record integ-check "$CLAIM" >/dev/null 2>&1
+IC_HEAD="$(git rev-parse HEAD)"
+git checkout -q -b edit-target
+printf 'target moved\n' > edit-target.txt; git add edit-target.txt; git commit -qm "target advances"
+git checkout -q main
+git merge -q --no-ff --no-commit edit-target >/dev/null 2>&1
+printf 'smuggled\n' >> app.txt; git add app.txt; git commit -qm "merge the target plus an edit"
+BOUT="$("$STATE" begin integ-check --base "$BASE0" --spec docs/spec.md --integration 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *INTEGRATION_REFUSED* && "$BOUT" == *"normal round"* && "$(field "$SD/integ-check.review-state" status)" == APPROVED ]] \
+  && ok "a merge commit that carries an extra edit is not an integration round" \
+  || bad "merge plus an edit rc=$BRC out=$BOUT"
+git reset -q --hard "$IC_HEAD"
+git checkout -q -b conflict-target "$BASE0"
+printf 'their candidate\n' > app.txt; git add app.txt; git commit -qm "target adds the same file"
+git checkout -q main
+git merge -q --no-ff conflict-target >/dev/null 2>&1
+printf 'resolved by hand\n' > app.txt; git add app.txt; git commit -qm "merge the target, conflict resolved"
+BOUT="$("$STATE" begin integ-check --base "$BASE0" --spec docs/spec.md --integration 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
+  && ok "a merge with a hand-resolved conflict is not an integration round" \
+  || bad "resolved conflict rc=$BRC out=$BOUT"
+begin integ-check 2
+[[ "$BRC" -eq 0 && "$BOUT" == *"attempt=2/2"* ]] \
+  && ok "that merge is reviewed as a normal round" || bad "normal round on the merge rc=$BRC out=$BOUT"
+"$STATE" abort integ-check dispatch-failure "$CLAIM" >/dev/null 2>&1
+"$STATE" reset integ-check >/dev/null 2>&1
+git reset -q --hard "$IC_HEAD"
+
 echo "== concurrent claim and read-only status =="
 rm -f "$SD/race."*
-("$STATE" begin race --base HEAD --spec docs/spec.md --cap 3 >"$T/race-a" 2>&1; echo $? >"$T/race-a.rc") &
+retire_others race
+("$STATE" begin race --base "$BASE0" --spec docs/spec.md --cap 3 >"$T/race-a" 2>&1; echo $? >"$T/race-a.rc") &
 PA=$!
-("$STATE" begin race --base HEAD --spec docs/spec.md --cap 3 >"$T/race-b" 2>&1; echo $? >"$T/race-b.rc") &
+("$STATE" begin race --base "$BASE0" --spec docs/spec.md --cap 3 >"$T/race-b" 2>&1; echo $? >"$T/race-b.rc") &
 PB=$!
 wait "$PA"; wait "$PB"
 RA="$(cat "$T/race-a.rc")"; RB="$(cat "$T/race-b.rc")"
