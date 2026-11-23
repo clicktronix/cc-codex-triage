@@ -44,7 +44,8 @@ and only `/thread-new` starts a new contract.
    values of the claimed candidate, once each. The footer is the verdict rule: the two verdicts
    `APPROVE` and `REQUEST_CHANGES`, findings located as `file:line`, a worktree left as found,
    and the bare final line. `dispatch.sh` checks both before calling Codex and exits 14 without
-   dispatching when they differ; the claim stays live.
+   dispatching when they differ; the claim stays live. `record` reads both again in the logged
+   prompt, so a round dispatched without them ends as `STALE (prompt_scope_mismatch)`.
 
    Between them put the intent, the full base-to-candidate scope and the chosen lens. The
    footer is the round's only verdict instruction, on the first round and on every resumed one.

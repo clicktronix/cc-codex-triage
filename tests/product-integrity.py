@@ -49,7 +49,8 @@ class ProductIntegrity(unittest.TestCase):
         (self.repo/'subject.py').write_text('VALUE = 2\n')
         self.git('commit','-qam','candidate')
         self.head = self.git('rev-parse','HEAD').stdout.strip()
-        self.prompt = f'REQUIRED_REVIEW\nBASE_SHA: {self.base}\nCANDIDATE_SHA: {self.head}\nSPEC_PATH: spec.md\nReview the full candidate.\n'
+        footer = self.run_cmd(['bash', SCRIPTS/'review-state.sh', 'footer', 'review']).stdout
+        self.prompt = f'REQUIRED_REVIEW\nBASE_SHA: {self.base}\nCANDIDATE_SHA: {self.head}\nSPEC_PATH: spec.md\nReview the full candidate.\n{footer}'
         self.sd = self.repo/'.git/cc-codex-triage/threads'
 
     def run_cmd(self, args, prompt=None):

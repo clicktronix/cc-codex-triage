@@ -40,7 +40,9 @@ printf 'spec\n' > docs/spec.md
 printf 'FROM scratch\n' > Dockerfile
 printf 'removed by the candidate\n' > legacy.txt
 printf 'a file named by digits\n' > 123
-git add docs/spec.md Dockerfile legacy.txt 123
+printf 'notes\n' > 'C++.md'
+mkdir -p docs/deep && printf 'nested\n' > docs/deep/x.md
+git add docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md
 git commit -qm baseline
 BASE0="$(git rev-parse HEAD)"
 printf 'candidate\n' > app.txt
@@ -78,6 +80,7 @@ BASE_SHA: $base
 CANDIDATE_SHA: $head
 SPEC_PATH: $spec
 Review the candidate.
+$("$STATE" footer "$thread")
 EOF
 }
 
@@ -267,7 +270,7 @@ NOUT="$("$STATE" record nf-cap "$CLAIM" 2>&1)"; NRC=$?
 "$STATE" reset nf-cap >/dev/null 2>&1
 
 echo "== a location is a path, not a host, an image tag or a step =="
-for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x" "docs:12 is a directory"; do
+for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" "see http://example.com:8080/x" "docs:12 is a directory" "docs/deep:12 is a directory too" "(docs/deep:12) is one in brackets"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -275,7 +278,7 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     && ok "'$body' is not a located finding" || bad "'$body' counted as a location: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
-for body in "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
+for body in "C++.md:1 names the wrong standard" "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "app/(auth)/[id]/page.tsx:12 skips the guard" "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" "\`app.txt\`:1 has the wrong word" "$REPO/app.txt:1 has the wrong word" "../other-repo/api.py:12 still calls the removed field"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -426,6 +429,28 @@ BOUT="$("$STATE" begin spelled --base "$BASE0" --spec docs/./spec.md 2>&1)"; BRC
 [[ "$BRC" -eq 0 && "$(field "$SD/spelled.candidate" spec_path)" == docs/spec.md ]] \
   && ok "the claim records the tracked spelling of the spec path" || bad "canonical spec rc=$BRC out=$BOUT"
 "$STATE" reset spelled >/dev/null 2>&1
+# State written before paths were stored as tracked can hold another spelling of the same file.
+begin old-spelling 2
+sed 's|^spec_path=.*|spec_path=docs/./spec.md|' "$SD/old-spelling.review-loop" > "$T/loop" && mv "$T/loop" "$SD/old-spelling.review-loop"
+BOUT="$("$STATE" begin new-spelling --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 10 && "$BOUT" == *CONTRACT_EXISTS* && "$BOUT" == *"thread old-spelling "* ]] \
+  && ok "a holder saved under another spelling still holds the contract" || bad "legacy holder rc=$BRC out=$BOUT"
+"$STATE" abort old-spelling dispatch-failure "$CLAIM" >/dev/null 2>&1
+rm -f "$SD/old-spelling.candidate" "$SD/old-spelling.review-state"
+for typed in docs/spec.md docs/./spec.md; do
+  BOUT="$("$STATE" begin old-spelling --base "$BASE0" --spec "$typed" 2>&1)"; BRC=$?
+  [[ "$BRC" -eq 0 && "$(field "$SD/old-spelling.review-loop" spec_path)" == docs/./spec.md ]] \
+    && ok "its own thread resumes with '$typed' and keeps the saved spelling" || bad "legacy resume '$typed' rc=$BRC out=$BOUT"
+  "$STATE" abort old-spelling dispatch-failure "$(field "$SD/old-spelling.candidate" claim_token)" >/dev/null 2>&1
+done
+"$STATE" reset old-spelling >/dev/null 2>&1
+printf 'exit 9\n' > "$T/crash-hook"
+CC_REVIEW_STATE_TEST_AFTER_PREP_HOOK="$T/crash-hook" "$STATE" begin old-journal --base "$BASE0" --spec docs/spec.md >/dev/null 2>&1
+sed 's|^spec_path=.*|spec_path=docs/./spec.md|' "$SD/old-journal.claim-prep" > "$T/prep" && mv "$T/prep" "$SD/old-journal.claim-prep"
+BOUT="$("$STATE" begin old-journal --base "$BASE0" --spec docs/./spec.md 2>&1)"; BRC=$?
+[[ "$BRC" -eq 0 && "$BOUT" == PENDING* && "$(field "$SD/old-journal.candidate" spec_path)" == docs/./spec.md ]] \
+  && ok "an interrupted claim journaled under another spelling resumes" || bad "legacy journal rc=$BRC out=$BOUT"
+"$STATE" reset old-journal >/dev/null 2>&1
 BOUT="$("$STATE" begin holder.claim-prep --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC=$?
 BOUT="$("$STATE" begin holder --base "$BASE0" --spec docs/spec.md 2>&1)"; BRC2=$?
 [[ "$BRC" -eq 0 && "$BRC2" -eq 10 && "$BOUT" == *"thread holder.claim-prep "* ]] \
@@ -601,6 +626,30 @@ BOUT="$("$STATE" begin retry-integ2 --base "$RB2" --spec docs/spec.md --cap 2 --
 [[ "$BRC" -ne 0 && "$BOUT" == *INTEGRATION_REFUSED* ]] \
   && ok "a real REQUEST_CHANGES with rounds left does not reopen the integration exception" || bad "after real RC with rounds left rc=$BRC out=$BOUT"
 "$STATE" reset retry-integ2 >/dev/null 2>&1
+# An integration round that located nothing reserved no attempt, so it neither returns one nor
+# spends the one this set of rounds may return.
+git reset -q --hard HEAD^1
+begin integ-refund 2
+append_reply integ-refund APPROVE
+"$STATE" record integ-refund "$CLAIM" >/dev/null 2>&1
+RB3="$(field "$SD/integ-refund.candidate" base_sha)"
+git merge -q --no-ff --no-edit retry-target
+for expected in NO_FINDINGS REQUEST_CHANGES; do
+  BOUT="$("$STATE" begin integ-refund --base "$RB3" --spec docs/spec.md --integration 2>&1)"
+  CLAIM="$(sed -n 's/.* claim=\([0-9a-f]*\) .*/\1/p' <<<"$BOUT")"
+  FAKE_REVIEW_BODY="no location here" append_reply integ-refund REQUEST_CHANGES
+  "$STATE" record integ-refund "$CLAIM" >/dev/null 2>&1
+  [[ "$(field "$SD/integ-refund.review-state" status)" == "$expected" ]] \
+    && ok "an integration reply that locates nothing is $expected" \
+    || bad "integration unlocated: wanted $expected, got $(field "$SD/integ-refund.review-state" status) ($BOUT)"
+done
+begin integ-refund 2
+FAKE_REVIEW_BODY="no location here" append_reply integ-refund REQUEST_CHANGES
+"$STATE" record integ-refund "$CLAIM" >/dev/null 2>&1
+[[ "$BOUT" == *"attempt=2/2"* && "$(field "$SD/integ-refund.review-state" status)" == NO_FINDINGS && "$(field "$SD/integ-refund.review-loop" attempts)" == 1 ]] \
+  && ok "the normal round after it still has the set's one returned attempt" \
+  || bad "refund after integration: $BOUT status=$(field "$SD/integ-refund.review-state" status) attempts=$(field "$SD/integ-refund.review-loop" attempts)"
+"$STATE" reset integ-refund >/dev/null 2>&1
 git checkout -q main
 
 echo "== a claim with no completed dispatch record can be released =="
@@ -667,6 +716,21 @@ printf '%s\n' "$SOUT" | awk '
 ' \
   && ok "ordinary thread rows do not infer an approval-like verdict from log prose" \
   || bad "status still decorates ordinary threads with an inferred verdict: $SOUT"
+
+echo "== a round whose prompt lacked the generated footer is not recorded =="
+begin footerless 3
+FL_BASE="$(field "$SD/footerless.candidate" base_sha)"
+"$PLUGIN/scripts/codex-thread.sh" footerless --strict <<EOF >/dev/null
+REQUIRED_REVIEW
+BASE_SHA: $FL_BASE
+CANDIDATE_SHA: $(git rev-parse HEAD)
+SPEC_PATH: docs/spec.md
+Review the candidate.
+EOF
+"$STATE" record footerless "$CLAIM" >/dev/null 2>"$T/err"; RC=$?
+[[ "$RC" -eq 11 && "$(field "$SD/footerless.review-state" reason)" == prompt_scope_mismatch ]] \
+  && ok "a direct dispatch with the header alone earns no approval" \
+  || bad "footerless round rc=$RC reason=$(field "$SD/footerless.review-state" reason)"
 
 echo "== fail closed on candidate and prompt drift =="
 begin dirty 3

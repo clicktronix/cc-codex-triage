@@ -16,18 +16,23 @@ review rows.
    version 1 field set.
 3. One required contract exists per base SHA and spec path in a state directory. The spec path
    is compared and stored as Git tracks it, so `docs/./spec.md` and `docs/spec.md` are one
-   contract. `begin` on a second thread answers `CONTRACT_EXISTS` (exit 10), names the holder
+   contract, also against state an earlier version saved under another spelling; a thread saved
+   that way resumes and keeps its spelling. `begin` on a second thread answers `CONTRACT_EXISTS` (exit 10), names the holder
    and leaves no state. Two first claims that race do not both succeed, and a first claim
    interrupted before its check is checked when it is repeated. A reset of the holder frees the
    contract.
 4. A `REQUEST_CHANGES` reply without a located finding returns its attempt once per set of rounds;
    the next one counts: it is recorded as `REQUEST_CHANGES` with reason `unlocated_findings`, or
-   at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. A location is
-   a name with a directory part, or a file at the root of the candidate or base tree:
-   `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory are not locations.
+   at the cap as `CAP_REACHED` with a refusal that says the reply located nothing. An integration
+   round reserves no attempt: its first such reply is free, its second is `REQUEST_CHANGES`, and
+   neither spends the attempt a normal round may have returned. A location is a file of the
+   candidate or base tree, or a name those trees do not know that has a directory part:
+   `localhost:3000`, `node:20`, `sha256:1`, `step:2` and a directory are not locations, while
+   `C++.md:1`, `(app.txt:1)` and `app/(auth)/[id]/page.tsx:12` are.
 5. `footer <thread>` prints the closing lines of a required prompt. While a claim is pending,
    `preflight` (and so `dispatch.sh`) exits 14 without dispatching unless the prompt ends with
-   exactly those lines. `verdict.sh` ignores trailing spaces, tabs and CR on reply lines and
+   exactly those lines, and `record` refuses a round whose logged prompt does not, as it does for
+   the header (`STALE`, `prompt_scope_mismatch`). `verdict.sh` ignores trailing spaces, tabs and CR on reply lines and
    still rejects a verdict line that carries anything else.
 6. `STALE (dirty_worktree)` lists the paths in the way, twenty and a count of the rest. The footer asks the reviewer to leave the
    worktree as found. The sandbox of a required round is unchanged.
@@ -37,8 +42,8 @@ review rows.
 8. `--base` resolving to the candidate HEAD is refused with exit 1 and leaves no state.
 9. The `PENDING` refusal of `begin` names the file that holds the claim token, and the Recovery
    section says how to finish a claim whose token was lost.
-10. `commands/review.md` says that an advisory review stores no round count and how to recount it
-    from the thread log. No new state is kept for advisory reviews.
+10. `commands/review.md` says that an advisory review stores no round count, how to recount its
+    own prompts in the thread log, and to report an unknown count when the log cannot tell. No new state is kept for advisory reviews.
 11. The pane lists the five required-review states written last, by file time, a `+N older` line
     for the rest, and an approval with the short SHA of its commit. A long thread name is cut
     before the state is.
@@ -62,10 +67,9 @@ The usage line stays one line and keeps `--integration`, `check <thread>` and
 
 ## Not in scope
 
-- A footer check inside the driver. The header is not checked there either: required rounds are
-  dispatched through `dispatch.sh`, whose preflight runs before the paid call, and a direct driver
-  call is the user-only `/thread`. A missing footer cannot produce an approval, since the verdict
-  parser stays strict; a missing header is refused by `record`.
+- A header or footer check inside the driver. Required rounds are dispatched through
+  `dispatch.sh`, whose preflight runs before the paid call; a round that reached the driver
+  another way is refused by `record`.
 - A read-only sandbox for required rounds. Considered and declined by the owner: a reviewer's
   leftover file cost at most one round in 132.
 - Carrying a used-up cap across a reset. `/thread-new` stays the owner-authorized way to start a

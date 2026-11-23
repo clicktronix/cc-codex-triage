@@ -123,7 +123,7 @@ clean_candidate() {
   [ -z "$_status" ]
 }
 prompt_scope_exact() {
-  SPEC_PATH_EXACT="$4" awk -v base="$2" -v head="$3" '
+  SPEC_PATH_EXACT="$4" FOOTER_EXACT="$FOOTER" awk -v base="$2" -v head="$3" '
     /^PROMPT:/ { prompt=1; next }
     /^REPLY:/ { prompt=0 }
     !prompt { next }
@@ -137,8 +137,10 @@ prompt_scope_exact() {
       expected[2]="BASE_SHA: " base
       expected[3]="CANDIDATE_SHA: " head
       expected[4]="SPEC_PATH: " ENVIRON["SPEC_PATH_EXACT"]
-      if (bad || n < 4) exit 1
+      feet=split(ENVIRON["FOOTER_EXACT"], foot, "\n")
+      if (bad || n < 4 + feet) exit 1
       for (i=1; i<=4; i++) if (lines[i] != expected[i]) exit 1
+      for (i=1; i<=feet; i++) if (lines[n - feet + i] != foot[i]) exit 1
       for (i=1; i<=n; i++) for (j=1; j<=4; j++) if (lines[i] == expected[j]) count[j]++
       for (j=1; j<=4; j++) if (count[j] != 1) exit 1
     }
@@ -209,9 +211,15 @@ approval_gap() {
 # The thread, other than this one, whose contract already covers this base and spec. The cap belongs
 # to the contract, so a second thread on the same base and spec would be a second cap: threads
 # named x, x-v2, x-v3 and x-v4 once ran ten rounds on a cap of three.
+# The path as Git tracks it, or nothing: `docs/./spec.md` and `docs/spec.md` are one spec.
+tracked_spec() { git --literal-pathspecs ls-files -z --error-unmatch -- "$1" 2>/dev/null | tr -d '\0'; }
 same_contract() { # $1=state file $2=its thread
+  local saved tracked
   [ -f "$1" ] && [ ! -L "$1" ] && [ "$2" != "$THREAD" ] \
-    && [ "$(field "$1" base_sha)" = "$BASE_SHA" ] && [ "$(field "$1" spec_path)" = "$SPEC_PATH" ]
+    && [ "$(field "$1" base_sha)" = "$BASE_SHA" ] || return 1
+  # State written before paths were stored as tracked can spell the same file another way.
+  saved="$(field "$1" spec_path)"; tracked="$(tracked_spec "$saved")"
+  [ "${tracked:-$saved}" = "$SPEC_TRACKED" ]
 }
 contract_holder() {
   local path name journals
@@ -330,12 +338,16 @@ $FOOTER"
     case "$SPEC_PATH" in ' '*|*' ') echo "spec path must not start or end with a space" >&2; exit 1 ;; esac
     [ ! -L "$SPEC_PATH" ] || { echo "required review spec must not be a symlink: $SPEC_PATH" >&2; exit 13; }
     [ -f "$SPEC_PATH" ] || { echo "spec file not found: $SPEC_PATH" >&2; exit 1; }
-    # The contract is keyed by the path as Git tracks it: `docs/./spec.md` and `docs/spec.md` are
-    # one spec, and compared as typed they opened two contracts.
-    SPEC_TYPED="$SPEC_PATH"
-    SPEC_PATH="$(git --literal-pathspecs ls-files -z --error-unmatch -- "$SPEC_TYPED" 2>/dev/null | tr -d '\0')"
-    [ -n "$SPEC_PATH" ] \
-      || { echo "required review spec must be tracked in the clean candidate: $SPEC_TYPED" >&2; exit 13; }
+    # The contract is keyed by the path as Git tracks it: compared as typed, two spellings of one
+    # spec opened two contracts. This thread's own journal or loop, when it was saved under
+    # another spelling of the same file, keeps that spelling.
+    SPEC_TRACKED="$(tracked_spec "$SPEC_PATH")"
+    [ -n "$SPEC_TRACKED" ] \
+      || { echo "required review spec must be tracked in the clean candidate: $SPEC_PATH" >&2; exit 13; }
+    SPEC_PATH="$SPEC_TRACKED"
+    for SAVED_SPEC in "$(field "$PREPARED" spec_path)" "$(field "$LOOP_STATE" spec_path)"; do
+      [ -z "$SAVED_SPEC" ] || [ "$(tracked_spec "$SAVED_SPEC")" != "$SPEC_TRACKED" ] || SPEC_PATH="$SAVED_SPEC"
+    done
     BASE_SHA="$(git rev-parse --verify --end-of-options "$BASE_REF^{commit}" 2>/dev/null)" \
       || { echo "cannot resolve review base: $BASE_REF" >&2; exit 1; }
     clean_candidate || { echo "required review needs a clean candidate commit" >&2; exit 13; }
@@ -381,8 +393,6 @@ $FOOTER"
       esac
       valid_decimal "$LOOP_START" 7 \
         || { echo "invalid required review loop state" >&2; exit 1; }
-      # A loop pinned before paths were stored as tracked keeps the spelling it was pinned with.
-      [ "$LOOP_SPEC_PATH" != "$SPEC_TYPED" ] || SPEC_PATH="$SPEC_TYPED"
       [ "$LOOP_BASE_SHA" = "$BASE_SHA" ] \
         && [ "$LOOP_SPEC_PATH" = "$SPEC_PATH" ] \
         && [ "$LOOP_CAP" = "$CAP" ] \
@@ -402,7 +412,7 @@ $FOOTER"
     # candidate and nothing else changed: HEAD is a merge whose first parent is that candidate.
     # It is a real round, reviewing the integration, but it does not count against the cap —
     # frequent target merges would otherwise use up the cap without a single new finding.
-    INTEGRATION_OF=""
+    INTEGRATION_OF=""; INTEGRATION_RETRY=""
     if $INTEGRATION; then
       # Allowed right after the approval, or again after a technical failure of an integration
       # claim for this same HEAD (ABORTED, NO_FINDINGS). A real REQUEST_CHANGES never qualifies.
@@ -416,7 +426,11 @@ $FOOTER"
         ABORTED|NO_FINDINGS)
           [ -n "$PREV_INTEG" ] && [ "$(field "$CANDIDATE" head)" = "$HEAD_SHA" ] \
             || die 10 "INTEGRATION_REFUSED: only a failed integration claim for this same HEAD can be retried; this thread's last result is $LAST_STATUS"
-          INTEGRATION_OF="$PREV_INTEG" ;;
+          INTEGRATION_OF="$PREV_INTEG"
+          # An integration round reserves no attempt, so its one free reply without a located
+          # finding is counted here, apart from the attempt a normal round can have returned.
+          INTEGRATION_RETRY="$(field "$CANDIDATE" integration_retry)"
+          [ "$LAST_STATUS" != NO_FINDINGS ] || INTEGRATION_RETRY=true ;;
         *) die 10 "INTEGRATION_REFUSED: an integration round follows an approved candidate; this thread's last result is ${LAST_STATUS:-none}" ;;
       esac
       [ "$(git rev-list --parents -n 1 HEAD 2>/dev/null | wc -w | tr -d ' ')" -eq 3 ] \
@@ -444,7 +458,7 @@ $FOOTER"
     # One blocking verdict without a located finding is returned per set of rounds. The mark rides
     # in the claim record, which `renew` removes; the loop file keeps its field set.
     REFUNDED="$(field "$CANDIDATE" refunded)"
-    [ "$LAST_STATUS" != NO_FINDINGS ] || REFUNDED=true
+    [ "$LAST_STATUS" != NO_FINDINGS ] || [ -n "$(field "$CANDIDATE" integration_of)" ] || REFUNDED=true
     CLAIMED_AT="$(date +%s 2>/dev/null)"
     case "$CLAIMED_AT" in ''|*[!0-9]*) die 7 "cannot timestamp required-review claim" ;; esac
     CLAIM_TOKEN="$(printf '%s\n' "$ROOT" "$THREAD" "$HEAD_SHA" "$TREE_SHA" "$ATTEMPT" "$$" "$CLAIMED_AT" \
@@ -453,8 +467,8 @@ $FOOTER"
     LOG_BYTES="$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' ')"; LOG_BYTES="${LOG_BYTES:-0}"
     LOG_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || LOG_GEN=""
     valid_decimal "$LOG_GEN" 9 || LOG_GEN=0
-    printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\nintegration_of=%s\nrefunded=%s\ntimestamp=%s\n' \
-      "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$INTEGRATION_OF" "$REFUNDED" "$(timestamp)" \
+    printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\nintegration_of=%s\nintegration_retry=%s\nrefunded=%s\ntimestamp=%s\n' \
+      "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$INTEGRATION_OF" "$INTEGRATION_RETRY" "$REFUNDED" "$(timestamp)" \
       | atomic_write "$PREPARED" || exit 7
     # Checked after the journal is written, not before: each thread has its own lock, so two first
     # claims of one contract run side by side, and from here each is visible to the other. Whoever
@@ -559,7 +573,9 @@ $FOOTER"
         case "$location_rc" in 0|10) ;; *) die 7 "Cannot inspect findings; restore Python and retry record on this claim" ;; esac
         BLOCKING_REASON=blocking_findings_open
         [ "$location_rc" -eq 0 ] || BLOCKING_REASON=unlocated_findings
-        if [ "$location_rc" -eq 10 ] && [ -z "$(field "$CANDIDATE" refunded)" ]; then
+        FREE_USED="$(field "$CANDIDATE" refunded)"
+        [ -z "$(field "$CANDIDATE" integration_of)" ] || FREE_USED="$(field "$CANDIDATE" integration_retry)"
+        if [ "$location_rc" -eq 10 ] && [ -z "$FREE_USED" ]; then
           L_ATTEMPTS="$(field "$LOOP_STATE" attempts)"
           if [ -z "$(field "$CANDIDATE" integration_of)" ]; then
             valid_decimal "$L_ATTEMPTS" 7 && [ "$C_ATTEMPT" -gt 0 ] || die 10 "$INVALID_CLAIM_MSG"

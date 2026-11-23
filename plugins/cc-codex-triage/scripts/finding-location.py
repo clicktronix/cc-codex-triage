@@ -2,10 +2,10 @@
 
 usage: finding-location.py <record> [<revision>...]
 
-A name with a directory part counts by its shape, so a path in another repository does too. A bare
-name counts when it is a file at the root of one of the revisions, whatever it is made of;
-`localhost:3000`, `node:20`, `step:2` and a directory are not. Without revisions there is no tree
-to ask and every alphabetic bare name counts.
+A name that is a file in one of the revisions is a location, and one that is a directory there is
+not. A name the trees do not know counts when it has a directory part, so a path in another
+repository does; a bare one does not, so `localhost:3000`, `node:20` and `step:2` do not. Without
+revisions there is no tree to ask: a directory part or a letter is enough.
 """
 import re
 import subprocess
@@ -13,16 +13,31 @@ import sys
 import unicodedata
 from pathlib import Path
 
-location = re.compile(r"([\w./-]+|`[^`\n]+`):[1-9][0-9]*")
+# The characters of real paths: `C++.md`, `app/(auth)/[id]/page.tsx`, `packages/@scope/x.ts`.
+location = re.compile(r"([\w./@+()\[\]-]+|`[^`\n]+`):[1-9][0-9]*")
 revisions = sys.argv[2:]
 
 
-def at_root(name):
-    return any(
+def kinds(name):
+    return {
         subprocess.run(["git", "cat-file", "-t", f"{revision}:{name}"], capture_output=True,
-                       text=True).stdout.strip() == "blob"
+                       text=True).stdout.strip()
         for revision in revisions
-    )
+    }
+
+
+def is_location(name):
+    # Prose wraps a path in brackets, `(app.txt:1)` or `[app.txt](app.txt:1)`: the path may start
+    # after any of them. What a tree knows decides before the shape of the name does.
+    starts = [0] + [at + 1 for at, char in enumerate(name) if char in "(["]
+    found = set().union(*(kinds(name[start:]) for start in starts if name[start:]))
+    if "blob" in found:
+        return True
+    if "tree" in found:
+        return False
+    if "/" in name.strip("/"):
+        return True
+    return not revisions and any(c.isalpha() or c == "_" for c in name)
 
 
 def has_location(line):
@@ -32,10 +47,7 @@ def has_location(line):
     if not line.isascii():
         probe = "".join("_" if unicodedata.category(c).startswith("M") else c for c in line)
     for match in location.finditer(probe):
-        name = line[match.start(1):match.end(1)].strip("`")
-        if "/" in name.strip("/"):
-            return True
-        if at_root(name) if revisions else any(c.isalpha() or c == "_" for c in name):
+        if is_location(line[match.start(1):match.end(1)].strip("`")):
             return True
     return False
 

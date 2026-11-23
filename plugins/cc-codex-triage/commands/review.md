@@ -22,9 +22,10 @@ Send intent, scope and test evidence per the skill's Prompt boundary.
   Set `ONESHOT=1` for an ephemeral call and leave it empty otherwise. Forward explicit model and effort.
 - `--cap N` sets the round limit, 7 by default. Required review pins its first cap (1–7):
   omit `--cap` on resume. An advisory review stores no count: count this invocation's rounds.
-  After a lost context recount them in the thread log (`/status` prints the state directory)
-  as the round headers from this invocation's first prompt, the one that carries the lens
-  contract. When the log cannot show where it began, tell the user the count is unknown.
+  After a lost context recount them in the thread log (`/status` prints the state directory):
+  this invocation's first prompt, the one that carries the lens contract, and each later prompt
+  that reports what changed. Another command's turn on the thread is not a round. When the log
+  cannot show which prompts are this invocation's, tell the user the count is unknown.
 - `--required --base <ref> --spec <path>` selects the foreground exact-candidate
   protocol. Reject `--required` combined with `--once`, `--oneshot` or `--background` before dispatch.
 
