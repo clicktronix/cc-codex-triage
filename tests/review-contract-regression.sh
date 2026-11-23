@@ -45,7 +45,8 @@ mkdir -p docs/deep && printf 'nested\n' > docs/deep/x.md
 printf 'notes\n' > 'docs/Plan Notes.md'
 mkdir -p 'app/(auth)/[id]' && printf 'page\n' > 'app/(auth)/[id]/page.tsx'
 ln -s docs/deep deep-link
-git add docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md 'docs/Plan Notes.md' 'app/(auth)/[id]/page.tsx' deep-link
+printf '*.ignored\n' > .gitignore && printf 'built\n' > build.ignored
+git add .gitignore docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md 'docs/Plan Notes.md' 'app/(auth)/[id]/page.tsx' deep-link
 git commit -qm baseline
 BASE0="$(git rev-parse HEAD)"
 mkdir -p "$T/other-repo/src dir" && printf 'consumer\n' > "$T/other-repo/api.py" && printf 'consumer\n' > "$T/other-repo/src dir/client.py"
@@ -280,7 +281,8 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     "$REPO:12 is the worktree itself" "\`x ? b:1 : c\` is code, not a path" "../other-repo/missing.py:12 does not exist" "$T/other-repo:12 is a directory elsewhere" \
     "/no/such/dir/api.py:12 does not exist" "see other-repo/api.py:12 with no way to find it" \
     "myapp.txt:1 only ends like a tracked name" "untracked.txt:1 was never committed" \
-    "missing/app.txt:12 is no path of the tree" "https://example.com/app.txt:12 is a link"; do
+    "missing/app.txt:12 is no path of the tree" "https://example.com/app.txt:12 is a link" \
+    "build.ignored:1 is not tracked" "$REPO/build.ignored:1 is not tracked under its absolute path either"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -294,7 +296,7 @@ for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 
     "(app.txt:1) has the wrong word" "[app.txt](app.txt:1) has the wrong word" "app/(auth)/[id]/page.tsx:12 skips the guard" \
     "123:1 holds the wrong text" "legacy.txt:1 was still read by the importer" "docs/spec.md:1 requires the opposite" \
     "\`app.txt\`:1 has the wrong word" "deep-link:1 points at the wrong directory" "$REPO/deep-link:1 by its absolute path" \
-    "../other-repo/api.py:12 still calls the removed field" "$T/other-repo/api.py:12 still calls the removed field" \
+    "../repo/app.txt:1 reaches the tracked file the long way round" "../other-repo/api.py:12 still calls the removed field" "$T/other-repo/api.py:12 still calls the removed field" \
     "[client.py]($T/other-repo/src dir/client.py:7) reads the old shape" \
     "app.txt:12-15 repeats the block" "app.txt:3:7 has a stray character" "**app.txt**:1 has the wrong word" \
     "\"docs/Plan Notes.md\":12 drops a step"; do

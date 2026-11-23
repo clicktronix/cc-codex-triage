@@ -28,8 +28,9 @@ review rows.
    neither spends the attempt a normal round may have returned. A location is `<path>:<line>`
    where `<path>` is a file tracked in the candidate or in its base and written from the
    repository root (bare, after `./`, or after the worktree's absolute path), or a file outside
-   those trees that exists, written absolute or from the root with `../` (a finding in a
-   consumer repository). The reply is searched for the tracked paths themselves, so a code span,
+   the worktree that exists, written absolute or from the root with `../` (a finding in a
+   consumer repository); such a spelling that leads back into the worktree counts only for a
+   tracked file, so an ignored build file is no location under any spelling. The reply is searched for the tracked paths themselves, so a code span,
    brackets, quotes and composed or decomposed marks all cite the same file. A directory, a
    submodule, a path to nothing, a tracked name behind another directory (`missing/app.txt:1`),
    `localhost:3000`, `node:20`, `sha256:1` and `step:2` name no file.
