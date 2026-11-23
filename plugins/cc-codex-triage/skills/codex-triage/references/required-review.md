@@ -42,7 +42,8 @@ and only `/thread-new` starts a new contract.
 
    The header is `REQUIRED_REVIEW`, `BASE_SHA:`, `CANDIDATE_SHA:` and `SPEC_PATH:` with the full
    values of the claimed candidate, once each. The footer is the verdict rule: the two verdicts
-   `APPROVE` and `REQUEST_CHANGES`, findings located as `file:line`, a worktree left as found,
+   `APPROVE` and `REQUEST_CHANGES`, findings located as `path:line` from the repository root
+   (in a code span when the path has spaces), a worktree left as found,
    and the bare final line. `dispatch.sh` checks both before calling Codex and exits 14 without
    dispatching when they differ; the claim stays live. `record` reads both again in the logged
    prompt, so a round dispatched without them ends as `STALE (prompt_scope_mismatch)`.
@@ -93,7 +94,8 @@ and only `/thread-new` starts a new contract.
 
 ## Outcomes
 
-- `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
+- `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single located finding, a
+  `path:line` whose path is a file of the reviewed trees or an existing file outside them; the
   attempt was returned. Begin again and ask for the findings with their locations. One attempt
   is returned per set of rounds: the next such reply is recorded as `REQUEST_CHANGES` and counts,
   and at the cap it ends the set like any blocking verdict.

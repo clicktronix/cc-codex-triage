@@ -23,7 +23,7 @@ ROUND_HELPER="$SELF_DIR/round-counter.sh"
 # The closing lines of a required prompt. Generated like the header, because a typed instruction drifts:
 # one asked for `APPROVE <candidate sha>`, the reviewer complied, and the round had no verdict.
 readonly FOOTER="Required review accepts two verdicts: put what a lens would label COMMENT in the body, and answer APPROVE when no blocking finding remains.
-REQUEST_CHANGES names every blocking finding as file:line; for something missing, cite the spec line that requires it.
+REQUEST_CHANGES names every blocking finding as path:line, the path from the repository root and in a code span when it has spaces; for something missing, cite the spec line that requires it.
 Leave the worktree as you found it: remove every file a command of yours creates.
 End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES."
 readonly INVALID_CLAIM_MSG="INVALID_CLAIM_STATE: inspect saved state; follow the Recovery section of references/required-review.md before resetting this thread"

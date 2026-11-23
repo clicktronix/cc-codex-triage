@@ -6,12 +6,14 @@ A citation is `<path>:<line>`. Its path is taken whole: the content of a code sp
 citation or ends right before the colon, otherwise the word before the colon without the brackets,
 quotes and Markdown link text that open it. A name with spaces is therefore read inside a code span.
 
-The path is a location when it names
-- a file tracked in one of the revisions (the candidate and its base, so a deleted file counts),
-  written from the repository root, after `./`, or by any spelling that leads into the worktree;
-- or, outside the worktree, a file that exists, written absolute or with `../` (a finding in a
-  consumer repository).
-A directory, a submodule, a link address and a path to nothing name no file.
+The path names a file when
+- it is, as written, a file tracked in one of the revisions (the candidate and its base, so a
+  deleted file counts), bare, after `./`, or after the worktree's own absolute path;
+- or the file system resolves it to a file: inside the worktree that file must be tracked, outside
+  it existing is enough (a finding in a consumer repository).
+Nothing is normalized here: `..`, a symlinked directory and a trailing slash are the file system's
+to resolve, so a path through a missing directory names nothing. A directory, a submodule, an
+ignored file and a link address name no file.
 Exit 0 when a location is found, 10 when the reply holds none.
 """
 import os
@@ -40,35 +42,57 @@ for revision in sys.argv[2:]:
         if name and kind.split()[1] == "blob":
             tracked.add(composed(name))
 line_number = re.compile(r":[1-9]")
+backticks = re.compile(r"`+")
 
 
 def names_file(path):
-    if not path or "://" in path or path.endswith("/"):
+    if not path or "://" in path:
         return False
-    if not os.path.isabs(path):
-        path = os.path.normpath(path)
-        if not path.startswith(".."):
-            return composed(path) in tracked
-    # The last component is kept as written: a tracked symlink is the entry, not its target.
-    physical = composed(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))
+    written = path
+    while written.startswith("./"):
+        written = written[2:]
+    if composed(written) in tracked:
+        return True
+    if os.path.isabs(path):
+        # The worktree's own path in front of a tracked one, also for a file the candidate deleted.
+        for at in range(1, len(path)):
+            if path[at] == "/" and composed(path[at + 1:]) in tracked \
+                    and os.path.isdir(path[:at]) and composed(os.path.realpath(path[:at])) == root:
+                return True
+    if not os.path.isfile(path):
+        return False
+    physical = composed(os.path.realpath(path))
     if (physical + os.sep).startswith(root + os.sep):
-        # Inside the worktree the trees decide, also for a file the candidate deleted.
         return physical[len(root) + 1:] in tracked
-    return os.path.isfile(path)
+    return True
+
+
+def code_spans(line):
+    """(content start, content end, end of the closing run) of each span: runs of equal length pair."""
+    runs = [match.span() for match in backticks.finditer(line)]
+    spans, at = [], 0
+    while at < len(runs):
+        size = runs[at][1] - runs[at][0]
+        close = next((to for to in range(at + 1, len(runs)) if runs[to][1] - runs[to][0] == size), None)
+        if close is None:
+            at += 1
+            continue
+        spans.append((runs[at][1], runs[close][0], runs[close][1]))
+        at = close + 1
+    return spans
 
 
 def cited_paths(line, colon):
-    ticks = [at for at, char in enumerate(line) if char == "`"]
-    for opened, closed in zip(ticks[0::2], ticks[1::2]):
-        if opened < colon < closed:
-            return [line[opened + 1:colon]]
-        if closed == colon - 1:
-            return [line[opened + 1:closed]]
+    for start, end, closed in code_spans(line):
+        if start <= colon < end:
+            return [line[start:colon].strip()]
+        if closed == colon:
+            return [line[start:end].strip()]
     word = line[max(line.rfind(" ", 0, colon), line.rfind("\t", 0, colon)) + 1:colon]
     paths = []
     # As written first: a quote can be the last character of a file name.
     for text in (word, word.rstrip(CLOSERS)):
-        paths += [text, text.lstrip(OPENERS), text.rpartition("](")[2]]
+        paths += [text, text.lstrip(OPENERS), text.rpartition("](")[2].lstrip(OPENERS)]
     return paths
 
 

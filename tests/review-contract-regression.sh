@@ -45,8 +45,9 @@ mkdir -p docs/deep && printf 'nested\n' > docs/deep/x.md
 printf 'notes\n' > 'docs/Plan Notes.md'
 mkdir -p 'app/(auth)/[id]' && printf 'page\n' > 'app/(auth)/[id]/page.tsx'
 ln -s docs/deep deep-link
+ln -s docs doc-alias
 printf '*.ignored\n' > .gitignore && printf 'built\n' > build.ignored
-git add .gitignore docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md 'docs/Plan Notes.md' 'app/(auth)/[id]/page.tsx' deep-link
+git add .gitignore docs/spec.md Dockerfile legacy.txt 123 'C++.md' docs/deep/x.md 'docs/Plan Notes.md' 'app/(auth)/[id]/page.tsx' deep-link doc-alias
 git commit -qm baseline
 BASE0="$(git rev-parse HEAD)"
 mkdir -p "$T/other-repo/src dir" && printf 'consumer\n' > "$T/other-repo/api.py" && printf 'consumer\n' > "$T/other-repo/src dir/client.py"
@@ -287,9 +288,14 @@ loc_rc() { printf 'REPLY:\n  %s\n  REQUEST_CHANGES\n' "$1" > "$T/loc.log"; (cd "
   && ok "a submodule entry is not a file" || bad "submodule counted as a location"
 [[ "$(loc_rc "\`owners':12\` lists a former member")" == 0 && "$(loc_rc "owners':12 lists a former member")" == 0 ]] \
   && ok "a name that ends in a quote is read as written before quotes are taken for formatting" || bad "owners' not recognized"
-[[ "$(loc_rc "$NFD_ROOT/legacy.txt:1 was still needed")" == 0 && "$(loc_rc "$NFC_ROOT/legacy.txt:1 was still needed")" == 0 ]] \
-  && ok "a deleted file is found by its absolute path, whichever way the worktree's name is composed" \
-  || bad "absolute path to a deleted file in a decomposed worktree: $(loc_rc "$NFD_ROOT/legacy.txt:1 x") $(loc_rc "$NFC_ROOT/legacy.txt:1 x")"
+[[ "$(loc_rc "$NFD_ROOT/legacy.txt:1 was still needed")" == 0 ]] \
+  && ok "a deleted file is found by the absolute path of a worktree whose name is decomposed" \
+  || bad "absolute path to a deleted file in a decomposed worktree"
+# Only a file system that folds the two compositions makes the composed spelling the same directory.
+if [ -d "$NFC_ROOT" ]; then
+  [[ "$(loc_rc "$NFC_ROOT/legacy.txt:1 was still needed")" == 0 ]] \
+    && ok "and by the composed spelling of that worktree's name" || bad "composed spelling of a decomposed worktree"
+fi
 for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs" "step:2 fails" "open example.com:3000" \
     "see http://example.com:8080/x" "docs:12 is a directory" "docs/deep:12 is a directory too" "(docs/deep:12) is one in brackets" \
     "$REPO/docs/deep:12 is one by its absolute path" "$(pwd -P)/docs/deep:12 is one by its physical path" "./docs/deep/:12 is one with a dot" \
@@ -299,7 +305,9 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     "https://example.com/app.txt:12 is a link" "https:/$T/other-repo/api.py:12 is a link whose path exists on disk" \
     "\`missing+app.txt:12\` only ends like a tracked name" "\`My app.txt:12\` is another file's name" "call(app.txt:12 is not a citation" \
     "build.ignored:1 is not tracked" "$REPO/build.ignored:1 is not tracked under its absolute path either" \
-    "docs/Plan Notes.md:12 has spaces and no code span" "app.txt/:1 is spelled as a directory"; do
+    "docs/Plan Notes.md:12 has spaces and no code span" "app.txt/:1 is spelled as a directory" \
+    "missing/../app.txt:1 crosses a directory that is not there" "app.txt/../app.txt:1 crosses a file" \
+    "$REPO/missing/../app.txt:1 crosses a missing directory by its absolute path" "docs/../legacy.txt:1 is deleted and cannot be resolved"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -319,6 +327,9 @@ for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 
     "../other-repo/api.py:12 still calls the removed field" "$T/other-repo/api.py:12 still calls the removed field" \
     "docs/../../other-repo/api.py:12 leaves the worktree on the way" \
     "\`$T/other-repo/src dir/client.py:7\` reads the old shape" \
+    "\`doc-alias/Plan Notes.md:12\` goes through a tracked link to a directory" "\`$REPO/doc-alias/Plan Notes.md:12\` does so by its absolute path" \
+    "\`\`docs/Plan Notes.md:12\`\` sits in a double code span" "\`\` docs/Plan Notes.md \`\`:12 sits in a padded one" \
+    "[finding](<app.txt:12>) uses an angle destination" \
     "app.txt:12-15 repeats the block" "app.txt:3:7 has a stray character"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
