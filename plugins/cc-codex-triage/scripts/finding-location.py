@@ -3,9 +3,9 @@
 usage: finding-location.py <record> <revision>...
 
 A location is `<path>:<line>` where `<path>` is a file tracked in one of the revisions (the
-candidate and its base, so a deleted file counts). The reply is searched for the tracked paths
-themselves, so quoting, brackets, spaces in a name, a leading `./` and an absolute spelling need no
-rule of their own. A finding can also sit in a consumer outside these trees: there `<path>` is a
+candidate and its base, so a deleted file counts), written from the repository root: bare, after
+`./`, or after the worktree's absolute path. The reply is searched for the tracked paths
+themselves, so quoting, brackets and spaces in a name need no rule of their own. A finding can also sit in a consumer outside these trees: there `<path>` is a
 file that exists, written absolute or from the repository root with `../`. A directory, a path to
 nothing and `localhost:3000` name no file. Run at the repository root.
 Exit 0 when a location is found, 10 when the reply holds none.
@@ -23,34 +23,52 @@ def composed(text):
     return unicodedata.normalize("NFC", text)
 
 
+root = os.path.realpath(os.getcwd())
 tracked = set()
 for revision in sys.argv[2:]:
-    listing = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", revision],
-                             capture_output=True, check=True).stdout
-    tracked.update(composed(name) for name in listing.decode("utf-8", "surrogateescape").split("\0") if name)
+    listing = subprocess.run(["git", "ls-tree", "-r", "-z", revision], capture_output=True, check=True).stdout
+    for entry in listing.decode("utf-8", "surrogateescape").split("\0"):
+        kind, _, name = entry.partition("\t")
+        # A symlink is a blob; a submodule is a commit and holds no line of this review.
+        if name and kind.split()[1] == "blob":
+            tracked.add(composed(name))
 longest = max(map(len, tracked), default=0)
 line_number = re.compile(r":[1-9]")
 
 
 def begins_name(line, start):
-    # `myapp.txt:1` does not cite `app.txt`, and `x/etc/hosts:1` does not cite `/etc/hosts`.
-    return not (start and (line[start - 1].isalnum() or line[start - 1] in "_.-"))
+    # `myapp.txt:1` does not cite `app.txt`, and `missing/app.txt:1` does not either.
+    return not (start and (line[start - 1].isalnum() or line[start - 1] in "_.-/"))
+
+
+def from_root(line, start):
+    """Whether the tracked path at `start` is the whole cited path, written from the root."""
+    if begins_name(line, start):
+        return True
+    if line.startswith("./", start - 2) and begins_name(line, start - 2):
+        return True
+    return any(
+        line[at] == "/" and begins_name(line, at) and os.path.realpath(line[at:start]) == root
+        for at in range(start - 1)
+    )
 
 
 def path_ends(text):
     for match in line_number.finditer(text):
         end = match.start()
-        # A quote can close before the line number: `app.txt`:1, "app.txt":1, **app.txt**:1.
+        yield end
+        # A quote can close before the line number: `app.txt`:1, "app.txt":1, **app.txt**:1. Tried
+        # after the text as written, since a quote can also be the last character of a name.
         while end and text[end - 1] in "`\"'*":
             end -= 1
-        yield end
+            yield end
 
 
 def has_location(line):
     names = composed(line)
     for end in path_ends(names):
         for start in range(max(0, end - longest), end):
-            if names[start:end] in tracked and begins_name(names, start):
+            if names[start:end] in tracked and from_root(names, start):
                 return True
     # The disk is asked with the reply's own bytes: a file system can tell the two spellings apart.
     for end in path_ends(line):

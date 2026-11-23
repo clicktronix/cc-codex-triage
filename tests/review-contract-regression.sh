@@ -279,7 +279,8 @@ for body in "see localhost:3000" "image node:20 is old" "digest sha256:1 differs
     "$REPO/docs/deep:12 is one by its absolute path" "$(pwd -P)/docs/deep:12 is one by its physical path" "./docs/deep/:12 is one with a dot" \
     "$REPO:12 is the worktree itself" "\`x ? b:1 : c\` is code, not a path" "../other-repo/missing.py:12 does not exist" "$T/other-repo:12 is a directory elsewhere" \
     "/no/such/dir/api.py:12 does not exist" "see other-repo/api.py:12 with no way to find it" \
-    "myapp.txt:1 only ends like a tracked name" "untracked.txt:1 was never committed"; do
+    "myapp.txt:1 only ends like a tracked name" "untracked.txt:1 was never committed" \
+    "missing/app.txt:12 is no path of the tree" "https://example.com/app.txt:12 is a link"; do
   begin loc 2
   FAKE_REVIEW_BODY="$body" append_reply loc REQUEST_CHANGES
   "$STATE" record loc "$CLAIM" >/dev/null 2>&1
@@ -304,6 +305,18 @@ for body in "\`docs/Plan Notes.md:12\` drops a step" "\`docs/Plan Notes.md\`:12 
     && ok "'$body' is a located finding" || bad "'$body' not recognized: $(field "$SD/loc.review-state" status)"
   "$STATE" reset loc >/dev/null 2>&1
 done
+
+# A submodule is a directory, and a quote can be the last character of a file name.
+LOCREPO="$T/loc-repo"; mkdir -p "$LOCREPO/vendor/widget" && (
+  cd "$LOCREPO" && git init -q -b main . && git config user.name test && git config user.email test@example.com \
+    && printf 'team\n' > "owners'" && git add "owners'" && git commit -qm base \
+    && git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),vendor/widget" && git commit -qm "add a submodule entry"
+)
+loc_rc() { printf 'REPLY:\n  %s\n  REQUEST_CHANGES\n' "$1" > "$T/loc.log"; (cd "$LOCREPO" && python3 "$PLUGIN/scripts/finding-location.py" "$T/loc.log" HEAD); echo $?; }
+[[ "$(loc_rc 'vendor/widget:12 pins an old commit')" == 10 ]] \
+  && ok "a submodule entry is not a file" || bad "submodule counted as a location"
+[[ "$(loc_rc "\`owners':12\` lists a former member")" == 0 ]] \
+  && ok "a name that ends in a quote is matched before quotes are taken for formatting" || bad "owners' not recognized"
 
 echo "== an integration round after an approval does not spend the cap =="
 git checkout -q -b integ-target
