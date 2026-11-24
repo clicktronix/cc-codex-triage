@@ -3,6 +3,8 @@
 #
 # begin <thread> --base <ref> --spec <repo-relative-path> [--cap N]
 #                                capture a clean HEAD/tree candidate
+# header <thread> | footer <thread>
+#                                the generated first and last lines of the round's prompt
 # advisory-check <thread>        refuse advisory use of a required thread
 # mode <thread>                  print required or advisory; reads only
 # record <thread> <claim-token>   record the latest post-begin verdict
@@ -18,10 +20,16 @@ VERDICT_HELPER="$SELF_DIR/verdict.sh"
 ROUND_HELPER="$SELF_DIR/round-counter.sh"
 . "$SELF_DIR/dir-lock.sh"
 
+# The closing lines of a required prompt. Generated like the header, because a typed instruction drifts:
+# one asked for `APPROVE <candidate sha>`, the reviewer complied, and the round had no verdict.
+readonly FOOTER="Required review accepts two verdicts: put what a lens would label COMMENT in the body, and answer APPROVE when no blocking finding remains.
+REQUEST_CHANGES names every blocking finding as path:line, the path from the repository root and in a code span when it has spaces; for something missing, cite the spec line that requires it.
+Leave the worktree as you found it: remove every file a command of yours creates.
+End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES."
 readonly INVALID_CLAIM_MSG="INVALID_CLAIM_STATE: inspect saved state; follow the Recovery section of references/required-review.md before resetting this thread"
 
 usage() {
-  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> [--cap N] [--integration] | header <thread> | preflight <thread> (prompt on stdin) | advisory-check <thread> | mode <thread> | record <thread> <claim-token> | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | renew <thread> --by <who> | reset <thread>" >&2
+  echo "usage: review-state.sh begin <thread> --base <ref> --spec <repo-relative-path> [--cap N] [--integration] | header <thread> | footer <thread> | preflight <thread> (prompt on stdin) | advisory-check <thread> | mode <thread> | record <thread> <claim-token> | abort <thread> <dispatch-failure|timeout|tool-failure> <claim-token> | check <thread> | renew <thread> --by <who> [--rounds N] | reset <thread>" >&2
   exit 1
 }
 die() { _code="$1"; shift; echo "$*" >&2; exit "$_code"; }
@@ -37,7 +45,7 @@ fi
 cd "$ROOT" || exit 7
 # preflight runs before every persistent dispatch and only reads: no claim must leave no state behind.
 case "$VERB" in
-  mode|preflight) STATE_DIR="$(bash "$STATE_HELPER" --read-only)" || exit $? ;;
+  mode|preflight|footer) STATE_DIR="$(bash "$STATE_HELPER" --read-only)" || exit $? ;;
   *) STATE_DIR="$(bash "$STATE_HELPER")" || exit $? ;;
 esac
 CANDIDATE="$STATE_DIR/$THREAD.candidate"
@@ -115,7 +123,7 @@ clean_candidate() {
   [ -z "$_status" ]
 }
 prompt_scope_exact() {
-  SPEC_PATH_EXACT="$4" awk -v base="$2" -v head="$3" '
+  SPEC_PATH_EXACT="$4" FOOTER_EXACT="$FOOTER" awk -v base="$2" -v head="$3" '
     /^PROMPT:/ { prompt=1; next }
     /^REPLY:/ { prompt=0 }
     !prompt { next }
@@ -129,8 +137,10 @@ prompt_scope_exact() {
       expected[2]="BASE_SHA: " base
       expected[3]="CANDIDATE_SHA: " head
       expected[4]="SPEC_PATH: " ENVIRON["SPEC_PATH_EXACT"]
-      if (bad || n < 4) exit 1
+      feet=split(ENVIRON["FOOTER_EXACT"], foot, "\n")
+      if (bad || n < 4 + feet) exit 1
       for (i=1; i<=4; i++) if (lines[i] != expected[i]) exit 1
+      for (i=1; i<=feet; i++) if (lines[n - feet + i] != foot[i]) exit 1
       for (i=1; i<=n; i++) for (j=1; j<=4; j++) if (lines[i] == expected[j]) count[j]++
       for (j=1; j<=4; j++) if (count[j] != 1) exit 1
     }
@@ -165,6 +175,80 @@ publish_claim() {
   rm "$PREPARED" || exit 7
   echo "PENDING head=$HEAD_SHA tree=$TREE_SHA claim=$token attempt=$attempt/$CAP${integ:+ integration_of=$integ}"
 }
+# Says why the recorded approval does not cover the current clean candidate and returns the exit
+# code `check` reports; silent and 0 when it does.
+approval_gap() {
+  [ -f "$CANDIDATE" ] && [ -f "$REVIEW_STATE" ] && [ -f "$APPROVED" ] \
+    || { echo "NO_APPROVAL"; return 10; }
+  # APPROVED is published in two renames: first the live review state, then
+  # its immutable approval copy. A failure between them must not combine a
+  # new status with an older candidate identity. Exact byte equality proves
+  # both files are one publication generation; the claim token then binds
+  # that generation to the candidate captured by begin.
+  cmp -s "$REVIEW_STATE" "$APPROVED" \
+    || { echo "NO_APPROVAL: incomplete approval publication"; return 10; }
+  [ "$(field "$REVIEW_STATE" status)" = APPROVED ] \
+    && [ "$(field "$REVIEW_STATE" gate_eligible)" = true ] \
+    && [ "$(field "$APPROVED" verdict)" = APPROVE ] \
+    && [ -n "$(field "$APPROVED" base_sha)" ] \
+    && [ -n "$(field "$APPROVED" spec_path)" ] \
+    && [ -n "$(field "$APPROVED" claim_token)" ] \
+    && [ "$(field "$APPROVED" claim_token)" = "$(field "$CANDIDATE" claim_token)" ] \
+    && [ "$(field "$APPROVED" head)" = "$(field "$CANDIDATE" head)" ] \
+    && [ "$(field "$APPROVED" tree)" = "$(field "$CANDIDATE" tree)" ] \
+    && [ "$(field "$APPROVED" base_sha)" = "$(field "$CANDIDATE" base_sha)" ] \
+    && [ "$(field "$APPROVED" spec_path)" = "$(field "$CANDIDATE" spec_path)" ] \
+    || { echo "NO_APPROVAL"; return 10; }
+  [ "$(round_now)" = "$(field "$APPROVED" round)" ] \
+    && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" = complete ] \
+    && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" = "$(field "$APPROVED" claim_token)" ] \
+    || { echo "NO_APPROVAL: a newer dispatch or missing receipt requires review"; return 10; }
+  clean_candidate || { echo "STALE: candidate is dirty"; return 11; }
+  [ "$(head_sha 2>/dev/null || true)" = "$(field "$APPROVED" head)" ] \
+    && [ "$(tree_sha 2>/dev/null || true)" = "$(field "$APPROVED" tree)" ] \
+    || { echo "STALE: approval belongs to another candidate"; return 11; }
+}
+# The thread, other than this one, whose contract already covers this base and spec. The cap belongs
+# to the contract, so a second thread on the same base and spec would be a second cap: threads
+# named x, x-v2, x-v3 and x-v4 once ran ten rounds on a cap of three.
+# The path as Git tracks it, or nothing: `docs/./spec.md` and `docs/spec.md` are one spec.
+tracked_spec() { git --literal-pathspecs ls-files -z --error-unmatch -- "$1" 2>/dev/null | tr -d '\0'; }
+same_contract() { # $1=state file $2=its thread
+  local saved tracked
+  [ -f "$1" ] && [ ! -L "$1" ] && [ "$2" != "$THREAD" ] \
+    && [ "$(field "$1" base_sha)" = "$BASE_SHA" ] || return 1
+  # State written before paths were stored as tracked can spell the same file another way.
+  saved="$(field "$1" spec_path)"; tracked="$(tracked_spec "$saved")"
+  [ "${tracked:-$saved}" = "$SPEC_TRACKED" ]
+}
+contract_holder() {
+  local path name journals
+  shopt -s dotglob
+  # Journals are listed before loops. A claim writes its loop before it removes its journal, so a
+  # holder that publishes while this scan runs is met in one of the two listings; listed together,
+  # its journal could be gone and its loop not yet listed. The hook is the seam for that test.
+  journals=("$STATE_DIR"/*.claim-prep)
+  [ -z "${CC_REVIEW_STATE_TEST_AFTER_JOURNALS_HOOK:-}" ] || . "$CC_REVIEW_STATE_TEST_AFTER_JOURNALS_HOOK"
+  for path in "${journals[@]}"; do
+    name="${path##*/}"; name="${name%.claim-prep}"
+    if same_contract "$path" "$name"; then printf '%s\n' "$name"; return 0; fi
+  done
+  for path in "$STATE_DIR"/*.review-loop; do
+    name="${path##*/}"; name="${name%.review-loop}"
+    if same_contract "$path" "$name"; then printf '%s\n' "$name"; return 0; fi
+  done
+  return 1
+}
+refuse_second_contract() {
+  HOLDER="$(contract_holder)" || return 0
+  rm -f "$PREPARED"
+  die 10 "CONTRACT_EXISTS: thread $HOLDER already holds the required review of this base and spec; continue or renew it there. See 'At the cap' in references/required-review.md"
+}
+loop_exhausted() {
+  _used="$(field "$LOOP_STATE" attempts)"; _limit="$(field "$LOOP_STATE" cap)"
+  case "$_limit" in [1-7]) ;; *) return 1 ;; esac
+  valid_decimal "$_used" 7 && [ "$_used" -ge "$_limit" ]
+}
 assert_claim() {
   _provided="$1"; _expected="$(field "$CANDIDATE" claim_token)"
   case "$_expected" in
@@ -177,6 +261,7 @@ assert_claim() {
 assert_state_files_safe
 case "$VERB" in
   mode) if is_required; then echo required; else echo advisory; fi; exit 0 ;;
+  footer) [ $# -eq 2 ] || usage; printf '%s\n' "$FOOTER"; exit 0 ;;
   # No state directory means no claim: preflight has nothing to check and must not create one.
   preflight) if [ ! -d "$STATE_DIR" ]; then cat >/dev/null; echo "NO_REQUIRED_CLAIM"; exit 0; fi ;;
 esac
@@ -186,8 +271,9 @@ acquire_review_lock
 case "$VERB" in
   header|preflight)
     # The four header lines are copied from the claimed candidate, never typed. `preflight`
-    # compares a prompt with them BEFORE the dispatch: a short SHA or a wrong spec path used
-    # to surface only after the call, as STALE (prompt_scope_mismatch), with the round used up.
+    # compares a prompt with them and with the footer BEFORE the dispatch: a short SHA or a wrong
+    # spec path used to surface only after the call, as STALE (prompt_scope_mismatch), with the
+    # round used up.
     [ $# -eq 2 ] || usage
     [ "$VERB" != preflight ] || assert_no_live_dispatch
     # preflight runs before every persistent dispatch: with no live required claim there is nothing
@@ -211,6 +297,9 @@ $HEADER"
       [ "$(printf '%s\n' "$PROMPT_IN" | grep -cxF -- "$H_LINE")" -eq 1 ] \
         || die 14 "PROMPT_SCOPE_MISMATCH before dispatch: '$H_LINE' must appear exactly once"
     done
+    [ "$(printf '%s\n' "$PROMPT_IN" | tail -n "$(printf '%s\n' "$FOOTER" | wc -l | tr -d ' ')")" = "$FOOTER" ] \
+      || die 14 "PROMPT_SCOPE_MISMATCH before dispatch: the prompt must end with exactly these lines (review-state.sh footer $THREAD):
+$FOOTER"
     echo "PREFLIGHT_OK head=$H_HEAD"
     ;;
 
@@ -249,14 +338,24 @@ $HEADER"
     case "$SPEC_PATH" in ' '*|*' ') echo "spec path must not start or end with a space" >&2; exit 1 ;; esac
     [ ! -L "$SPEC_PATH" ] || { echo "required review spec must not be a symlink: $SPEC_PATH" >&2; exit 13; }
     [ -f "$SPEC_PATH" ] || { echo "spec file not found: $SPEC_PATH" >&2; exit 1; }
-    git --literal-pathspecs ls-files --error-unmatch -- "$SPEC_PATH" >/dev/null 2>&1 \
+    # The contract is keyed by the path as Git tracks it: compared as typed, two spellings of one
+    # spec opened two contracts. This thread's own journal or loop, when it was saved under
+    # another spelling of the same file, keeps that spelling.
+    SPEC_TRACKED="$(tracked_spec "$SPEC_PATH")"
+    [ -n "$SPEC_TRACKED" ] \
       || { echo "required review spec must be tracked in the clean candidate: $SPEC_PATH" >&2; exit 13; }
+    SPEC_PATH="$SPEC_TRACKED"
+    for SAVED_SPEC in "$(field "$PREPARED" spec_path)" "$(field "$LOOP_STATE" spec_path)"; do
+      [ -z "$SAVED_SPEC" ] || [ "$(tracked_spec "$SAVED_SPEC")" != "$SPEC_TRACKED" ] || SPEC_PATH="$SAVED_SPEC"
+    done
     BASE_SHA="$(git rev-parse --verify --end-of-options "$BASE_REF^{commit}" 2>/dev/null)" \
       || { echo "cannot resolve review base: $BASE_REF" >&2; exit 1; }
     clean_candidate || { echo "required review needs a clean candidate commit" >&2; exit 13; }
     HEAD_SHA="$(head_sha)" || { echo "required review needs an existing HEAD" >&2; exit 13; }
     git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
       || { echo "review base is not an ancestor of candidate HEAD: $BASE_SHA" >&2; exit 1; }
+    [ "$BASE_SHA" != "$HEAD_SHA" ] \
+      || { echo "review base equals the candidate HEAD: there is nothing to review" >&2; exit 1; }
     TREE_SHA="$(tree_sha)" || exit 13
     CURRENT_ROUND="$(round_now)"
     # A lost loop file next to surviving claim state must not issue a fresh set of rounds.
@@ -267,11 +366,14 @@ $HEADER"
       for pair in "base_sha=$BASE_SHA" "spec_path=$SPEC_PATH" "cap=$CAP" "head=$HEAD_SHA" "tree=$TREE_SHA"; do
         grep -qxF -- "$pair" "$PREPARED" || die 10 "REVIEW_CONTRACT_CHANGED: recover the interrupted begin on its original candidate"
       done
+      # An interruption can fall between the journal and its contract check.
+      [ -f "$LOOP_STATE" ] || refuse_second_contract
       publish_claim; exit $?
     fi
+    NEW_CONTRACT=false
     LAST_STATUS="$(field "$REVIEW_STATE" status)"
     case "$LAST_STATUS" in
-      PENDING) die 10 "PENDING: finish or abort the claimed review round before begin" ;;
+      PENDING) die 10 "PENDING: finish or abort the claimed review round before begin; its token is the claim_token line of $CANDIDATE" ;;
       CAP_REACHED)
         [ -f "$CANDIDATE" ] \
           && die 10 "$LAST_STATUS: see 'At the cap' in references/required-review.md"
@@ -296,6 +398,7 @@ $HEADER"
         && [ "$LOOP_CAP" = "$CAP" ] \
         || die 10 "REVIEW_CONTRACT_CHANGED: restore the original base/spec/cap, or start a new lifecycle for an authorized contract change"
     else
+      NEW_CONTRACT=true
       LOOP_START="$CURRENT_ROUND"
       ATTEMPTS=0
     fi
@@ -309,7 +412,7 @@ $HEADER"
     # candidate and nothing else changed: HEAD is a merge whose first parent is that candidate.
     # It is a real round, reviewing the integration, but it does not count against the cap —
     # frequent target merges would otherwise use up the cap without a single new finding.
-    INTEGRATION_OF=""
+    INTEGRATION_OF=""; INTEGRATION_RETRY=""
     if $INTEGRATION; then
       # Allowed right after the approval, or again after a technical failure of an integration
       # claim for this same HEAD (ABORTED, NO_FINDINGS). A real REQUEST_CHANGES never qualifies.
@@ -323,21 +426,39 @@ $HEADER"
         ABORTED|NO_FINDINGS)
           [ -n "$PREV_INTEG" ] && [ "$(field "$CANDIDATE" head)" = "$HEAD_SHA" ] \
             || die 10 "INTEGRATION_REFUSED: only a failed integration claim for this same HEAD can be retried; this thread's last result is $LAST_STATUS"
-          INTEGRATION_OF="$PREV_INTEG" ;;
+          INTEGRATION_OF="$PREV_INTEG"
+          # An integration round reserves no attempt, so its one free reply without a located
+          # finding is counted here, apart from the attempt a normal round can have returned.
+          INTEGRATION_RETRY="$(field "$CANDIDATE" integration_retry)"
+          [ "$LAST_STATUS" != NO_FINDINGS ] || INTEGRATION_RETRY=true ;;
         *) die 10 "INTEGRATION_REFUSED: an integration round follows an approved candidate; this thread's last result is ${LAST_STATUS:-none}" ;;
       esac
       [ "$(git rev-list --parents -n 1 HEAD 2>/dev/null | wc -w | tr -d ' ')" -eq 3 ] \
         && [ "$(git rev-parse HEAD^1 2>/dev/null)" = "$INTEGRATION_OF" ] \
         || die 10 "INTEGRATION_REFUSED: HEAD must be a merge whose first parent is the approved candidate $INTEGRATION_OF; review other changes as a normal round"
+      # "Nothing else" is checked, not assumed: the merge must be the one git computes from the two
+      # parents. A resolved conflict or an edit added to the merge commit is new content, and a git
+      # that cannot recompute the merge proves nothing; each is reviewed as a normal round.
+      MERGED_TREE="$(git merge-tree --write-tree HEAD^1 HEAD^2 2>/dev/null)" \
+        && [ "$(printf '%s\n' "$MERGED_TREE" | head -n 1)" = "$TREE_SHA" ] \
+        || die 10 "INTEGRATION_REFUSED: the round is exempt only for a merge that git reproduces without conflicts and without further edits; review this merge as a normal round"
       ATTEMPT="$ATTEMPTS"
     else
       if [ "$ATTEMPTS" -ge "$CAP" ]; then
+        # A refusal publishes nothing over a recorded approval: `check` goes on answering for the
+        # approved candidate, and an integration round still finds the candidate it integrates.
+        [ "$LAST_STATUS" != APPROVED ] \
+          || die 10 "CAP_REACHED: required review already claimed $CAP attempt(s); the recorded approval is kept. See 'At the cap' in references/required-review.md"
         [ -f "$CANDIDATE" ] \
           && write_state CAP_REACHED NONE false "$HEAD_SHA" "$TREE_SHA" "$CURRENT_ROUND" cap >/dev/null
         die 10 "CAP_REACHED: required review already claimed $CAP attempt(s)"
       fi
       ATTEMPT=$((ATTEMPTS + 1))
     fi
+    # One blocking verdict without a located finding is returned per set of rounds. The mark rides
+    # in the claim record, which `renew` removes; the loop file keeps its field set.
+    REFUNDED="$(field "$CANDIDATE" refunded)"
+    [ "$LAST_STATUS" != NO_FINDINGS ] || [ -n "$(field "$CANDIDATE" integration_of)" ] || REFUNDED=true
     CLAIMED_AT="$(date +%s 2>/dev/null)"
     case "$CLAIMED_AT" in ''|*[!0-9]*) die 7 "cannot timestamp required-review claim" ;; esac
     CLAIM_TOKEN="$(printf '%s\n' "$ROOT" "$THREAD" "$HEAD_SHA" "$TREE_SHA" "$ATTEMPT" "$$" "$CLAIMED_AT" \
@@ -346,9 +467,14 @@ $HEADER"
     LOG_BYTES="$(wc -c 2>/dev/null < "$STATE_DIR/$THREAD.log" | tr -d ' ')"; LOG_BYTES="${LOG_BYTES:-0}"
     LOG_GEN="$(cat "$STATE_DIR/$THREAD.log-gen" 2>/dev/null)" || LOG_GEN=""
     valid_decimal "$LOG_GEN" 9 || LOG_GEN=0
-    printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\nintegration_of=%s\ntimestamp=%s\n' \
-      "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$INTEGRATION_OF" "$(timestamp)" \
+    printf 'version=2\nhead=%s\ntree=%s\nbase_sha=%s\nspec_path=%s\ncap=%s\nloop_start_round=%s\nattempt=%s\nclaim_token=%s\nround_before=%s\nlog_bytes=%s\nlog_gen=%s\nintegration_of=%s\nintegration_retry=%s\nrefunded=%s\ntimestamp=%s\n' \
+      "$HEAD_SHA" "$TREE_SHA" "$BASE_SHA" "$SPEC_PATH" "$CAP" "$LOOP_START" "$ATTEMPT" "$CLAIM_TOKEN" "$CURRENT_ROUND" "$LOG_BYTES" "$LOG_GEN" "$INTEGRATION_OF" "$INTEGRATION_RETRY" "$REFUNDED" "$(timestamp)" \
       | atomic_write "$PREPARED" || exit 7
+    # Checked after the journal is written, not before: each thread has its own lock, so two first
+    # claims of one contract run side by side, and from here each is visible to the other. Whoever
+    # sees another holder withdraws. The hook is the deterministic seam for the test of that race.
+    [ -z "${CC_REVIEW_STATE_TEST_AFTER_PREP_HOOK:-}" ] || . "$CC_REVIEW_STATE_TEST_AFTER_PREP_HOOK"
+    ! $NEW_CONTRACT || refuse_second_contract
     publish_claim
     ;;
 
@@ -416,6 +542,15 @@ $HEADER"
       write_state STALE "$VERDICT" false "$HEAD_SHA" "$TREE_SHA" "$(round_now)" "$STALE_REASON" || exit 1
       if [ "$STALE_REASON" = dispatch_incomplete ]; then
         echo "STALE ($STALE_REASON): no completed dispatch receipt; inspect the dispatch error before retrying within the remaining rounds" >&2
+      elif [ "$STALE_REASON" = dirty_worktree ]; then
+        # Name what is in the way: a file a reviewer's command left behind repeats every round
+        # until it is ignored or removed, and the bare reason did not say which file.
+        echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate; the worktree holds:" >&2
+        DIRTY="$(git status --porcelain -uall --ignore-submodules=none 2>/dev/null)"
+        DIRTY_COUNT="$(printf '%s\n' "$DIRTY" | grep -c .)"
+        printf '%s\n' "$DIRTY" | head -n 20 >&2
+        [ "$DIRTY_COUNT" -le 20 ] || echo "... and $((DIRTY_COUNT - 20)) more" >&2
+        echo "Remove or ignore what a reviewer's command left behind; your own edits wait until the round is recorded." >&2
       else
         echo "STALE ($STALE_REASON): verdict does not cover the current clean candidate" >&2
       fi
@@ -429,12 +564,18 @@ $HEADER"
         ;;
       REQUEST_CHANGES)
         # A blocking verdict with not one file:line finding is a tool failure, not a review outcome:
-        # nothing can be fixed or refuted, so the attempt is returned. Python unavailable leaves the
-        # claim PENDING, so record can run again once it is restored.
-        python3 "$SELF_DIR/finding-location.py" "$RECORD_TMP"
+        # nothing can be fixed or refuted, so the attempt is returned. Once per set of rounds: a
+        # reviewer that keeps answering so is giving its review, and returning every such round
+        # left the cap at zero after any number of paid calls. Python unavailable leaves the claim
+        # PENDING, so record can run again once it is restored.
+        python3 "$SELF_DIR/finding-location.py" "$RECORD_TMP" "$C_HEAD" "$C_BASE"
         location_rc=$?
         case "$location_rc" in 0|10) ;; *) die 7 "Cannot inspect findings; restore Python and retry record on this claim" ;; esac
-        if [ "$location_rc" -eq 10 ]; then
+        BLOCKING_REASON=blocking_findings_open
+        [ "$location_rc" -eq 0 ] || BLOCKING_REASON=unlocated_findings
+        FREE_USED="$(field "$CANDIDATE" refunded)"
+        [ -z "$(field "$CANDIDATE" integration_of)" ] || FREE_USED="$(field "$CANDIDATE" integration_retry)"
+        if [ "$location_rc" -eq 10 ] && [ -z "$FREE_USED" ]; then
           L_ATTEMPTS="$(field "$LOOP_STATE" attempts)"
           if [ -z "$(field "$CANDIDATE" integration_of)" ]; then
             valid_decimal "$L_ATTEMPTS" 7 && [ "$C_ATTEMPT" -gt 0 ] || die 10 "$INVALID_CLAIM_MSG"
@@ -451,11 +592,21 @@ $HEADER"
         fi
         if [ "$C_ATTEMPT" -ge "$C_CAP" ]; then
           write_state CAP_REACHED REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$CURRENT_ROUND" cap || exit 1
-          echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
+          if [ "$BLOCKING_REASON" = unlocated_findings ]; then
+            echo "CAP_REACHED: REQUEST_CHANGES again without a file:line finding, in round $C_CAP of $C_CAP" >&2
+          else
+            echo "CAP_REACHED: blocking findings remain after $C_CAP round(s)" >&2
+          fi
           exit 10
         fi
-        write_state REQUEST_CHANGES REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$(round_now)" blocking_findings_open || exit 1
-        echo "REQUEST_CHANGES: resolve the findings, commit a new clean candidate when code changes, then begin and review again" >&2
+        write_state REQUEST_CHANGES REQUEST_CHANGES false "$C_HEAD" "$C_TREE" "$(round_now)" "$BLOCKING_REASON" || exit 1
+        if [ "$BLOCKING_REASON" = unlocated_findings ] && [ -n "$(field "$CANDIDATE" integration_of)" ]; then
+          echo "REQUEST_CHANGES: again without a file:line finding, and the integration retry is used; take the reply as the review, then review this merge as a normal round" >&2
+        elif [ "$BLOCKING_REASON" = unlocated_findings ]; then
+          echo "REQUEST_CHANGES: again without a file:line finding, so this attempt counts; take the reply as the review, then begin and review again" >&2
+        else
+          echo "REQUEST_CHANGES: resolve the findings, commit a new clean candidate when code changes, then begin and review again" >&2
+        fi
         exit 10
         ;;
       *)
@@ -526,59 +677,55 @@ $HEADER"
   check)
     [ $# -eq 2 ] || usage
     assert_no_live_dispatch
-    [ -f "$CANDIDATE" ] && [ -f "$REVIEW_STATE" ] && [ -f "$APPROVED" ] \
-      || { echo "NO_APPROVAL" >&2; exit 10; }
-    # APPROVED is published in two renames: first the live review state, then
-    # its immutable approval copy. A failure between them must not combine a
-    # new status with an older candidate identity. Exact byte equality proves
-    # both files are one publication generation; the claim token then binds
-    # that generation to the candidate captured by begin.
-    cmp -s "$REVIEW_STATE" "$APPROVED" \
-      || { echo "NO_APPROVAL: incomplete approval publication" >&2; exit 10; }
-    [ "$(field "$REVIEW_STATE" status)" = APPROVED ] \
-      && [ "$(field "$REVIEW_STATE" gate_eligible)" = true ] \
-      && [ "$(field "$APPROVED" verdict)" = APPROVE ] \
-      && [ -n "$(field "$APPROVED" base_sha)" ] \
-      && [ -n "$(field "$APPROVED" spec_path)" ] \
-      && [ -n "$(field "$APPROVED" claim_token)" ] \
-      && [ "$(field "$APPROVED" claim_token)" = "$(field "$CANDIDATE" claim_token)" ] \
-      && [ "$(field "$APPROVED" head)" = "$(field "$CANDIDATE" head)" ] \
-      && [ "$(field "$APPROVED" tree)" = "$(field "$CANDIDATE" tree)" ] \
-      && [ "$(field "$APPROVED" base_sha)" = "$(field "$CANDIDATE" base_sha)" ] \
-      && [ "$(field "$APPROVED" spec_path)" = "$(field "$CANDIDATE" spec_path)" ] \
-      || { echo "NO_APPROVAL" >&2; exit 10; }
-    [ "$(round_now)" = "$(field "$APPROVED" round)" ] \
-      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" status)" = complete ] \
-      && [ "$(field "$STATE_DIR/$THREAD.dispatch-receipt" claim_token)" = "$(field "$APPROVED" claim_token)" ] \
-      || die 10 "NO_APPROVAL: a newer dispatch or missing receipt requires review"
-    clean_candidate || { echo "STALE: candidate is dirty" >&2; exit 11; }
-    HEAD_SHA="$(head_sha 2>/dev/null || true)"; TREE_SHA="$(tree_sha 2>/dev/null || true)"
-    [ "$HEAD_SHA" = "$(field "$APPROVED" head)" ] \
-      && [ "$TREE_SHA" = "$(field "$APPROVED" tree)" ] \
-      || { echo "STALE: approval belongs to another candidate" >&2; exit 11; }
-    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$HEAD_SHA tree=$TREE_SHA base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
+    GAP="$(approval_gap)" || { GAP_RC=$?; [ -z "$GAP" ] || echo "$GAP" >&2; exit "$GAP_RC"; }
+    # The marker is built from the record approval_gap compared with HEAD, never from a second
+    # reading of HEAD: one taken now could name a commit that was not checked.
+    echo "CC_CODEX_REQUIRED_REVIEW APPROVE thread=$THREAD head=$(field "$APPROVED" head) tree=$(field "$APPROVED" tree) base_sha=$(field "$APPROVED" base_sha) spec_path=$(field "$APPROVED" spec_path)"
     ;;
 
   renew)
     # A new set of rounds on the same thread, after the user authorized it: base, spec and cap stay
     # pinned, the Codex conversation continues, and the renewal is recorded. Renaming the thread or
     # resetting its state to get fresh rounds lost the pinned contract and the renewal history.
-    [ $# -eq 4 ] && [ "$3" = --by ] && [ -n "$4" ] || usage
-    case "$4" in *[[:cntrl:]]*) die 1 "--by must be a nonempty single-line name" ;; esac
+    # --rounds sizes the renewal to what was authorized: "two more rounds" on a cap of five once
+    # became five. The cap stays pinned; a smaller renewal starts further along it.
+    shift 2
+    R_BY=""; R_ROUNDS=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --by) [ $# -ge 2 ] && [ -n "$2" ] || usage; R_BY="$2"; shift 2 ;;
+        --rounds) [ $# -ge 2 ] && [ -n "$2" ] || usage; R_ROUNDS="$2"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [ -n "$R_BY" ] || usage
+    case "$R_BY" in *[[:cntrl:]]*) die 1 "--by must be a nonempty single-line name" ;; esac
+    case "$R_ROUNDS" in ''|[1-7]) ;; *) die 1 "--rounds must be 1 up to the pinned cap" ;; esac
     assert_no_live_dispatch
-    [ "$(field "$REVIEW_STATE" status)" = CAP_REACHED ] \
-      || die 10 "RENEW_REFUSED: renew follows CAP_REACHED; the thread is $(field "$REVIEW_STATE" status)"
+    # A refused begin leaves an approval in place, so an exhausted loop can still read APPROVED.
+    # It is renewed once that approval no longer covers the candidate.
+    R_STATUS="$(field "$REVIEW_STATE" status)"
+    if [ "$R_STATUS" = APPROVED ] && loop_exhausted; then
+      ! approval_gap >/dev/null 2>&1 \
+        || die 10 "RENEW_REFUSED: the recorded approval still covers this candidate"
+    else
+      [ "$R_STATUS" = CAP_REACHED ] \
+        || die 10 "RENEW_REFUSED: renew follows CAP_REACHED; the thread is $R_STATUS"
+    fi
     [ -f "$LOOP_STATE" ] || die 10 "INVALID_CLAIM_STATE: no review loop to renew"
     R_BASE="$(field "$LOOP_STATE" base_sha)"; R_SPEC="$(field "$LOOP_STATE" spec_path)"
     R_CAP="$(field "$LOOP_STATE" cap)"; R_COUNT="$(field "$LOOP_STATE" renewals)"
     valid_decimal "${R_COUNT:-0}" 4 || R_COUNT=0
     R_COUNT=$(( ${R_COUNT:-0} + 1 ))
-    { printf 'version=1\nbase_sha=%s\nspec_path=%s\ncap=%s\nstart_round=%s\nattempts=0\nrenewals=%s\nrenewed_by=%s\ntimestamp=%s\n' \
-        "$R_BASE" "$R_SPEC" "$R_CAP" "$(round_now)" "$R_COUNT" "$4" "$(timestamp)"; } \
+    case "$R_CAP" in [1-7]) ;; *) die 10 "INVALID_CLAIM_STATE: the review loop has no valid cap" ;; esac
+    R_ROUNDS="${R_ROUNDS:-$R_CAP}"
+    [ "$R_ROUNDS" -le "$R_CAP" ] || die 1 "--rounds must be 1 up to the pinned cap ($R_CAP)"
+    { printf 'version=1\nbase_sha=%s\nspec_path=%s\ncap=%s\nstart_round=%s\nattempts=%s\nrenewals=%s\nrenewed_by=%s\ntimestamp=%s\n' \
+        "$R_BASE" "$R_SPEC" "$R_CAP" "$(round_now)" "$((R_CAP - R_ROUNDS))" "$R_COUNT" "$R_BY" "$(timestamp)"; } \
       | atomic_write "$LOOP_STATE" || exit 1
-    rm -f "$CANDIDATE" "$STATE_DIR/$THREAD.dispatch-receipt" || die 7 "cannot clear the finished claim"
+    rm -f "$CANDIDATE" "$APPROVED" "$STATE_DIR/$THREAD.dispatch-receipt" || die 7 "cannot clear the finished claim"
     write_state RENEWED NONE false "$(head_sha 2>/dev/null || true)" "$(tree_sha 2>/dev/null || true)" "$(round_now)" "budget_renewed_by_$R_COUNT" >/dev/null 2>&1 || true
-    echo "RENEWED $THREAD: renewal $R_COUNT, $R_CAP round(s) authorized by $4; base and spec unchanged"
+    echo "RENEWED $THREAD: renewal $R_COUNT, $R_ROUNDS round(s) authorized by $R_BY, attempts $((R_CAP - R_ROUNDS + 1))..$R_CAP of the pinned cap; base and spec unchanged"
     ;;
 
   reset)

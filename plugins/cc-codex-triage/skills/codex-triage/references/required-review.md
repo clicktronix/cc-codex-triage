@@ -22,31 +22,34 @@ and only `/thread-new` starts a new contract.
    If the first claim was interrupted, repeat `begin` for the same candidate to finish it.
    A refusal blocks this review attempt and delivery, not unrelated safe work.
    Preserve WIP; let the owner prepare a clean candidate instead of downgrading the gate.
+   `CONTRACT_EXISTS` names the thread that already reviews this base and spec: the cap belongs
+   to that contract, so continue or renew there. A base equal to the candidate is refused,
+   since the range holds nothing to review.
 
    After integrating the target into an approved candidate (a merge whose first parent is that
    candidate, nothing else), add `--integration`: the round reviews the integration and does not
-   count as an attempt. A technical failure can retry the same merge. After blocking
-   findings, use a normal round, including after a renewal.
+   count as an attempt. The exemption holds for a merge Git reproduces from its two parents; a
+   resolved conflict or an edit added to the merge commit is reviewed as a normal round. A
+   technical failure can retry the same merge. After blocking findings, use a normal round,
+   including after a renewal.
 
-2. The prompt must begin with the four header lines, once each. Generate them; do not type them:
+2. The prompt begins with the header lines and ends with the footer lines. Generate both:
 
    ```bash
    HEADER="$("${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" header "$THREAD")"
+   FOOTER="$("${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" footer "$THREAD")"
    ```
 
-   They are `REQUIRED_REVIEW`, `BASE_SHA:`, `CANDIDATE_SHA:` and `SPEC_PATH:` with the full values
-   of the claimed candidate. `dispatch.sh` checks them before calling Codex and exits 14 without
-   dispatching when they differ; the claim stays live.
+   The header is `REQUIRED_REVIEW`, `BASE_SHA:`, `CANDIDATE_SHA:` and `SPEC_PATH:` with the full
+   values of the claimed candidate, once each. The footer is the verdict rule: the two verdicts
+   `APPROVE` and `REQUEST_CHANGES`, findings located as `path:line` from the repository root
+   (in a code span when the path has spaces), a worktree left as found,
+   and the bare final line. `dispatch.sh` checks both before calling Codex and exits 14 without
+   dispatching when they differ; the claim stays live. `record` reads both again in the logged
+   prompt, so a round dispatched without them ends as `STALE (prompt_scope_mismatch)`.
 
-   Then include the intent, full base-to-candidate scope, chosen lens, and:
-
-   ```text
-   End your message with the verdict ALONE on its own final line — exactly APPROVE or REQUEST_CHANGES.
-   ```
-
-   Required review accepts only `APPROVE` or `REQUEST_CHANGES`: findings the lens would
-   label `COMMENT` go in the body, and the verdict is `APPROVE` when no blocking finding
-   remains. Repeat the instruction on every resumed round.
+   Between them put the intent, the full base-to-candidate scope and the chosen lens. The
+   footer is the round's only verdict instruction, on the first round and on every resumed one.
 
 3. Dispatch with mutation detection enabled:
 
@@ -91,8 +94,14 @@ and only `/thread-new` starts a new contract.
 
 ## Outcomes
 
-- `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single `file:line` finding; the
-  attempt was returned. Begin again and ask for the findings with their locations.
+- `NO_FINDINGS`: Codex answered `REQUEST_CHANGES` without a single located finding, a
+  `path:line` whose path is a file of the reviewed trees or an existing file outside them; the
+  attempt was returned. Begin again and ask for the findings with their locations. One attempt
+  is returned per set of rounds: the next such reply is recorded as `REQUEST_CHANGES` and counts,
+  and at the cap it ends the set like any blocking verdict.
+- `STALE (dirty_worktree)`: the message lists the paths in the way, the first twenty and a
+  count of the rest. The attempt counts. Remove or
+  ignore a file the reviewer's command left behind before the next round.
 - `NO_DECISION`: the final line was neither `APPROVE` nor `REQUEST_CHANGES` (`COMMENT`
   included). The attempt counts. Begin again with the exact-verdict instruction.
 - `REQUEST_CHANGES`: return the validated findings to the owning workflow. This command
@@ -108,12 +117,17 @@ needs user authorization; once given, renew on the same thread. That keeps base,
 the Codex conversation and records who authorized it:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "$OWNER"
+"${CLAUDE_PLUGIN_ROOT}/scripts/review-state.sh" renew "$THREAD" --by "$OWNER" ${ROUNDS:+--rounds "$ROUNDS"}
 ```
 
-`renew` restarts the round count at the pinned cap and is accepted only at `CAP_REACHED`.
-Reuse a decision already given. Renaming or resetting the thread loses the pinned contract;
-`/thread-new` is for a user-authorized change of base, spec or cap, or for the Recovery below.
+Pass `--rounds N` (1 up to the pinned cap) when the user authorized a number of rounds: two
+authorized rounds on a cap of 5 run as attempts 4 and 5. Without it `renew` restarts the count
+at the whole pinned cap, so name that number when you ask. `renew` is accepted at
+`CAP_REACHED`, and for a used-up cap whose recorded approval no longer covers the candidate.
+A `begin` refused at the cap leaves a recorded approval in place. Reuse a decision already
+given. The cap belongs to the contract of base and spec, so a second thread name on them is
+refused; resetting the thread loses the pinned contract, and `/thread-new` is for a
+user-authorized change of base, spec or cap, or for the Recovery below.
 
 ## Candidate stability
 
@@ -127,6 +141,10 @@ in the owning workflow, refresh affected evidence, and review the new candidate 
 thread.
 
 ## Recovery
+
+A pending claim whose token was lost: read the `claim_token` line of `<thread>.candidate` in
+the state directory (`/status` prints it), then `record` when its dispatch completed or
+`abort` otherwise.
 
 On `INVALID_CLAIM_STATE`:
 

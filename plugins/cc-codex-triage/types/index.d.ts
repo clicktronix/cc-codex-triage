@@ -17,6 +17,8 @@ export type ReviewRow = {
   round: number | null
   verdict: string
   isGateEligible: boolean
+  head: string | null
+  atMs: number
 }
 
 export type Snapshot = {

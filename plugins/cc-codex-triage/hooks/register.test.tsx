@@ -69,6 +69,8 @@ type Faults = {
   beforeExists?: (path: string) => Promise<void>
   // When given, the pane is shown while this says so, and ui.open / ui.close change it.
   pane?: { isShown: boolean }
+  // Modification times of state files, by name; the rest keep the default.
+  mtimes?: Record<string, number>
 }
 
 function world(
@@ -116,7 +118,7 @@ function world(
       name,
       kind: 'file' as const,
       size: files[name]?.length ?? 0,
-      mtimeMs: name.endsWith('.active') ? START - 75_000 : name.endsWith('.log') ? logMs(files[name]) : START - 3_600_000,
+      mtimeMs: faults.mtimes?.[name] ?? (name.endsWith('.active') ? START - 75_000 : name.endsWith('.log') ? logMs(files[name]) : START - 3_600_000),
       isLink: false,
     })),
     }
@@ -321,6 +323,37 @@ describe('mod', () => {
     expect(texts).toContain('  runs: npm …')
     expect(texts).toContain('○ plan-x · 5 rounds · 1h ago')
     expect(texts).toContain('review-a.b · PENDING · -')
+    await ui.unmount()
+  })
+
+  test('required reviews show the latest five by file time, and an approval keeps its commit', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const files: Record<string, string> = { ...FILES }
+    const mtimes: Record<string, number> = {}
+    // Written within one second of each other: only the file time orders them.
+    for (let n = 1; n <= 7; n++) {
+      files[`old-${n}.review-state`] = 'status=CAP_REACHED\nverdict=REQUEST_CHANGES\ntimestamp=2026-09-01T10:00:00Z\n'
+      mtimes[`old-${n}.review-state`] = START - 7_200_000 + n * 100
+    }
+    const long = 'review-fix-required-review-gaps-6836f414de98'
+    files[`${long}.review-state`] =
+      'status=APPROVED\nverdict=APPROVE\ngate_eligible=true\nhead=95d4d44175034d5fee898bc14bc8fb171149c2f2\ntimestamp=2026-09-01T10:00:00Z\n'
+    mtimes[`${long}.review-state`] = START - 7_200_000 + 800
+    world(on, files, new Set(['4242']), true, EVENTS, { isListBroken: false, mtimes })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 48 }, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    const rows = texts.slice(texts.indexOf('Required review') + 1)
+    expect(rows).toEqual([
+      'review-a.b · PENDING · -',
+      'review-fix-… · APPROVED 95d4d44 · APPROVE · gate', // 48 cells: the name gave way
+      'old-7 · CAP_REACHED · REQUEST_CHANGES',
+      'old-6 · CAP_REACHED · REQUEST_CHANGES',
+      'old-5 · CAP_REACHED · REQUEST_CHANGES',
+      '+4 older',
+    ])
     await ui.unmount()
   })
 

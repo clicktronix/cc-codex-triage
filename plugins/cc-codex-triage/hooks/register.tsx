@@ -11,11 +11,13 @@ const TICK_MS = 2000
 const IDLE_EVERY = 8
 const HOT_MS = 60_000
 const DETAILED = 12
+// Review states are never removed with their task, so the pane shows the latest few.
+const REVIEWS = 5
 // Each read is held to the engine's 4 MiB of process output.
 const LOG_TAIL_BYTES = [65_536, 524_288, 4_194_304]
 
 const snapshot = atom({ plugin: 'cc-codex-triage', key: 'snapshot' } as const, null, {
-  shape: 'snapshot-4',
+  shape: 'snapshot-5',
 })
 const reply = atom({ plugin: 'cc-codex-triage', key: 'reply' } as const, null, { shape: 'reply-2' })
 
@@ -141,8 +143,11 @@ async function scan($: EngineInterface, dir: string | null, atMs: number, pinned
       round: state.round ? Number(state.round) : null,
       verdict: state.verdict ?? '-',
       isGateEligible: state.gate_eligible === 'true',
+      head: state.head || null,
+      atMs: own.get('review-state') ?? 0,
     })
   }
+  reviews.sort((a, b) => b.atMs - a.atMs)
 
   return { ...empty, threads: threads.sort((a, b) => Number(b.isBusy) - Number(a.isBusy)), reviews }
 }
@@ -409,6 +414,13 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const width = Math.max(20, e.props.bodyColumns)
     const cut = (text: string) => fit(text, width)
+    // An approval belongs to one commit, so the row names it: the reader compares it with their
+    // HEAD. A long thread name gives way to the state, never the other way round.
+    const reviewLine = (r: ReviewRow) => {
+      const status = r.status === 'APPROVED' && r.head ? `APPROVED ${r.head.slice(0, 7)}` : r.status
+      const state = ` · ${status} · ${r.verdict}${r.isGateEligible ? ' · gate' : ''}`
+      return `${fit(r.name, width - cells(state))}${state}`
+    }
     // A reply worth opening: more lines than the preview, or a first line the pane cuts.
     const isExpandable = (t: ThreadRow) => t.moreLines > 0 || cells(`  ${t.preview ?? ''}`) > width
     const preview = (t: ThreadRow) => {
@@ -470,11 +482,12 @@ export const register: Register = on => {
         {shot.reviews.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <Text weight="semibold">Required review</Text>
-            {shot.reviews.map(r => (
+            {shot.reviews.slice(0, REVIEWS).map(r => (
               <Text color={r.status === 'APPROVED' ? 'green' : r.status === 'CAP_REACHED' ? 'red' : undefined}>
-                {cut(`${r.name} · ${r.status} · ${r.verdict}${r.isGateEligible ? ' · gate' : ''}`)}
+                {reviewLine(r)}
               </Text>
             ))}
+            {shot.reviews.length > REVIEWS && <Text dimColor>{cut(`+${shot.reviews.length - REVIEWS} older`)}</Text>}
           </Box>
         )}
       </Box>

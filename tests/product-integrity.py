@@ -49,7 +49,8 @@ class ProductIntegrity(unittest.TestCase):
         (self.repo/'subject.py').write_text('VALUE = 2\n')
         self.git('commit','-qam','candidate')
         self.head = self.git('rev-parse','HEAD').stdout.strip()
-        self.prompt = f'REQUIRED_REVIEW\nBASE_SHA: {self.base}\nCANDIDATE_SHA: {self.head}\nSPEC_PATH: spec.md\nReview the full candidate.\n'
+        footer = self.run_cmd(['bash', SCRIPTS/'review-state.sh', 'footer', 'review']).stdout
+        self.prompt = f'REQUIRED_REVIEW\nBASE_SHA: {self.base}\nCANDIDATE_SHA: {self.head}\nSPEC_PATH: spec.md\nReview the full candidate.\n{footer}'
         self.sd = self.repo/'.git/cc-codex-triage/threads'
 
     def run_cmd(self, args, prompt=None):
@@ -123,10 +124,12 @@ class ProductIntegrity(unittest.TestCase):
 
     def test_finding_locations_preserve_unicode_and_ignore_numeric_endpoints(self):
         record = self.root/'reply.log'
+        (self.repo/'café').write_text('menu\n')
+        self.git('add', 'café'); self.git('commit', '-qm', 'menu')
         for reply, expected in [('café:1', 0), ('cafe\u0301:1', 0), ('Could not connect to 127.0.0.1:5432.', 10)]:
             with self.subTest(reply=reply):
                 record.write_text(f'REPLY:\n  {reply}\n  REQUEST_CHANGES\n---\n')
-                output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record])
+                output = self.run_cmd(['python3', SCRIPTS/'finding-location.py', record, 'HEAD'])
                 self.assertEqual(output.returncode, expected, output.stderr)
 
     def test_default_review_name_keeps_legacy_contract(self):
@@ -168,6 +171,8 @@ class ProductIntegrity(unittest.TestCase):
                 self.assertIn('CAP_REACHED', self.gate('begin', thread, *args).stderr)
             else:
                 self.assertEqual(self.gate('check', thread).returncode, 0)
+            # One contract per base and spec: the next cap needs this thread retired.
+            self.assertEqual(self.gate('reset', thread).returncode, 0)
 
     def test_no_findings_returns_the_attempt(self):
         args = ('begin', 'review', '--base', self.base, '--spec', 'spec.md', '--cap', '1')
