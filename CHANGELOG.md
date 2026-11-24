@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.20.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.19.0...v0.20.0) (2026-11-24)
+
+
+### Features
+
+* required review keeps approvals, sizes renewals and binds the cap to its contract ([#28](https://github.com/clicktronix/cc-codex-triage/issues/28)) ([ea12cac](https://github.com/clicktronix/cc-codex-triage/commit/ea12cac8a4ce2584c012bfc76a3fa32abee5d67a))
+
 ## [0.19.0](https://github.com/clicktronix/cc-codex-triage/compare/v0.18.1...v0.19.0) (2026-11-22)
 
 
